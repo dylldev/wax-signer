@@ -1,0 +1,21 @@
+.build/
+.swiftpm/
+*.xcodeproj
+DerivedData/
+.DS_Store
+*.ipa
+*.p12
+*.mobileprovision
+!Tests/SigningKitTests/Fixtures/TestApp.ipa
+!Tests/SigningKitTests/Fixtures/TestApp.app/**
+
+# private strings for scripts/publish-prep.sh
+scripts/denylist.txt
+
+# local tooling and caches, never published
+.superpowers/
+.remember/
+.claude/
+graphify-out/
+__pycache__/
+*.pyc

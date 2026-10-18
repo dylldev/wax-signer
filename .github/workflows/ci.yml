@@ -1,0 +1,22 @@
+name: CI
+on:
+  push: { branches: [main, master] }
+  pull_request:
+permissions: { contents: read }
+jobs:
+  test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package tests
+        run: swift test
+      - name: Server and script tests
+        run: |
+          python3 -m unittest discover -s Server/wax-ota -p 'test_*.py'
+          bash scripts/test_make_install_cert.sh
+          bash scripts/test_publish_prep.sh
+      - name: Build the app (unsigned)
+        run: |
+          brew install xcodegen
+          xcodegen generate
+          xcodebuild -project LocalIPASigner.xcodeproj -scheme LocalIPASigner -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build

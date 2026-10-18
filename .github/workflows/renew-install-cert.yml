@@ -1,0 +1,43 @@
+# Keeps the certificate for Wax's "This iPhone" install host fresh. Free: GitHub Actions + GitHub Pages + Let's Encrypt.
+# One-time setup (repository owner): Settings > Pages > Source: GitHub Actions; Settings > Secrets > DUCKDNS_TOKEN;
+# Settings > Variables > INSTALL_DOMAIN (a DuckDNS name set to 127.0.0.1, for example wax-install.duckdns.org).
+name: Renew install certificate
+on:
+  schedule: [{ cron: "17 5 * * *" }]      # daily; a run only issues when fewer than 30 days remain (works for 90- and 64-day certificates)
+  workflow_dispatch:
+    inputs:
+      force: { description: "Issue even if the published certificate is fresh", type: boolean, default: false }
+permissions: { contents: read, pages: write, id-token: write }
+concurrency: { group: install-cert, cancel-in-progress: false }
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    environment: { name: github-pages, url: "${{ steps.deploy.outputs.page_url }}" }
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - name: Decide whether to renew
+        id: need
+        env: { INSTALL_DOMAIN: "${{ vars.INSTALL_DOMAIN }}", FORCE: "${{ inputs.force }}" }
+        run: |
+          [ -n "$INSTALL_DOMAIN" ] || { echo "Set the INSTALL_DOMAIN variable"; exit 1; }
+          url="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/cert.json"
+          days=$(curl -fsS "$url" 2>/dev/null | python3 -c "import sys,json,datetime;d=json.load(sys.stdin);print((datetime.datetime.strptime(d['notAfter'],'%Y-%m-%dT%H:%M:%SZ')-datetime.datetime.utcnow()).days)" 2>/dev/null || echo -1)
+          echo "published certificate has $days days left"
+          if [ "$FORCE" = "true" ] || [ "$days" -lt 30 ]; then echo "renew=true" >> "$GITHUB_OUTPUT"; else echo "renew=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Issue certificate
+        if: steps.need.outputs.renew == 'true'
+        env: { DuckDNS_Token: "${{ secrets.DUCKDNS_TOKEN }}", INSTALL_DOMAIN: "${{ vars.INSTALL_DOMAIN }}" }
+        run: |
+          git clone https://github.com/acmesh-official/acme.sh "$RUNNER_TEMP/acme"
+          git -C "$RUNNER_TEMP/acme" checkout --quiet 807da6498377ee5e0cf43a78091f46f12dc59a89   # v3.1.6, pinned to the commit
+          ACME_SH="$RUNNER_TEMP/acme/acme.sh" scripts/make-install-cert.sh "$INSTALL_DOMAIN" site
+          printf '<!doctype html><meta charset="utf-8"><title>Wax install certificate</title><p>This file is used by Wax so an iPhone can install apps from itself. It is public on purpose.</p>' > site/index.html
+      - uses: actions/configure-pages@v5
+        if: steps.need.outputs.renew == 'true'
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.need.outputs.renew == 'true'
+        with: { path: site }
+      - id: deploy
+        if: steps.need.outputs.renew == 'true'
+        uses: actions/deploy-pages@v4
