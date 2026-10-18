@@ -1,0 +1,51 @@
+name: SigningTestApp
+options:
+  deploymentTarget:
+    iOS: "15.0"
+targets:
+  SigningTestApp:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+        excludes: [note.txt]
+      - path: App/note.txt
+        buildPhase: resources
+    dependencies:
+      - target: TestKit
+      - target: TestExt
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.localsigner.testapp
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_CFBundleDisplayName: SigningTestApp
+        TARGETED_DEVICE_FAMILY: "1"
+        ARCHS: arm64
+        CODE_SIGNING_ALLOWED: NO
+  TestKit:
+    type: framework
+    platform: iOS
+    sources: [Kit]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.localsigner.testapp.TestKit
+        GENERATE_INFOPLIST_FILE: YES
+        ARCHS: arm64
+        CODE_SIGNING_ALLOWED: NO
+  TestExt:
+    type: app-extension
+    platform: iOS
+    sources: [Ext]
+    info:
+      path: Ext/Info.plist
+      properties:
+        CFBundleDisplayName: TestExt
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).Service
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.localsigner.testapp.TestExt
+        ARCHS: arm64
+        CODE_SIGNING_ALLOWED: NO
