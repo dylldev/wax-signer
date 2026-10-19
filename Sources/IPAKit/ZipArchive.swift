@@ -76,7 +76,9 @@ final class ZipArchive {
     }
 
     /// A fresh stream is always used for extraction. Previously inspected bytes must agree with this read.
-    func extract(_ entry: ZipEntry, to url: URL) throws {
+    func extract(_ entry: ZipEntry, to url: URL, checkpoint: (() throws -> Void)? = nil,
+                 beforeWrite: ((Int) throws -> Void)? = nil) throws {
+        try checkpoint?()
         guard FileManager.default.createFile(atPath: url.path, contents: nil) else { throw IPAError.unreadable(url.path) }
         let out = try FileHandle(forWritingTo: url)
         var closed = false, success = false
@@ -85,22 +87,25 @@ final class ZipArchive {
             if !success { try? FileManager.default.removeItem(at: url) }
         }
         try out.truncate(atOffset: 0)
-        _ = try stream(entry) { try out.write(contentsOf: $0) }
+        _ = try stream(entry, checkpoint: checkpoint) { try beforeWrite?($0.count); try out.write(contentsOf: $0) }
         try out.close(); closed = true; success = true
     }
 
     /// Bounded streaming decode with exact compressed-input consumption, size, CRC and cryptographic fingerprints.
-    private func stream(_ entry: ZipEntry, emit: (Data) throws -> Void) throws -> ZipFingerprint {
+    private func stream(_ entry: ZipEntry, checkpoint: (() throws -> Void)? = nil, emit: (Data) throws -> Void) throws -> ZipFingerprint {
+        try checkpoint?()
         let start = try payloadStart(of: entry)
         guard entry.method == 0 || entry.method == 8 else { throw IPAError.unsupportedZip("compression method \(entry.method)") }
         var rawHash = SHA256(), hash = SHA256(), crc = CRC32.begin(), written = 0
         var remaining = entry.compressedSize, offset = start
         func output(_ data: Data) throws {
+            try checkpoint?()
             guard data.count <= entry.uncompressedSize - written else { throw IPAError.corruptEntry(entry.name) }
             written += data.count; hash.update(data: data); crc = CRC32.update(crc, data)
             try emit(data)
         }
         func input() throws -> Data {
+            try checkpoint?()
             let n = min(256 * 1024, remaining), data = try read(at: offset, count: min(256 * 1024, remaining))
             offset += n; remaining -= n; rawHash.update(data: data)
             return data
