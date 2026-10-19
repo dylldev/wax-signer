@@ -1,0 +1,9 @@
+# R4 distribution correctness
+
+Baseline `8ad4b2e`; distribution baseline `d4d4ca7`. Original `Source/make_source.py:37–48,71–75` formed unencoded IPA URLs and hard-coded inspector-only copy; historical entries were retained without verifying their files. The validator trusted schema indexing and omitted SHA-256/parity checks. Distribution `apps.json` and `index.html` referenced the old account despite canonical Pages resolving at dylldev.github.io.
+
+Generation now requires explicit per-binary capabilities and an opaque icon, derives actual artifact metadata/hash, verifies each copied IPA, emits checksum sidecars and encoded/deep links, and refuses populated output directories or unavailable/mismatched history. Validation streams IPA downloads to scratch storage, checks ZIP/plist/size/hash/checksum, schema, legacy parity and the local stage allowlist. Source/README.md documents review, postdeploy verification and legacy bundle-ID migration limits. No binary is rebuilt or published.
+
+Local command: `python3 -m unittest discover -s Source -p 'test_*.py'` — 11 cases pass. Actual macOS CI and PR links are recorded in the master checkpoint/PR, not inferred from these Python tests. Device ingestion, deployment and a current tested release remain open gates. New CLI requires `--capabilities` and `--icon`; this intentionally rejects formerly incomplete stages. Memory is bounded for IPA hash/download operations; ZIP testzip and plist metadata reads preserve stdlib compatibility. No iPhone speed claim.
+
+The companion distribution diff preserves the public 1,254,084-byte 0.3.2/build 7 IPA (`dev.localsigner.app`) with SHA-256 `f2afa54a7e2dbf50a72307a4ae394fa41e15ded71a67be5b71ed61174e3f9fbd`; only metadata, copy and a checksum sidecar change. Legacy limitations remain explicit. All deployed URLs need another smoke test after owner-approved publication; neither PR is authorized to deploy.
