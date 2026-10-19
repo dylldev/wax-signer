@@ -25,6 +25,7 @@ public enum SourceStoreError: Error, LocalizedError, Equatable {
 public final class SourceStore: @unchecked Sendable {
     private let directory: URL
     private let session: URLSession
+    private let budget: DownloadBudget
     private let lock = NSLock()
     private var saved: [SavedSource]
 
@@ -33,9 +34,11 @@ public final class SourceStore: @unchecked Sendable {
     private func cacheURL(_ id: UUID) -> URL { directory.appendingPathComponent("cache-\(id.uuidString).json") }
     private func etagURL(_ id: UUID) -> URL { directory.appendingPathComponent("cache-\(id.uuidString).etag") }
 
-    public init(directory: URL, session: URLSession = .shared) {
+    public init(directory: URL, session: URLSession = .shared, budget: DownloadBudget? = nil) {
         self.directory = directory
         self.session = session
+        let desired = budget ?? DownloadBudget(maxBytes: Int64(Self.maxBytes), deadline: 60)
+        self.budget = DownloadBudget(maxBytes: min(Int64(Self.maxBytes), desired.maxBytes), deadline: desired.deadline, minimumFreeBytes: desired.minimumFreeBytes)
         let data = try? Data(contentsOf: directory.appendingPathComponent("sources.json"))
         saved = data.flatMap { try? JSONDecoder().decode([SavedSource].self, from: $0) } ?? []
     }
@@ -101,9 +104,13 @@ public final class SourceStore: @unchecked Sendable {
         var request = URLRequest(url: url); request.timeoutInterval = 60
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let etag, fallback != nil { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
-        // To a file, not memory: a hostile source cannot fill RAM before the size check.
+        // Enforce actual received-byte and total-time limits while the transfer is active.
         let file: URL, response: URLResponse
-        do { (file, response) = try await session.download(for: request) }
+        do {
+            let result = try await BoundedDownload.fetch(request, session: session, budget: budget)
+            (file, response) = (result.file, result.response)
+        } catch BoundedDownloadError.tooLarge { throw SourceStoreError.tooLarge }
+        catch is CancellationError { throw CancellationError() }
         catch { throw SourceStoreError.unreachable(error.localizedDescription) }
         defer { try? FileManager.default.removeItem(at: file) }
         let http = response as? HTTPURLResponse
