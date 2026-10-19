@@ -78,6 +78,20 @@ final class OTASessionOutcomeTests: XCTestCase {
         XCTAssertThrowsError(try model.reserve()) { XCTAssertTrue($0.localizedDescription.contains("active")) }
         model.release(session); XCTAssertTrue(model.canInstall)
     }
+    func testAlreadyCanceledCallerCannotLeakAReservationOrReportRemoteCompletion() async throws {
+        let model = model()
+        let canceled = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await self.upload(model)
+        }
+        let link = await canceled.value; XCTAssertNil(link); XCTAssertNil(model.activeSession); XCTAssertEqual(model.state, .idle)
+        let session = try model.reserve(); _ = await upload(model, session)
+        let completion = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await model.finishPhoneTransfer(session: session)
+        }
+        let delivered = await completion.value; XCTAssertFalse(delivered); XCTAssertNil(model.activeSession); try assertArtifact()
+    }
     func testDelayedPhoneReadinessCannotBeReplacedByAnIdentityTest() async throws {
         let entered = expectation(description: "preparation"), ready = SessionGate()
         let model = model(phone: { _ in entered.fulfill(); await ready.wait(); return .init(publisher: ImmediatePublisher()) })

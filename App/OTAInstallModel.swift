@@ -322,6 +322,7 @@ final class OTAInstallModel: ObservableObject {
     /// Completion uses the original reservation/host, never the current Settings selection.
     func finishPhoneTransfer(session: Session, timeout: TimeInterval = 600, releaseWhenFinished: Bool = true) async -> Bool {
         guard owns(session), state == .handedToiOS, session.deliveryTask == nil, !session.deliveryFinished else { return false }
+        guard !Task.isCancelled else { cancel(session); return false }
         guard session.kind == .phone else {
             session.deliveryFinished = true
             if releaseWhenFinished { release(session) }
@@ -350,6 +351,10 @@ final class OTAInstallModel: ObservableObject {
     /// Legacy callers can omit a reservation, but all app flows reserve before doing other async work.
     func upload(ipa: URL, bundleIdentifier: String, version: String, build: String = "", title: String,
                 session reserved: Session? = nil) async -> URL? {
+        if Task.isCancelled {
+            if let reserved { cancel(reserved) }
+            return nil
+        }
         let session: Session
         do { session = try reserved ?? reserve() }
         catch { if activeSession == nil { state = .failed(error.localizedDescription) }; return nil }

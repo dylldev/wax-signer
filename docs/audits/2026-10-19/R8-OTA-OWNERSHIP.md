@@ -20,7 +20,7 @@ Original anchors at bucket head `0760cf52adb02a47cfb5ae0dcb853a20a27f147a`: `App
 
 ## Regression coverage and verification
 
-`Tests/AppModelTests/OTASessionOutcomeTests.swift`: deterministic async gates exercise busy-before-await; probe-versus-install admission; late readiness disposal; parent cancellation; immutable endpoint/token; host changes during delivery; stale delivery/upload/progress; once-only publication/completion; canceled signing/polling; failed upload retaining output; identity-bound observations. Synthetic publishers deliberately ignore cancellation so stale callback safety is tested independently of URLSession cooperation.
+`Tests/AppModelTests/OTASessionOutcomeTests.swift`: deterministic async gates exercise already-canceled admission/completion; busy-before-await; probe-versus-install admission; late readiness disposal; parent cancellation; immutable endpoint/token; host changes during delivery; stale delivery/upload/progress; once-only publication/completion; canceled signing/polling; failed upload retaining output; identity-bound observations. Synthetic publishers deliberately ignore cancellation so stale callback safety is tested independently of URLSession cooperation.
 
 Swift frontend parsing of changed Swift sources/tests succeeds in the offline Swift 6.2.3 Linux container. This is syntax verification, not Apple framework typechecking. Full package, unsigned iOS build and Simulator outcome tests are required on macOS CI; results will be recorded after execution. Existing bucket, background, loopback, R1/R2 and signing suites remain enabled.
 

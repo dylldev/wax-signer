@@ -121,7 +121,7 @@ final class SigningModel: ObservableObject {
     /// Nothing is uploaded unless signing succeeded and its self-check passed. Keeps going if Wax is sent to the
     /// background, and posts a notification when the app is ready to install.
     func signAndInstall(ota: OTAInstallModel, open: @escaping (URL) -> Void) async {
-        guard !installing else { return }
+        guard !installing, !Task.isCancelled else { return }
         let session: OTAInstallModel.Session
         do { session = try ota.reserve() }
         catch { errorText = error.localizedDescription; return }
