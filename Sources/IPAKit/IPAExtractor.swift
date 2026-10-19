@@ -5,7 +5,7 @@ import Foundation
 public enum IPAExtractor {
     public struct Limits {
         public var maxTotalBytes: Int = 6 * 1024 * 1024 * 1024
-        public var maxEntries: Int = 65_535
+        public var maxEntries: Int = 65_534
         public init() {}
     }
 
@@ -26,7 +26,12 @@ public enum IPAExtractor {
     @discardableResult
     public static func extract(ipa: URL, to directory: URL, limits: Limits = Limits(),
                                progress: ((Int, Int) -> Void)? = nil, byteProgress: ((Double) -> Void)? = nil) throws -> [String] {
-        let zip = try ZipArchive(url: ipa)
+        try IPAArchiveSession(url: ipa).extract(to: directory, limits: limits, progress: progress, byteProgress: byteProgress).names
+    }
+
+    static func extract(session: IPAArchiveSession, to directory: URL, limits: Limits,
+                        progress: ((Int, Int) -> Void)?, byteProgress: ((Double) -> Void)?) throws -> IPAExtractionInventory {
+        let zip = session.zip
         guard zip.entries.count <= limits.maxEntries else { throw IPAError.unsupportedZip("too many entries") }
         let total = zip.entries.reduce(0) { $0 + $1.uncompressedSize }
         guard total <= limits.maxTotalBytes else {
@@ -152,6 +157,6 @@ public enum IPAExtractor {
             }
         }
         if let failure { throw failure }
-        return names
+        return IPAExtractionInventory(names: names, session: session, directory: directory.standardizedFileURL.resolvingSymlinksInPath())
     }
 }

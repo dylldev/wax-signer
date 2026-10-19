@@ -109,4 +109,27 @@ final class IPASignerTests: XCTestCase {
         _ = try? sign(Fixtures.ipa, edits: e)
         XCTAssertEqual(try Data(contentsOf: first.output), before, "the previous signed IPA must not be lost")
     }
+    func testMutationAfterSelfCheckCannotReachPublishedIPA() throws {
+        let first = try sign(Fixtures.ipa)
+        let previous = try Data(contentsOf: first.output)
+        let creds = try TestCredentials(p12: FixtureData.p12ValidLegacy)
+        for resource in ["SigningTestApp", "_CodeSignature/CodeResources"] {
+            var changed = false
+            XCTAssertThrowsError(try IPASigner.sign(ipa: Fixtures.ipa, identity: creds.signer, certificateTeamID: creds.loaded.teamID,
+                profiles: ProfileSet(single: try ProvisioningProfile.parse(FixtureData.profileWildcardAll)),
+                output: first.output, workDirectory: work, progress: { state in
+                    guard state.message == "Packing…", !changed else { return }
+                    let jobs = try! FileManager.default.contentsOfDirectory(at: self.work, includingPropertiesForKeys: nil)
+                    let job = jobs.first { $0.lastPathComponent.hasPrefix("sign-") }!
+                    let file = job.appendingPathComponent("tree/Payload/SigningTestApp.app/" + resource)
+                    try! Data("changed after verification".utf8).write(to: file)
+                    changed = true
+                })) { error in
+                    guard case IPAError.integrity = error else { return XCTFail("expected integrity rejection, got \(error)") }
+                }
+            XCTAssertTrue(changed)
+            XCTAssertEqual(try Data(contentsOf: first.output), previous)
+        }
+    }
+
 }

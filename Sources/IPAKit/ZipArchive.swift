@@ -1,8 +1,10 @@
-import Compression
+import CryptoKit
+import zlib
 import Foundation
 
 struct ZipEntry {
     let name: String
+    let flags: UInt16
     let method: UInt16
     let crc32: UInt32
     let compressedSize: Int
@@ -22,16 +24,20 @@ struct ZipEntry {
 final class ZipArchive {
     /// Cap for a single in-memory entry. We only read plists, never binaries.
     static let maxEntryBytes = 16 * 1024 * 1024
-    private static let maxCentralDirectoryBytes = 64 * 1024 * 1024
+    static let maxCentralDirectoryBytes = 64 * 1024 * 1024
 
     let entries: [ZipEntry]
     private let handle: FileHandle
     private let fileSize: Int
+    private let fingerprintLock = NSLock()
+    private var observed: [String: ZipFingerprint] = [:]
 
     init(url: URL) throws {
         do {
             handle = try FileHandle(forReadingFrom: url)
-            fileSize = Int(try handle.seekToEnd())
+            let size = try handle.seekToEnd()
+            guard size <= UInt64(ClassicZIP.maxBytes) else { throw IPAError.unsupportedZip("archive exceeds classic ZIP limit") }
+            fileSize = Int(size)
         } catch {
             throw IPAError.unreadable(error.localizedDescription)
         }
@@ -42,109 +48,105 @@ final class ZipArchive {
 
     deinit { try? handle.close() }
 
-    /// Streams an entry's stored bytes (still compressed) without inflating them.
-    func copyRaw(_ entry: ZipEntry, to write: (Data) throws -> Void) throws {
-        guard entry.method == 0 || entry.method == 8 else { throw IPAError.unsupportedZip("compression method \(entry.method)") }
+    /// Compressed bytes are copied only from this open source and checked against the same extraction read.
+    func copyRaw(_ entry: ZipEntry, expecting expected: ZipFingerprint, to write: (Data) throws -> Void) throws {
         let start = try payloadStart(of: entry)
-        var remaining = entry.compressedSize, offset = start
+        var remaining = entry.compressedSize, offset = start, hash = SHA256()
         while remaining > 0 {
-            let n = min(1 << 20, remaining)
-            try write(try read(at: offset, count: n))
-            offset += n; remaining -= n
+            let n = min(256 * 1024, remaining), data = try read(at: offset, count: min(256 * 1024, remaining))
+            hash.update(data: data); try write(data); offset += n; remaining -= n
+        }
+        guard Data(hash.finalize()) == expected.compressedSHA256 else {
+            throw IPAError.integrity("original archive changed while reusing \(entry.name)")
         }
     }
 
     func data(for entry: ZipEntry) throws -> Data {
-        guard entry.uncompressedSize <= Self.maxEntryBytes,
-              entry.compressedSize <= Self.maxEntryBytes + 65536 else {
+        guard entry.uncompressedSize <= Self.maxEntryBytes, entry.compressedSize <= Self.maxEntryBytes + 65536 else {
             throw IPAError.unsupportedZip("entry too large: \(entry.name)")
         }
-        let start = try payloadStart(of: entry)
-        let raw = try read(at: start, count: entry.compressedSize)
-
-        let out: Data
-        switch entry.method {
-        case 0:
-            out = raw
-        case 8:
-            out = try Self.inflate(raw, expected: entry.uncompressedSize, name: entry.name)
-        default:
-            throw IPAError.unsupportedZip("compression method \(entry.method)")
-        }
-        guard out.count == entry.uncompressedSize, CRC32.checksum(out) == entry.crc32 else {
-            throw IPAError.corruptEntry(entry.name)
-        }
-        return out
+        var data = Data()
+        _ = try stream(entry) { data.append($0) }
+        return data
     }
 
-    // MARK: - Streaming extraction
+    func fingerprint(_ entry: ZipEntry) throws -> ZipFingerprint {
+        fingerprintLock.lock(); let cached = observed[entry.name]; fingerprintLock.unlock()
+        return try cached ?? stream(entry, emit: { _ in })
+    }
 
-    /// Writes one entry to `url` without holding it in memory. Verifies size and CRC32.
+    /// A fresh stream is always used for extraction. Previously inspected bytes must agree with this read.
     func extract(_ entry: ZipEntry, to url: URL) throws {
+        guard FileManager.default.createFile(atPath: url.path, contents: nil) else { throw IPAError.unreadable(url.path) }
+        let out = try FileHandle(forWritingTo: url)
+        var closed = false, success = false
+        defer {
+            if !closed { try? out.close() }
+            if !success { try? FileManager.default.removeItem(at: url) }
+        }
+        try out.truncate(atOffset: 0)
+        _ = try stream(entry) { try out.write(contentsOf: $0) }
+        try out.close(); closed = true; success = true
+    }
+
+    /// Bounded streaming decode with exact compressed-input consumption, size, CRC and cryptographic fingerprints.
+    private func stream(_ entry: ZipEntry, emit: (Data) throws -> Void) throws -> ZipFingerprint {
         let start = try payloadStart(of: entry)
-        guard entry.method == 0 || entry.method == 8 else {
-            throw IPAError.unsupportedZip("compression method \(entry.method)")
+        guard entry.method == 0 || entry.method == 8 else { throw IPAError.unsupportedZip("compression method \(entry.method)") }
+        var rawHash = SHA256(), hash = SHA256(), crc = CRC32.begin(), written = 0
+        var remaining = entry.compressedSize, offset = start
+        func output(_ data: Data) throws {
+            guard data.count <= entry.uncompressedSize - written else { throw IPAError.corruptEntry(entry.name) }
+            written += data.count; hash.update(data: data); crc = CRC32.update(crc, data)
+            try emit(data)
         }
-
-        FileManager.default.createFile(atPath: url.path, contents: nil)
-        let out: FileHandle
-        do { out = try FileHandle(forWritingTo: url) } catch { throw IPAError.unreadable(error.localizedDescription) }
-        defer { try? out.close() }
-
-        var crc = CRC32.begin()
-        var written = 0
-        func emit(_ chunk: Data) throws {
-            guard !chunk.isEmpty else { return }
-            written += chunk.count
-            guard written <= entry.uncompressedSize else { throw IPAError.corruptEntry(entry.name) }
-            crc = CRC32.update(crc, chunk)
-            try out.write(contentsOf: chunk)
+        func input() throws -> Data {
+            let n = min(256 * 1024, remaining), data = try read(at: offset, count: min(256 * 1024, remaining))
+            offset += n; remaining -= n; rawHash.update(data: data)
+            return data
         }
-
-        let chunkSize = 256 * 1024
-        var remaining = entry.compressedSize
-        var offset = start
         if entry.method == 0 {
-            while remaining > 0 {
-                let n = min(chunkSize, remaining)
-                try emit(try read(at: offset, count: n))
-                offset += n; remaining -= n
-            }
+            while remaining > 0 { try output(input()) }
         } else {
-            guard let stream = CompressionStream(COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB) else {
+            var decoder = z_stream()
+            guard inflateInit2_(&decoder, -MAX_WBITS, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else {
                 throw IPAError.corruptEntry(entry.name)
             }
-            var dst = [UInt8](repeating: 0, count: chunkSize)
-            var finished = false
+            defer { inflateEnd(&decoder) }
+            var buffer = [UInt8](repeating: 0, count: 256 * 1024), finished = false
             while !finished {
-                let n = min(chunkSize, remaining)
-                let src = n > 0 ? try read(at: offset, count: n) : Data()
-                offset += n; remaining -= n
-                let final = remaining == 0
-                try src.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                    stream.feed(raw.bindMemory(to: UInt8.self).baseAddress, raw.count)
-                    var idle = 0
+                let data = try input()
+                try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                    decoder.next_in = UnsafeMutablePointer(mutating: raw.bindMemory(to: UInt8.self).baseAddress)
+                    decoder.avail_in = UInt32(raw.count)
                     repeat {
-                        let before = stream.pendingInput
-                        let status = dst.withUnsafeMutableBufferPointer { stream.drain(into: $0, finalize: final) }
-                        let produced = chunkSize - stream.pendingOutput
-                        if produced > 0 { try emit(Data(dst[0..<produced])) }
-                        switch status {
-                        case COMPRESSION_STATUS_END: finished = true
-                        case COMPRESSION_STATUS_OK: break
-                        default: throw IPAError.corruptEntry(entry.name)
+                        let before = decoder.avail_in
+                        let status = buffer.withUnsafeMutableBufferPointer { dst in
+                            decoder.next_out = dst.baseAddress!; decoder.avail_out = UInt32(dst.count)
+                            return inflate(&decoder, Z_NO_FLUSH)
                         }
-                        // After the last input the decoder must be called until it reports END.
-                        idle = (produced == 0 && stream.pendingInput == before) ? idle + 1 : 0
-                        if idle > 2 { throw IPAError.corruptEntry(entry.name) }
-                    } while !finished && (stream.pendingInput > 0 || stream.pendingOutput == 0 || final)
+                        let produced = buffer.count - Int(decoder.avail_out)
+                        if produced > 0 { try output(Data(buffer.prefix(produced))) }
+                        if status == Z_STREAM_END {
+                            guard remaining == 0, decoder.avail_in == 0, decoder.total_in == entry.compressedSize else {
+                                throw IPAError.corruptEntry(entry.name)
+                            }
+                            finished = true; break
+                        }
+                        guard status == Z_OK, produced > 0 || decoder.avail_in < before else { throw IPAError.corruptEntry(entry.name) }
+                    } while decoder.avail_in > 0 || decoder.avail_out == 0 || remaining == 0
                 }
-                if final && !finished { throw IPAError.corruptEntry(entry.name) }
             }
         }
-        guard written == entry.uncompressedSize, CRC32.finish(crc) == entry.crc32 else {
-            throw IPAError.corruptEntry(entry.name)
+        guard written == entry.uncompressedSize, CRC32.finish(crc) == entry.crc32 else { throw IPAError.corruptEntry(entry.name) }
+        let result = ZipFingerprint(file: FileFingerprint(sha256: Data(hash.finalize()), crc32: CRC32.finish(crc), size: written),
+                                    compressedSHA256: Data(rawHash.finalize()))
+        fingerprintLock.lock(); defer { fingerprintLock.unlock() }
+        if let previous = observed[entry.name], previous != result {
+            throw IPAError.integrity("original archive changed since inspection/extraction: \(entry.name)")
         }
+        observed[entry.name] = result
+        return result
     }
 
     /// Where an entry's stored bytes begin: past its local file header and variable-length fields.
@@ -184,7 +186,7 @@ final class ZipArchive {
         if count == 0xFFFF || cdSize == 0xFFFF_FFFF || cdOffset == 0xFFFF_FFFF {
             throw IPAError.unsupportedZip("zip64")
         }
-        guard cdSize <= maxCentralDirectoryBytes, cdOffset + cdSize <= fileSize else { throw IPAError.notAZip }
+        guard cdSize <= maxCentralDirectoryBytes, cdOffset + cdSize <= fileSize - tailLen + eocd else { throw IPAError.notAZip }
 
         let cd = try read(cdOffset, cdSize)
         var entries: [ZipEntry] = []
@@ -195,7 +197,7 @@ final class ZipArchive {
             let nameLen = Int(cd.u16(p + 28))
             let extraLen = Int(cd.u16(p + 30))
             let commentLen = Int(cd.u16(p + 32))
-            guard p + 46 + nameLen <= cd.count else { throw IPAError.notAZip }
+            guard nameLen > 0, p + 46 + nameLen + extraLen + commentLen <= cd.count, cd.u16(p + 34) == 0 else { throw IPAError.notAZip }
             let nameBytes = cd.subdata(in: (p + 46)..<(p + 46 + nameLen))
             guard let name = String(bytes: nameBytes, encoding: .utf8) else {
                 throw IPAError.unsafePath(String(decoding: nameBytes, as: UTF8.self))
@@ -206,7 +208,7 @@ final class ZipArchive {
             if comp == 0xFFFF_FFFF || uncomp == 0xFFFF_FFFF || local == 0xFFFF_FFFF {
                 throw IPAError.unsupportedZip("zip64")
             }
-            entries.append(ZipEntry(name: name, method: cd.u16(p + 10), crc32: cd.u32(p + 16),
+            entries.append(ZipEntry(name: name, flags: flags, method: cd.u16(p + 10), crc32: cd.u32(p + 16),
                                     compressedSize: Int(comp), uncompressedSize: Int(uncomp),
                                     localHeaderOffset: Int(local),
                                     externalAttributes: cd.u32(p + 38), madeByUnix: cd.u16(p + 4) >> 8 == 3))
@@ -237,13 +239,25 @@ final class ZipArchive {
 
             let localName = try read(at: e.localHeaderOffset + 30, count: nameLen)
             let flags = header.u16(6)
-            guard localName == Data(e.name.utf8), header.u16(8) == e.method, flags & 1 == 0 else {
+            guard localName == Data(e.name.utf8), header.u16(8) == e.method, flags == e.flags, flags & 1 == 0 else {
                 throw IPAError.corruptEntry(e.name)
             }
             // Bit 3: sizes/CRC live in a trailing data descriptor, local fields are zero.
             if flags & 8 == 0 {
                 guard header.u32(14) == e.crc32, Int(header.u32(18)) == e.compressedSize,
                       Int(header.u32(22)) == e.uncompressedSize else { throw IPAError.corruptEntry(e.name) }
+            } else {
+                let end = dataStart + e.compressedSize
+                guard end + 12 <= limit else { throw IPAError.corruptEntry(e.name) }
+                let dd = try read(at: end, count: min(16, limit - end))
+                func matches(_ o: Int) -> Bool {
+                    dd.count >= o + 12 && dd.u32(o) == e.crc32 && Int(dd.u32(o + 4)) == e.compressedSize
+                        && Int(dd.u32(o + 8)) == e.uncompressedSize
+                }
+                guard matches(0) || (dd.u32(0) == 0x08074b50 && matches(4)) else { throw IPAError.corruptEntry(e.name) }
+                guard (header.u32(14) == 0 || header.u32(14) == e.crc32),
+                      (header.u32(18) == 0 || Int(header.u32(18)) == e.compressedSize),
+                      (header.u32(22) == 0 || Int(header.u32(22)) == e.uncompressedSize) else { throw IPAError.corruptEntry(e.name) }
             }
         }
     }
@@ -264,17 +278,7 @@ final class ZipArchive {
         return data
     }
 
-    private static func inflate(_ raw: Data, expected: Int, name: String) throws -> Data {
-        if expected == 0 { return Data() }
-        // One spare byte: a stream longer than declared must fail, not be silently truncated.
-        var dst = [UInt8](repeating: 0, count: expected + 1)
-        let n = raw.withUnsafeBytes { src -> Int in
-            guard let base = src.bindMemory(to: UInt8.self).baseAddress else { return 0 }
-            return compression_decode_buffer(&dst, expected + 1, base, raw.count, nil, COMPRESSION_ZLIB)
-        }
-        guard n == expected else { throw IPAError.corruptEntry(name) }
-        return Data(dst[0..<expected])
-    }
+
 }
 
 private extension Data {

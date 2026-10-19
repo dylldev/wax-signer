@@ -8,6 +8,8 @@ struct ZipFixture {
         var name: String
         var data: Data
         var deflate = false
+        /// Explicit raw compressed bytes for deterministic decoder/reuse fixtures.
+        var encodedData: Data?
         var corruptCRC = false
         var encrypted = false
         /// Name written to the local header only (central keeps `name`).
@@ -21,6 +23,7 @@ struct ZipFixture {
         var centralOffset: UInt32?
         /// Unix mode (e.g. 0o120777 for a symlink); written as a Unix-host entry.
         var unixMode: UInt32?
+        var externalAttributes: UInt32?
     }
 
     var entries: [Entry] = []
@@ -40,7 +43,7 @@ struct ZipFixture {
         var out = Data()
         var central = Data()
         for e in entries {
-            let stored = e.deflate ? Self.deflate(e.data) : e.data
+            let stored = e.encodedData ?? (e.deflate ? Self.deflate(e.data) : e.data)
             let crc = e.claimedCRC ?? (CRC32.checksum(e.data) ^ (e.corruptCRC ? 1 : 0))
             let name = e.rawName ?? Data(e.name.utf8)
             let localName = e.localName.map { Data($0.utf8) } ?? name
@@ -60,7 +63,7 @@ struct ZipFixture {
             central.le16(0); central.le16(0); central.le32(crc)
             central.le32(comp); central.le32(uncomp)
             central.le16(UInt16(name.count)); central.le16(0); central.le16(0)
-            central.le16(0); central.le16(0); central.le32((e.unixMode ?? 0) << 16); central.le32(e.centralOffset ?? offset)
+            central.le16(0); central.le16(0); central.le32(e.externalAttributes ?? ((e.unixMode ?? 0) << 16)); central.le32(e.centralOffset ?? offset)
             central.append(name)
         }
         let cdOffset = UInt32(out.count)

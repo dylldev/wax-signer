@@ -1,133 +1,119 @@
 import Compression
+import CryptoKit
 import Foundation
 
-/// Writes a directory tree as an IPA (zip). Streams file data (deflate) with data descriptors, records Unix
-/// permissions and symlinks. Classic zip only: no zip64, so more than 65,535 entries or 4 GiB is refused.
+/// Writes and validates a staged classic ZIP, then atomically promotes it. ZIP64 sentinels are refused.
 public enum IPAArchiver {
-    /// - Parameter reusing: the archive these files came from. A file whose size and CRC32 still match its entry
-    ///   there is copied across in its original compressed form instead of being compressed again, which is most of
-    ///   the work for a signed app. Anything missing, changed or unreadable is compressed as usual.
-    /// - Parameter compressChangedFiles: `false` writes big changed files as stored (uncompressed) entries. That is much
-    ///   faster and fine when the archive only travels inside the phone to be installed; keep `true` for exports.
-    /// - Parameter byteProgress: fraction (0...1) of the uncompressed bytes handled so far.
+    /// Original compressed bytes are reused only after SHA-256 content identity has been established.
+    /// An extraction inventory avoids reading/decompressing the original entries a second time.
+    /// `compressChangedFiles: false` stores changed files of at least 2 MiB without compression.
+    /// `verifiedManifest` must be captured before verifying the bundle; packaging must preserve that snapshot.
+    /// `validateArchive` runs on the private candidate before the mandatory final integrity gate.
     public static func archive(directory: URL, to output: URL, rootFolder: String = "Payload", reusing original: URL? = nil,
-                               compressChangedFiles: Bool = true, progress: ((Int, Int) -> Void)? = nil, byteProgress: ((Double) -> Void)? = nil) throws {
+                               compressChangedFiles: Bool = true, progress: ((Int, Int) -> Void)? = nil,
+                               byteProgress: ((Double) -> Void)? = nil, reusingExtraction inventory: IPAExtractionInventory? = nil,
+                               verifiedManifest: IPAArchiveManifest? = nil, validateArchive: ((URL) throws -> Void)? = nil) throws {
         let fm = FileManager.default
-        let source = original.flatMap { try? ZipArchive(url: $0) }
-        let reusable = Dictionary(uniqueKeysWithValues: (source?.entries ?? []).filter { !$0.isDirectory && !$0.isSymlink }.map { ($0.name, $0) })
-        let base = directory.appendingPathComponent(rootFolder)
-        guard (try? base.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { throw IPAError.noApp }
-
-        // Deterministic order: the root folder, then everything beneath it sorted by path.
-        var items: [(rel: String, url: URL)] = [("\(rootFolder)/", base)]
-        guard let walker = fm.enumerator(at: base, includingPropertiesForKeys: nil, options: []) else { throw IPAError.noApp }
-        let baseResolved = base.resolvingSymlinksInPath().path
-        var found: [(String, URL)] = []
-        for case let url as URL in walker {
-            // Resolve only the parent so a symlink entry keeps its own name.
-            let full = url.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent(url.lastPathComponent).path
-            guard full.hasPrefix(baseResolved + "/") else { continue }
-            found.append((rootFolder + "/" + String(full.dropFirst(baseResolved.count + 1)), url))
+        let manifest = try verifiedManifest ?? IPAArchiveManifest.capture(directory: directory, rootFolder: rootFolder)
+        guard manifest.directory == directory.standardizedFileURL.resolvingSymlinksInPath(), manifest.rootFolder == rootFolder else {
+            throw IPAError.integrity("snapshot belongs to a different working tree")
         }
-        found.sort { $0.0 < $1.0 }
-        items += found.map { ($0.0, $0.1) }
-        guard items.count <= 65_535 else { throw IPAError.unsupportedZip("zip64 would be required (too many entries)") }
+        let items = manifest.records.values.sorted { $0.name < $1.name }
+        try ClassicZIP.entryCount(items.count)
+        let source: ZipArchive?
+        if let inventory {
+            guard inventory.directory == manifest.directory,
+                  original == nil || original!.standardizedFileURL == inventory.session.url else {
+                throw IPAError.integrity("extraction inventory belongs to a different source or working tree")
+            }
+            source = inventory.session.zip
+        } else {
+            source = try original.map { try ZipArchive(url: $0) }
+        }
+        let reusable = Dictionary(uniqueKeysWithValues: (source?.entries ?? []).filter { !$0.isDirectory && !$0.isSymlink }.map { ($0.name, $0) })
+        var reuse: [String: (ZipEntry, ZipFingerprint)] = [:]
+        var centralBytes = 0
+        for item in items {
+            centralBytes += 46 + (try ClassicZIP.name(item.name)).count
+            if let expected = item.fingerprint, let old = reusable[item.name], old.uncompressedSize == expected.size, let source {
+                let fingerprint = try source.fingerprint(old)
+                if fingerprint.file == expected { reuse[item.name] = (old, fingerprint) }
+            }
+        }
+        guard centralBytes <= ZipArchive.maxCentralDirectoryBytes else { throw IPAError.unsupportedZip("central directory is too large") }
+        let outputPath = output.standardizedFileURL.resolvingSymlinksInPath().path
+        let rootPath = manifest.directory.appendingPathComponent(rootFolder).resolvingSymlinksInPath().path
+        guard outputPath != rootPath, !outputPath.hasPrefix(rootPath + "/") else { throw IPAError.integrity("output is inside the archived tree") }
 
-        // Big files dominate the time. Decide for each whether the original bytes can be reused, and compress the
-        // ones that changed on several threads at once; the archive itself is still written in order below.
-        let bigThreshold = 2 * 1024 * 1024
+        // Only changed large files need parallel compression. SHA-256 is computed during the same reads.
         let work = fm.temporaryDirectory.appendingPathComponent("archive-\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: work, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: work) }
-        var big: [String: URL] = [:]
-        for item in items {
-            guard let v = try? item.url.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey, .fileSizeKey]),
-                  v.isRegularFile == true, v.isSymbolicLink != true, (v.fileSize ?? 0) >= bigThreshold else { continue }
-            big[item.rel] = item.url
-        }
-        let bigList = Array(big)
+        let bigList = items.filter { ($0.fingerprint?.size ?? 0) >= 2 * 1024 * 1024 && reuse[$0.name] == nil }
         var prepared = [Precompressed?](repeating: nil, count: bigList.count)
-        var storedBig: [String: (crc: UInt32, size: Int)] = [:]     // changed big files that will be stored, with their CRC
-        var verifiedReuse: [String: Date] = [:]     // big files whose CRC already matched the original, with their mtime then: not read a second time below
         var failure: Error?
         let lock = NSLock()
-        DispatchQueue.concurrentPerform(iterations: bigList.count) { i in
-            let (rel, url) = bigList[i]
-            if let old = reusable[rel], let size = (try? fm.attributesOfItem(atPath: url.path))?[.size] as? Int, size == old.uncompressedSize,
-               fileCRC(url) == old.crc32 {                               // unchanged: reused in the loop below
-                let stamp = (try? fm.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date ?? .distantPast
-                lock.lock(); verifiedReuse[rel] = stamp; lock.unlock()
-                return
+        if compressChangedFiles {
+            DispatchQueue.concurrentPerform(iterations: bigList.count) { i in
+                do {
+                    let item = bigList[i]
+                    let p = try precompress(manifest.directory.appendingPathComponent(item.name), in: work)
+                    guard p.fingerprint == item.fingerprint else { throw IPAError.integrity("file changed during compression: \(item.name)") }
+                    lock.lock(); prepared[i] = p; lock.unlock()
+                } catch { lock.lock(); failure = failure ?? error; lock.unlock() }
             }
-            if !compressChangedFiles {
-                if let crc = fileCRC(url), let size = (try? fm.attributesOfItem(atPath: url.path))?[.size] as? Int, size <= Int(UInt32.max) {
-                    lock.lock(); storedBig[rel] = (crc, size); lock.unlock()
-                    return
-                }                                                           // unreadable: fall through to the normal path, which reports it
-            }
-            do {
-                let p = try precompress(url, in: work)
-                lock.lock(); prepared[i] = p; lock.unlock()
-            } catch { lock.lock(); failure = failure ?? error; lock.unlock() }
         }
         if let failure { throw failure }
         var precompressed: [String: Precompressed] = [:]
-        for (i, entry) in bigList.enumerated() { if let p = prepared[i] { precompressed[entry.0] = p } }
+        for (i, entry) in bigList.enumerated() { if let p = prepared[i] { precompressed[entry.name] = p } }
 
-        fm.createFile(atPath: output.path, contents: nil)
-        let out = try FileHandle(forWritingTo: output)
+        let parent = output.deletingLastPathComponent()
+        try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+        let staged = parent.appendingPathComponent(".wax-archive-\(UUID().uuidString).part")
+        guard fm.createFile(atPath: staged.path, contents: nil) else { throw IPAError.unreadable("creating staged archive") }
+        defer { try? fm.removeItem(at: staged) }
+        let out = try FileHandle(forWritingTo: staged)
         var closed = false
         defer { if !closed { try? out.close() } }
-
         var offset = 0
-        func write(_ d: Data) throws { try out.write(contentsOf: d); offset += d.count }
-
+        func write(_ d: Data) throws {
+            guard d.count <= ClassicZIP.maxBytes - offset else { throw IPAError.unsupportedZip("archive exceeds classic ZIP limits") }
+            try out.write(contentsOf: d); offset += d.count
+        }
         var central: [CentralRecord] = []
         var doneBytes = 0
-        let totalBytes = max(1, items.reduce(0) { $0 + (((try? fm.attributesOfItem(atPath: $1.url.path))?[.size] as? Int) ?? 0) })
-
+        let totalBytes = max(1, items.reduce(0) { $0 + ($1.fingerprint?.size ?? 0) })
         for (index, item) in items.enumerated() {
-            let values = try item.url.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey, .contentModificationDateKey])
-            let attrs = try fm.attributesOfItem(atPath: item.url.path)
-            let perm = (attrs[.posixPermissions] as? Int) ?? 0o644
-            let (dosTime, dosDate) = dos(values.contentModificationDate ?? Date())
-            guard offset <= Int(UInt32.max) - 1 else { throw IPAError.unsupportedZip("zip64 would be required (archive over 4 GiB)") }
-            let startOffset = UInt32(offset)
-            var rel = item.rel
-
-            if values.isSymbolicLink == true {
-                let target = try fm.destinationOfSymbolicLink(atPath: item.url.path)
-                let data = Data(target.utf8)
-                central.append(try writeStored(rel, data, mode: 0o120777, time: dosTime, date: dosDate,
-                                               offset: startOffset, write: write))
-            } else if values.isDirectory == true {
-                if !rel.hasSuffix("/") { rel += "/" }
-                central.append(try writeStored(rel, Data(), mode: 0o040000 | UInt32(perm & 0o777), time: dosTime, date: dosDate,
-                                               offset: startOffset, write: write, directory: true))
-            } else {
-                if let stored = storedBig[rel] {
-                    central.append(try writeStoredFile(rel, item.url, crc: stored.crc, size: stored.size, mode: 0o100000 | UInt32(perm & 0o777),
-                                                       time: dosTime, date: dosDate, offset: startOffset, write: write))
-                } else if let p = precompressed[rel] {
-                    central.append(try writePrecompressed(rel, p, mode: 0o100000 | UInt32(perm & 0o777), time: dosTime, date: dosDate,
-                                                          offset: startOffset, write: write))
-                } else if let source, let old = reusable[rel], let record = try reuseRecord(rel, item.url, old, source, mode: 0o100000 | UInt32(perm & 0o777),
-                                                                                    time: dosTime, date: dosDate, offset: startOffset,
-                                                                                    verifiedAt: verifiedReuse[rel], write: write) {
-                    central.append(record)
+            let url = manifest.directory.appendingPathComponent(item.name)
+            let attrs = try fm.attributesOfItem(atPath: url.path)
+            let (time, date) = dos((attrs[.modificationDate] as? Date) ?? Date())
+            let start = try ClassicZIP.size(offset)
+            let record: CentralRecord
+            switch item.kind {
+            case .directory:
+                record = try writeStored(item.name, Data(), mode: item.mode, time: time, date: date, offset: start, write: write, directory: true)
+            case .symlink:
+                record = try writeStored(item.name, Data(item.target!.utf8), mode: item.mode, time: time, date: date, offset: start, write: write)
+            case .file:
+                let expected = item.fingerprint!
+                if let (old, fingerprint) = reuse[item.name], let source {
+                    record = try reuseRecord(item.name, old, fingerprint, source, mode: item.mode, time: time, date: date, offset: start, write: write)
+                } else if let p = precompressed[item.name] {
+                    record = try writePrecompressed(item.name, p, mode: item.mode, time: time, date: date, offset: start, write: write)
+                } else if !compressChangedFiles && expected.size >= 2 * 1024 * 1024 {
+                    record = try writeStoredFile(item.name, url, expected: expected, mode: item.mode, time: time, date: date, offset: start, write: write)
                 } else {
-                    central.append(try writeFile(rel, item.url, mode: 0o100000 | UInt32(perm & 0o777), time: dosTime, date: dosDate,
-                                                 offset: startOffset, write: write))
+                    record = try writeFile(item.name, url, expected: expected, mode: item.mode, time: time, date: date, offset: start, write: write)
                 }
-                doneBytes += (attrs[.size] as? Int) ?? 0
+                doneBytes += expected.size
             }
+            central.append(record)
             progress?(index + 1, items.count)
             byteProgress?(min(1, Double(doneBytes) / Double(totalBytes)))
         }
-
         let cdStart = offset
         for c in central {
-            let name = Data(c.name.utf8)
+            let name = try ClassicZIP.name(c.name)
             var h = Data()
             h.le32(0x02014b50); h.le16(0x031E); h.le16(20); h.le16(c.flags); h.le16(c.method)
             h.le16(c.time); h.le16(c.date); h.le32(c.crc); h.le32(c.comp); h.le32(c.uncomp)
@@ -135,15 +121,15 @@ public enum IPAArchiver {
             h.le32(c.external); h.le32(c.offset); h.append(name)
             try write(h)
         }
-        let cdSize = offset - cdStart
-        guard cdStart <= Int(UInt32.max), cdSize <= Int(UInt32.max) else {
-            throw IPAError.unsupportedZip("zip64 would be required")
-        }
         var e = Data()
         e.le32(0x06054b50); e.le16(0); e.le16(0); e.le16(UInt16(central.count)); e.le16(UInt16(central.count))
-        e.le32(UInt32(cdSize)); e.le32(UInt32(cdStart)); e.le16(0)
+        e.le32(try ClassicZIP.size(offset - cdStart)); e.le32(try ClassicZIP.size(cdStart)); e.le16(0)
         try write(e)
         try out.close(); closed = true
+        try validateArchive?(staged)
+        try manifest.verify(archive: staged)
+        try manifest.verifyTree()
+        try ArchivePromotion.promote(staged, to: output)
     }
 
     // MARK: entries
@@ -160,7 +146,7 @@ public enum IPAArchiver {
     private static func writeStored(_ name: String, _ data: Data, mode: UInt32, time: UInt16, date: UInt16, offset: UInt32,
                                     write: (Data) throws -> Void, directory: Bool = false) throws -> CentralRecord {
         let crc = CRC32.checksum(data)
-        let nameData = Data(name.utf8)
+        let nameData = try ClassicZIP.name(name)
         try write(localHeader(name: nameData, flags: 0x0800, method: 0, time: time, date: date,
                               crc: crc, comp: UInt32(data.count), uncomp: UInt32(data.count)))
         try write(data)
@@ -169,59 +155,43 @@ public enum IPAArchiver {
                              external: mode << 16 | (directory ? 0x10 : 0))
     }
 
-    private static func fileCRC(_ url: URL) -> UInt32? {
-        guard let input = try? FileHandle(forReadingFrom: url) else { return nil }
-        defer { try? input.close() }
-        var crc = CRC32.begin()
-        while let chunk = try? input.read(upToCount: 1 << 20), !chunk.isEmpty { crc = CRC32.update(crc, chunk) }
-        return CRC32.finish(crc)
-    }
-
-    /// Copies an unchanged file's original compressed bytes. Returns nil (nothing written) when the file differs.
-    private static func reuseRecord(_ name: String, _ url: URL, _ old: ZipEntry, _ source: ZipArchive, mode: UInt32,
-                                    time: UInt16, date: UInt16, offset: UInt32, verifiedAt: Date? = nil,
-                                    write: (Data) throws -> Void) throws -> CentralRecord? {
-        guard let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int, size == old.uncompressedSize,
-              old.compressedSize <= Int(UInt32.max) else { return nil }
-        // `verifiedAt` means the caller already compared this file's CRC with the original's, when its mtime was that.
-        // If the file was touched since, it is read and checked again.
-        let untouched = verifiedAt != nil && (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date == verifiedAt
-        if !untouched {
-            guard let input = try? FileHandle(forReadingFrom: url) else { return nil }
-            defer { try? input.close() }
-            var crc = CRC32.begin()
-            while let chunk = try? input.read(upToCount: 1 << 20), !chunk.isEmpty { crc = CRC32.update(crc, chunk) }
-            guard CRC32.finish(crc) == old.crc32 else { return nil }
-        }
-        try write(localHeader(name: Data(name.utf8), flags: 0x0800, method: old.method, time: time, date: date,
-                              crc: old.crc32, comp: UInt32(old.compressedSize), uncomp: UInt32(old.uncompressedSize)))
-        try source.copyRaw(old, to: write)
+    private static func reuseRecord(_ name: String, _ old: ZipEntry, _ fingerprint: ZipFingerprint, _ source: ZipArchive,
+                                    mode: UInt32, time: UInt16, date: UInt16, offset: UInt32,
+                                    write: (Data) throws -> Void) throws -> CentralRecord {
+        let comp = try ClassicZIP.size(old.compressedSize), uncomp = try ClassicZIP.size(old.uncompressedSize)
+        try write(localHeader(name: try ClassicZIP.name(name), flags: 0x0800, method: old.method, time: time, date: date,
+                              crc: old.crc32, comp: comp, uncomp: uncomp))
+        try source.copyRaw(old, expecting: fingerprint, to: write)
         return CentralRecord(name: name, flags: 0x0800, method: old.method, time: time, date: date, crc: old.crc32,
-                             comp: UInt32(old.compressedSize), uncomp: UInt32(old.uncompressedSize), offset: offset, external: mode << 16)
+                             comp: comp, uncomp: uncomp, offset: offset, external: mode << 16)
     }
 
-    /// A file stored as it is (method 0). The CRC and size were computed beforehand, so no data descriptor is needed.
-    private static func writeStoredFile(_ name: String, _ url: URL, crc: UInt32, size: Int, mode: UInt32, time: UInt16, date: UInt16,
+    private static func writeStoredFile(_ name: String, _ url: URL, expected: FileFingerprint, mode: UInt32, time: UInt16, date: UInt16,
                                         offset: UInt32, write: (Data) throws -> Void) throws -> CentralRecord {
-        try write(localHeader(name: Data(name.utf8), flags: 0x0800, method: 0, time: time, date: date,
-                              crc: crc, comp: UInt32(size), uncomp: UInt32(size)))
+        let size = try ClassicZIP.size(expected.size)
+        try write(localHeader(name: try ClassicZIP.name(name), flags: 0x0800, method: 0, time: time, date: date,
+                              crc: expected.crc32, comp: size, uncomp: size))
         let input = try FileHandle(forReadingFrom: url)
-        defer { try? input.close() }
-        var sent = 0
-        var check = CRC32.begin()
-        while let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty { check = CRC32.update(check, chunk); try write(chunk); sent += chunk.count }
-        // The header already holds the CRC from the earlier pass: if the file changed since, the entry would be corrupt.
-        guard sent == size, CRC32.finish(check) == crc else { throw IPAError.unreadable("\(name) changed while it was being packed") }
-        return CentralRecord(name: name, flags: 0x0800, method: 0, time: time, date: date, crc: crc,
-                             comp: UInt32(size), uncomp: UInt32(size), offset: offset, external: mode << 16)
+        var closed = false
+        defer { if !closed { try? input.close() } }
+        let actual = try FileFingerprint.read(expectedSize: expected.size) { count in
+            let data = try input.read(upToCount: count)
+            if let data { try write(data) }
+            return data
+        }
+        guard actual == expected else { throw IPAError.integrity("file changed during packing: \(name)") }
+        try input.close(); closed = true
+        return CentralRecord(name: name, flags: 0x0800, method: 0, time: time, date: date, crc: expected.crc32,
+                             comp: size, uncomp: size, offset: offset, external: mode << 16)
     }
 
-    private static func writeFile(_ name: String, _ url: URL, mode: UInt32, time: UInt16, date: UInt16, offset: UInt32,
+    private static func writeFile(_ name: String, _ url: URL, expected: FileFingerprint, mode: UInt32, time: UInt16, date: UInt16, offset: UInt32,
                                   write: (Data) throws -> Void) throws -> CentralRecord {
-        let nameData = Data(name.utf8)
+        let nameData = try ClassicZIP.name(name)
         // Sizes and CRC follow the data in a data descriptor (flag bit 3), so the file is read exactly once.
         try write(localHeader(name: nameData, flags: 0x0808, method: 8, time: time, date: date, crc: 0, comp: 0, uncomp: 0))
         let r = try deflate(url, emit: write)
+        guard r.fingerprint == expected else { throw IPAError.integrity("file changed during packing: \(name)") }
         var dd = Data()
         dd.le32(0x08074b50); dd.le32(r.crc); dd.le32(UInt32(r.comp)); dd.le32(UInt32(r.uncomp))
         try write(dd)
@@ -230,18 +200,22 @@ public enum IPAArchiver {
     }
 
     /// A file already compressed (on another thread) into a temporary file.
-    struct Precompressed { let temp: URL; let crc: UInt32; let comp: Int; let uncomp: Int }
+    struct Precompressed { let temp: URL; let crc: UInt32; let comp: Int; let uncomp: Int; let fingerprint: FileFingerprint }
 
     private static func writePrecompressed(_ name: String, _ p: Precompressed, mode: UInt32, time: UInt16, date: UInt16,
                                            offset: UInt32, write: (Data) throws -> Void) throws -> CentralRecord {
-        guard p.comp <= Int(UInt32.max), p.uncomp <= Int(UInt32.max) else {
-            throw IPAError.unsupportedZip("zip64 would be required (file over 4 GiB)")
-        }
-        try write(localHeader(name: Data(name.utf8), flags: 0x0800, method: 8, time: time, date: date,
+        _ = try ClassicZIP.size(p.comp); _ = try ClassicZIP.size(p.uncomp)
+        try write(localHeader(name: try ClassicZIP.name(name), flags: 0x0800, method: 8, time: time, date: date,
                               crc: p.crc, comp: UInt32(p.comp), uncomp: UInt32(p.uncomp)))
         let input = try FileHandle(forReadingFrom: p.temp)
         defer { try? input.close(); try? FileManager.default.removeItem(at: p.temp) }
-        while let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty { try write(chunk) }
+        var copied = 0
+        while let chunk = try input.read(upToCount: 256 * 1024), !chunk.isEmpty {
+            guard chunk.count <= p.comp - copied else { throw IPAError.integrity("precompressed file grew") }
+            try write(chunk); copied += chunk.count
+        }
+        guard copied == p.comp else { throw IPAError.integrity("precompressed file was truncated") }
+        try input.close()
         return CentralRecord(name: name, flags: 0x0800, method: 8, time: time, date: date, crc: p.crc,
                              comp: UInt32(p.comp), uncomp: UInt32(p.uncomp), offset: offset, external: mode << 16)
     }
@@ -249,22 +223,24 @@ public enum IPAArchiver {
     /// Compresses a file into a temporary file. Safe to call from several threads at once.
     static func precompress(_ url: URL, in tempDirectory: URL) throws -> Precompressed {
         let temp = tempDirectory.appendingPathComponent(UUID().uuidString)
-        FileManager.default.createFile(atPath: temp.path, contents: nil)
+        guard FileManager.default.createFile(atPath: temp.path, contents: nil) else { throw IPAError.unreadable("creating compression scratch file") }
         let out = try FileHandle(forWritingTo: temp)
-        defer { try? out.close() }
+        var complete = false
+        defer { if !complete { try? out.close(); try? FileManager.default.removeItem(at: temp) } }
         let r = try deflate(url, emit: { try out.write(contentsOf: $0) })
-        return Precompressed(temp: temp, crc: r.crc, comp: r.comp, uncomp: r.uncomp)
+        try out.close(); complete = true
+        return Precompressed(temp: temp, crc: r.crc, comp: r.comp, uncomp: r.uncomp, fingerprint: r.fingerprint)
     }
 
     /// Raw deflate of a whole file, streamed in chunks. Returns the CRC32 and both sizes.
-    private static func deflate(_ url: URL, emit write: (Data) throws -> Void) throws -> (crc: UInt32, comp: Int, uncomp: Int) {
+    private static func deflate(_ url: URL, emit write: (Data) throws -> Void) throws -> (crc: UInt32, comp: Int, uncomp: Int, fingerprint: FileFingerprint) {
         let input = try FileHandle(forReadingFrom: url)
         defer { try? input.close() }
         guard let stream = CompressionStream(COMPRESSION_STREAM_ENCODE, COMPRESSION_ZLIB) else {
             throw IPAError.unreadable("compression could not start")
         }
 
-        var crc = CRC32.begin()
+        var crc = CRC32.begin(), hash = SHA256()
         var uncompressed = 0, compressed = 0
         let chunk = 256 * 1024
         var dst = [UInt8](repeating: 0, count: chunk)
@@ -273,9 +249,9 @@ public enum IPAArchiver {
         while !finished {
             let src = inputDone ? Data() : (try input.read(upToCount: chunk) ?? Data())
             if src.isEmpty { inputDone = true }
-            crc = CRC32.update(crc, src)
+            crc = CRC32.update(crc, src); hash.update(data: src)
+            guard src.count <= ClassicZIP.maxBytes - uncompressed else { throw IPAError.unsupportedZip("file exceeds classic ZIP limits") }
             uncompressed += src.count
-            guard uncompressed <= Int(UInt32.max) else { throw IPAError.unsupportedZip("zip64 would be required (file over 4 GiB)") }
             try src.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
                 stream.feed(raw.bindMemory(to: UInt8.self).baseAddress, raw.count)
                 var idle = 0
@@ -283,7 +259,10 @@ public enum IPAArchiver {
                     let before = stream.pendingInput
                     let status = dst.withUnsafeMutableBufferPointer { stream.drain(into: $0, finalize: inputDone) }
                     let produced = chunk - stream.pendingOutput
-                    if produced > 0 { try write(Data(dst[0..<produced])); compressed += produced }
+                    if produced > 0 {
+                        guard produced <= ClassicZIP.maxBytes - compressed else { throw IPAError.unsupportedZip("compressed file exceeds classic ZIP limits") }
+                        try write(Data(dst[0..<produced])); compressed += produced
+                    }
                     switch status {
                     case COMPRESSION_STATUS_END: finished = true
                     case COMPRESSION_STATUS_OK: break
@@ -294,13 +273,15 @@ public enum IPAArchiver {
                 } while !finished && (stream.pendingInput > 0 || stream.pendingOutput == 0 || inputDone)
             }
         }
-        return (CRC32.finish(crc), compressed, uncompressed)
+        try input.close()
+        let fingerprint = FileFingerprint(sha256: Data(hash.finalize()), crc32: CRC32.finish(crc), size: uncompressed)
+        return (fingerprint.crc32, compressed, uncompressed, fingerprint)
     }
 
     private static func dos(_ date: Date) -> (UInt16, UInt16) {
         let c = Calendar(identifier: .gregorian).dateComponents(in: .current, from: date)
         // Split into small typed steps: the CI toolchain cannot type-check the one-line version in reasonable time.
-        let year: Int = max(1980, c.year ?? 1980)
+        let year: Int = min(2107, max(1980, c.year ?? 1980))
         let hour: Int = c.hour ?? 0, minute: Int = c.minute ?? 0, second: Int = c.second ?? 0
         let month: Int = c.month ?? 1, dayOfMonth: Int = c.day ?? 1
         let time = UInt16((hour << 11) | (minute << 5) | (second / 2))
