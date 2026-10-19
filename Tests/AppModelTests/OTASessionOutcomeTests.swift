@@ -1,3 +1,4 @@
+import SigningKit
 import CredentialKit
 import Combine
 import InstallKit
@@ -217,6 +218,25 @@ final class OTASessionOutcomeTests: XCTestCase {
         await gate.release(); let opened = await task.value
         XCTAssertFalse(opened); XCTAssertTrue(ota.owns(newer)); XCTAssertFalse(signing.canOpenInstallLink(link, ota: ota))
         ota.release(newer); try assertArtifact()
+    }
+    func testReleaseCallbacksAreOnceOnlyAndCannotCancelReplacementWorker() throws {
+        let ota = model(), oldToken = SigningCancellation(), newToken = SigningCancellation()
+        let old = try ota.reserve(); var calls = 0
+        ota.onRelease(of: old) { calls += 1; oldToken.cancel() }
+        ota.cancel(old); XCTAssertThrowsError(try oldToken.check()); XCTAssertEqual(calls, 1)
+        let new = try ota.reserve(); ota.onRelease(of: new) { newToken.cancel() }
+        ota.cancel(old); ota.release(old)
+        XCTAssertNoThrow(try newToken.check()); XCTAssertTrue(ota.owns(new)); XCTAssertEqual(calls, 1)
+        ota.release(new); XCTAssertThrowsError(try newToken.check()); try assertArtifact()
+    }
+    func testProbeCancellationReachesSigningTokenWhileWorkerIsSuspended() async throws {
+        let ota = model(), tester = IdentityTester(), token = SigningCancellation(), entered = expectation(description: "signing worker"), gate = SessionGate(), signed = artifact
+        let task = Task { await tester.run(identityID: UUID(), fingerprint: "fixture", ota: ota,
+            sign: { entered.fulfill(); await gate.wait(); try token.check(); return signed }, detected: { false }, cancelSigning: { token.cancel() },
+            record: { _, _ in XCTFail("canceled signing cannot record probe result") }, open: { _ in XCTFail("canceled signing cannot upload/open") }) }
+        await fulfillment(of: [entered], timeout: 5); tester.cancel()
+        XCTAssertThrowsError(try token.check()); await gate.release(); await task.value
+        XCTAssertNil(ota.activeSession); XCTAssertFalse(tester.isRunning); try assertArtifact()
     }
     func testOnlyOneUploadAndOneCompletionAreAllowedPerSession() async throws {
         let model = model(), session = try model.reserve()

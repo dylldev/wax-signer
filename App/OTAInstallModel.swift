@@ -70,6 +70,7 @@ final class OTAInstallModel: ObservableObject {
         fileprivate var host: PreparedHost?
         fileprivate var uploadTask: Task<URL?, Never>?
         fileprivate var deliveryTask: Task<Bool, Never>?
+        fileprivate var onRelease: [() -> Void] = []
         fileprivate var uploadStarted = false
         fileprivate var deliveryFinished = false
         fileprivate init(_ configuration: Configuration) {
@@ -306,10 +307,16 @@ final class OTAInstallModel: ObservableObject {
 
     func owns(_ session: Session) -> Bool { activeSession === session }
 
+    func onRelease(of session: Session, perform action: @escaping () -> Void) {
+        if owns(session) { session.onRelease.append(action) } else { action() }
+    }
+
     /// Invalidate ownership first. A late readiness/progress/completion can only dispose its own host.
     func release(_ session: Session) {
         guard owns(session) else { return }
         activeSession = nil
+        let callbacks = session.onRelease; session.onRelease = []
+        callbacks.forEach { $0() }
         switch state { case .preparing, .uploading: state = .idle; default: break }
         session.uploadTask?.cancel(); session.deliveryTask?.cancel()
         session.host?.stop(); session.host = nil
