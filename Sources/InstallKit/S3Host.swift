@@ -73,14 +73,32 @@ public struct S3Host: InstallHost {
         guard code == 200 else { throw Self.explain(code, body: String(decoding: data.prefix(4096), as: UTF8.self)) }
     }
 
-    /// Removes both uploaded objects. Best effort: the bucket's own expiry rule is the backstop.
-    public func cleanup() async {
-        await delete("app.ipa"); await delete("manifest.plist")
+    /// Compatibility best-effort path for a failed publication. Durable callers use cleanupConfirmed.
+    public func cleanup() async { try? await cleanupConfirmed() }
+
+    /// Both objects must be confirmed deleted (or already absent) before a retention record is removed.
+    public func cleanupConfirmed() async throws {
+        var failure: Error?
+        for name in ["app.ipa", "manifest.plist"] {
+            do { try await delete(name) } catch { if failure == nil { failure = error } }
+        }
+        if let failure { throw failure }
     }
 
-    private func delete(_ name: String) async {
-        let r = S3Signer.signedRequest(method: "DELETE", url: objectURL(name), payloadSHA256: Self.emptySHA, credentials: credentials, date: now())
-        _ = try? await session.data(for: r)
+    private func delete(_ name: String) async throws {
+        var r = S3Signer.signedRequest(method: "DELETE", url: objectURL(name), payloadSHA256: Self.emptySHA, credentials: credentials, date: now())
+        r.timeoutInterval = 20
+        // Never redirect a credential-bearing destructive request to a different destination.
+        let (_, response) = try await session.data(for: r, delegate: CleanupRedirectPolicy())
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(code) || code == 404 else {
+            throw Failure(message: "Bucket cleanup was not confirmed (HTTP \(code)). Its record is kept for retry.")
+        }
+    }
+
+    private final class CleanupRedirectPolicy: NSObject, URLSessionTaskDelegate {
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
     }
 
     private static let emptySHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
