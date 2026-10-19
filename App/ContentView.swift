@@ -11,6 +11,8 @@ struct ContentView: View {
     @State private var adding = false
     @State private var problem: String?
     @State private var detail: LibraryEntry?
+    @State private var retryImport: URL?
+    @State private var confirmRepair = false
 
     @State private var actionEntry: LibraryEntry?
     @State private var afterSheet: (() -> Void)?
@@ -34,6 +36,25 @@ struct ContentView: View {
 
                     if shelf == .unsigned { addRow }
                     if let problem { WaxFeedbackCard(tone: .bad, text: problem) }
+                    if let message = library.message { WaxFeedbackCard(tone: .bad, text: message) }
+                    if let retryImport {
+                        Button("Retry Save") { add(retryImport) }.buttonStyle(WaxSecondaryButtonStyle()).disabled(adding)
+                        ShareLink("Export retained IPA", item: retryImport)
+                    }
+                    if library.message != nil {
+                        Button("Retry recovery / cleanup") { Task { await library.refresh() } }.buttonStyle(WaxSecondaryButtonStyle())
+                        Button("Recover Library Index") { confirmRepair = true }.font(.footnote)
+                    }
+                    ForEach(library.recovery) { item in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Retained: \(item.name)").font(.subheadline)
+                            HStack {
+                                Button("Retry Save") { Task { do { _ = try await library.retry(item) } catch { problem = error.localizedDescription } } }
+                                    .disabled(library.busy)
+                                ShareLink("Export", item: item.url)
+                            }
+                        }.padding().frame(maxWidth: .infinity, alignment: .leading).background(Wax.card, in: RoundedRectangle(cornerRadius: Wax.radius))
+                    }
                     if entries.isEmpty {
                         emptyState
                     } else {
@@ -54,6 +75,9 @@ struct ContentView: View {
             }
             .waxMotion(value: shelf)
         }
+        .confirmationDialog("Recover the library index?", isPresented: $confirmRepair, titleVisibility: .visible) {
+            Button("Recover Library Index") { Task { await library.repairIndex() } }
+        } message: { Text("Wax keeps a copy of the damaged index and all IPA files. Unrecognized artifacts are recovered with unknown provenance; nothing is deleted.") }
         .sheet(isPresented: $importing) {
             DocumentPicker { picked in
                 importing = false
@@ -89,13 +113,13 @@ struct ContentView: View {
             list.append(WaxAction(icon: "square.and.arrow.up", title: "Export", share: library.url(for: entry)))
         }
         list.append(WaxAction(icon: "info.circle", title: "Details") { detail = entry })
-        list.append(WaxAction(icon: "trash", title: "Delete", destructive: true) { library.remove(entry) })
+        list.append(WaxAction(icon: "trash", title: "Delete", destructive: true) { Task { await library.remove(entry) } })
         return list
     }
 
     private func row(_ e: LibraryEntry) -> some View {
         WaxRow(icon: e.kind == .unsigned ? "shippingbox" : "checkmark.seal", title: e.name,
-               subtitle: [e.version.isEmpty ? nil : e.version,
+               subtitle: [e.version.isEmpty ? nil : e.version, e.build.map { "Build " + $0 },
                           ByteCountFormatter.string(fromByteCount: Int64(e.size), countStyle: .file),
                           e.added.formatted(.relative(presentation: .named))].compactMap { $0 }.joined(separator: " · "),
                subtitleLines: 2) {
@@ -115,30 +139,22 @@ struct ContentView: View {
         }
     }
 
-    /// Reads the picked file, then files it on the shelf its signature says it belongs on.
+    /// Only the awaited commit earns an Added announcement. A publisher's signature is not Wax provenance.
     private func add(_ url: URL) {
-        adding = true
-        problem = nil
-        ImportLogs.shared.log("ipa: picked \(ImportLog.describe(url))")
-        Task.detached {
-            defer { discardPickerCopy(url) }
+        adding = true; problem = nil
+        Task {
+            defer { adding = false }
             do {
-                let info = try IPAInspector.inspect(externalURL: url) { _ in }
-                ImportLogs.shared.log("ipa: ok bundle=\(info.bundleIdentifier) version=\(info.version)")
-                let name = info.displayName.isEmpty ? info.bundleIdentifier : info.displayName
-                await library.fileNow(url, info: info)
-                await MainActor.run {
-                    router.shelf = info.hasCodeSignature ? .signed : .unsigned
-                    AccessibilityNotification.Announcement(name.isEmpty ? "App added" : "Added \(name)").post()
-                }
+                let saved = try await library.importPicked(url)
+                retryImport = nil; router.shelf = .unsigned
+                _ = saved // The model announces only a confirmed commit.
             } catch {
-                let text = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                ImportLogs.shared.log("ipa: failed \(ImportLog.describe(error))")
-                await MainActor.run { problem = text }
+                retryImport = (error as? ShelfSaveFailure)?.artifact ?? url
+                problem = error.localizedDescription
             }
-            await MainActor.run { adding = false }
         }
     }
+
 }
 
 /// What is inside one app file, read from the shelf copy.

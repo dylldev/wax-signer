@@ -269,11 +269,11 @@ struct SourceAppsView: View {
             Button {
                 model.get(app, from: sourceID, signAfter: signAfterDownload, library: library, signing: signing, router: router)
             } label: {
-                Text("Get").font(.subheadline.weight(.bold)).foregroundStyle(Wax.onAccent)
+                Text(model.retainedDownloads[app.id] == nil ? "Get" : "Retry Save").font(.subheadline.weight(.bold)).foregroundStyle(Wax.onAccent)
                     .padding(.horizontal, 18).frame(minHeight: Wax.touch).background(Wax.accent, in: Capsule())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Get \(app.name)")
+            .accessibilityLabel(model.retainedDownloads[app.id] == nil ? "Get \(app.name)" : "Retry saving \(app.name)")
         }
     }
 }

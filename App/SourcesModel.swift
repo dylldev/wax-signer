@@ -13,13 +13,18 @@ final class SourcesModel: ObservableObject {
     @Published private(set) var downloads: [String: Double] = [:]      // app id to 0...1
     @Published private(set) var filed: Set<String> = []                // app ids already on the shelf this session
     @Published var message: String?
+    @Published private(set) var retainedDownloads: [String: URL] = [:]
+    private let downloadOverride: ((SourceApp, URL) async throws -> URL)?
+    private let announce: (String) -> Void
 
     private let store: SourceStore
     private var repos: [UUID: SourceRepo] = [:]
 
-    init() {
+    init(sourceStore: SourceStore? = nil, download: ((SourceApp, URL) async throws -> URL)? = nil,
+         announce: @escaping (String) -> Void = { AccessibilityNotification.Announcement($0).post() }) {
+        downloadOverride = download; self.announce = announce
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        store = SourceStore(directory: support.appendingPathComponent("Sources", isDirectory: true))
+        store = sourceStore ?? SourceStore(directory: support.appendingPathComponent("Sources", isDirectory: true))
         sources = store.sources
     }
 
@@ -90,20 +95,24 @@ final class SourcesModel: ObservableObject {
     }
 
     /// Downloads an app onto the Unsigned shelf; optionally opens it on the Sign tab afterwards.
-    func get(_ app: SourceApp, from sourceID: UUID?, signAfter: Bool, library: LibraryModel, signing: SigningModel, router: Router) {
-        guard downloads[app.id] == nil else { return }
+    @discardableResult func get(_ app: SourceApp, from sourceID: UUID?, signAfter: Bool, library: LibraryModel, signing: SigningModel, router: Router) -> Task<Void, Never>? {
+        guard downloads[app.id] == nil else { return nil }
         downloads[app.id] = 0
         message = nil
         UIImpactFeedbackGenerator(style: .light).impactOccurred()   // the tap on Get, so the download feels answered
         BackgroundJob.shared.begin(title: app.name)
         let downloader = IPADownloader()
         let store = store
-        Task {
+        return Task {
             var ok = false
             defer { BackgroundJob.shared.end(success: ok); downloads[app.id] = nil }
             do {
-                let temp = FileManager.default.temporaryDirectory.appendingPathComponent("Wax-Downloads", isDirectory: true)
-                let file = try await downloader.download(app, to: temp, refetch: {
+                let storage = library.storage
+                let temp = try await Task.detached { try storage.incomingDirectory() }.value
+                let file: URL
+                if let kept = retainedDownloads[app.id] { file = kept }
+                else if let downloadOverride { file = try await downloadOverride(app, temp) }
+                else { file = try await downloader.download(app, to: temp, refetch: {
                     // An expired link: ask the source again and use its fresh link for this same app.
                     guard let id = sourceID else { throw DownloadError.linkExpired }
                     let repo = try await store.refresh(id)
@@ -114,17 +123,20 @@ final class SourcesModel: ObservableObject {
                         self.downloads[app.id] = p
                         BackgroundJob.shared.update(fraction: p, subtitle: "Downloading")
                     }
-                })
-                defer { try? FileManager.default.removeItem(at: file) }
+                }) }
+                retainedDownloads[app.id] = file
                 let info = try await Task.detached { try IPAInspector.inspect(url: file) }.value
                 // A downloaded app is something to re-sign, so it goes on the Unsigned shelf even when the file
                 // carries the publisher's own signature (which will not install on this phone).
-                let entry = await library.fileNow(file, info: info, signed: false)
+                let saved = try await library.fileNow(file, info: info, signed: false, provenance: .sourceDownload)
                 filed.insert(app.id)
                 ok = true
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
-                AccessibilityNotification.Announcement("\(app.name) downloaded").post()
-                if signAfter, let entry { signing.use(entry); router.tab = .sign }
+                announce(saved.alreadySaved ? "\(app.name) already saved" : "\(app.name) downloaded and saved")
+                retainedDownloads[app.id] = nil
+                do { try await Task.detached { try storage.removeIncoming(file) }.value }
+                catch { message = "Saved, but the retained download needs cleanup: " + error.localizedDescription }
+                if signAfter { signing.use(saved.entry); router.tab = .sign }
             } catch {
                 message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                 ImportLogs.shared.log("sources: get failed \(ImportLog.describe(error))")

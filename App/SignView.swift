@@ -68,7 +68,9 @@ struct SignView: View {
                 ScrollView {
                     VStack(spacing: 10) {
                         header.id("top")
-                        if let stage {
+                        if let r = model.report {
+                            resultCard(r)
+                        } else if let stage {
                             progressCard(stage)
                         } else if phase == .done && errorText == nil, let r = model.report {
                             resultCard(r)
@@ -101,7 +103,10 @@ struct SignView: View {
         .onChange(of: phase) { _, new in if new == .done { stamp() } else { stamped = false } }
         .onChange(of: model.busyMessage) { _, busy in if busy != nil { announced = false } }   // a new run earns its own feedback
         .onChange(of: model.ipaInfo != nil) { _, ready in if ready { announceRead() } }
-        .onChange(of: model.report != nil) { _, done in if done { announceOutcome(success: true) } }
+        .onChange(of: model.shelfSaveState.confirmedSaved) { _, saved in if saved { announceOutcome(success: true, message: "Signed and saved. Wax checked the file.") } }
+        .onChange(of: model.shelfSaveState.isSaving) { _, saving in
+            if !saving, case .failed = model.shelfSaveState { announceOutcome(success: false, message: "Signing succeeded. Shelf saving failed. Retry Save or export the retained IPA.") }
+        }
         .onChange(of: model.errorText) { _, text in if let text { announceOutcome(success: false, message: text) } }
         .onChange(of: inbox.pendingLink) { _, _ in openPendingInstall() }
         .onAppear { openPendingInstall() }   // a tap that launched Wax from scratch
@@ -362,7 +367,20 @@ struct SignView: View {
         let failed = !r.checkFailures.isEmpty
         return VStack(spacing: 8) {
             resultHeader(failed)
-            if !failed { signedShelfLink }
+            if !failed {
+                switch model.shelfSaveState {
+                case .saved(let saved):
+                    signedShelfLink
+                    if let warning = saved.warning { WaxFeedbackCard(tone: .bad, text: warning) }
+                case .saving:
+                    ProgressView("Saving to the IPA shelf…")
+                case .failed(let failure):
+                    WaxFeedbackCard(tone: .bad, text: "Signing succeeded, but shelf saving failed. " + failure.localizedDescription)
+                    Button("Retry Save") { Task { await model.retrySignedSave() } }.buttonStyle(WaxSecondaryButtonStyle())
+                case .idle:
+                    Text("The signed file is retained. It has not been saved on the shelf.").font(.footnote).foregroundStyle(Wax.sub)
+                }
+            }
             if let link = model.readyLink {
                 Button { openURL(link) } label: { Label("Install", systemImage: "arrow.down.app") }
                     .buttonStyle(WaxPrimaryButtonStyle())

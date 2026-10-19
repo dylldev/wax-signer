@@ -79,8 +79,12 @@ final class SigningModel: ObservableObject {
     /// How long the last signing run took, for the progress estimate.
     private(set) var lastSignSeconds: Double = 0
     private let credentials: CredentialsModel
+    private let library: LibraryModel
+    @Published private(set) var shelfSaveState: LibraryModel.SaveState = .idle
+    private var signedPendingID: UUID?
+    private var resultGeneration = UUID()
 
-    init(credentials: CredentialsModel) { self.credentials = credentials }
+    init(credentials: CredentialsModel, library: LibraryModel = .shared) { self.credentials = credentials; self.library = library }
 
     /// Weights signing against uploading by how long each took on earlier runs (or sensible defaults).
     func jobProgress(uploadFraction: Double, exportOnly: Bool) -> JobProgress {
@@ -89,7 +93,7 @@ final class SigningModel: ObservableObject {
         return JobProgress(signSeconds: e.sign, uploadSeconds: exportOnly ? 0 : e.upload)
     }
 
-    func clearResult() { report = nil; errorText = nil; readyLink = nil }
+    func clearResult() { resultGeneration = UUID(); report = nil; errorText = nil; readyLink = nil; signedPendingID = nil; shelfSaveState = .idle }
 
     enum BundleIDMode: String, CaseIterable { case keep, rename }
 
@@ -177,58 +181,72 @@ final class SigningModel: ObservableObject {
     }
 
     var canSignAndInstall: Bool {
-        busyMessage == nil && !installing && ipaInfo != nil && (certificateID != nil || signedInputTarget != nil)
+        busyMessage == nil && !shelfSaveState.isSaving && !installing && ipaInfo != nil && (certificateID != nil || signedInputTarget != nil)
     }
 
-    var canSign: Bool { ipaInfo != nil && certificateID != nil && busyMessage == nil }
+    var canSign: Bool { ipaInfo != nil && certificateID != nil && busyMessage == nil && !shelfSaveState.isSaving }
 
     // MARK: Choosing the IPA
 
     /// Chooses an IPA already on the shelf.
-    func use(_ entry: LibraryEntry) {
-        let copy = FileManager.default.temporaryDirectory.appendingPathComponent("Wax-Pick-\(UUID().uuidString).ipa")
-        guard (try? FileManager.default.copyItem(at: LibraryModel.shared.url(for: entry), to: copy)) != nil else {
-            errorText = "That file is no longer in Wax's library."
-            LibraryModel.shared.refresh()
-            return
-        }
-        picked(ipa: copy, fromLibrary: entry)
-    }
+    func use(_ entry: LibraryEntry) { picked(ipa: library.url(for: entry), fromLibrary: entry) }
 
     func picked(ipa url: URL, fromLibrary: LibraryEntry? = nil) {
-        report = nil
-        errorText = nil
-        ipaInfo = nil
-        edits = edits.defaultsOnly()          // name, version and ID belong to the last app
+        clearResult(); ipaInfo = nil
+        edits = edits.defaultsOnly()
         profileChoice = nil; customEntitlements = nil; customEntitlementsName = nil
-        ipaName = url.lastPathComponent
-        busyMessage = "Reading “\(url.lastPathComponent)”…"
-        ImportLogs.shared.log("sign: picked \(ImportLog.describe(url))")
-        // Keep our own copy: the picker's copy is removed when this call returns.
-        let model = self
-        Task.detached {
+        ipaName = url.lastPathComponent; busyMessage = "Reading “\(url.lastPathComponent)”…"
+        Task {
             do {
-                // A folder of its own per pick, so two quick picks cannot delete each other's file.
-                let kept = FileManager.default.temporaryDirectory.appendingPathComponent("Wax-Input-\(UUID().uuidString)", isDirectory: true)
-                try FileManager.default.createDirectory(at: kept, withIntermediateDirectories: true)
-                let dest = kept.appendingPathComponent("input.ipa")
-                try FileManager.default.moveItem(at: url, to: dest)
-                let info = try IPAInspector.inspect(url: dest)
-                await MainActor.run {
-                    if let old = model.ipaURL { try? FileManager.default.removeItem(at: old.deletingLastPathComponent()) }
-                    model.ipaURL = dest
-                    model.ipaInfo = info
-                    model.busyMessage = nil
-                    if fromLibrary == nil { LibraryModel.shared.file(dest, info: info) }
+                if fromLibrary != nil {
+                    let info = try await Task.detached { try IPAInspector.inspect(url: url) }.value
+                    ipaURL = url; ipaInfo = info
+                } else {
+                    let (pending, info) = try await library.preparePicked(url)
+                    discardPickerCopy(url)
+                    let storage = library.storage
+                    ipaURL = try await Task.detached { try storage.pendingURL(pending.id) }.value; ipaInfo = info
+                    do {
+                        let saved = try await library.finishPending(pending.id)
+                        ipaURL = library.url(for: saved.entry)
+                    } catch {
+                        // Signing can still use the durable input; its shelf failure is a separate outcome.
+                        errorText = "The IPA is ready to sign, but its unsigned shelf save failed. " + error.localizedDescription
+                    }
                 }
-            } catch {
-                ImportLogs.shared.log("sign: ipa rejected \(ImportLog.describe(error))")
-                await MainActor.run {
-                    model.busyMessage = nil
-                    model.errorText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                }
-            }
+            } catch { errorText = error.localizedDescription }
+            busyMessage = nil
         }
+    }
+
+    /// Only the signer calls this after its self-check and R2 artifact gate. Report survives a shelf failure.
+    func acceptSignedResult(_ result: Report, pendingID: UUID, generation: UUID? = nil) async {
+        guard generation == nil || generation == resultGeneration else { return }
+        report = result; signedPendingID = pendingID
+        await retrySignedSave()
+    }
+
+    func retrySignedSave() async {
+        guard let id = signedPendingID, report != nil, !shelfSaveState.isSaving else { return }
+        shelfSaveState = .saving
+        do {
+            let saved = try await library.finishPending(id)
+            guard signedPendingID == id else { return }
+            relocateReport(to: library.url(for: saved.entry))
+            shelfSaveState = .saved(saved)
+        } catch {
+            guard signedPendingID == id, let report else { return }
+            let file = (error as? ShelfSaveFailure)?.artifact ?? report.output
+            relocateReport(to: file)
+            shelfSaveState = .failed((error as? ShelfSaveFailure) ?? ShelfSaveFailure(reason: error.localizedDescription, artifact: file, pendingID: id))
+        }
+    }
+    private func relocateReport(to file: URL) {
+        guard var result = report else { return }
+        let old = result.installTarget
+        result.output = file
+        result.installTarget = InstallTarget(ipa: file, bundleIdentifier: old.bundleIdentifier, version: old.version, build: old.build, title: old.title)
+        report = result
     }
 
     // MARK: Signing
@@ -237,10 +255,10 @@ final class SigningModel: ObservableObject {
     /// `storeBigFiles` writes changed big files uncompressed: right for an install that stays on this phone, wrong for
     /// anything uploaded or exported.
     func sign(standalone: Bool = true, storeBigFiles: Bool = false) -> Task<Void, Never>? {
-        guard let ipaURL, let info = ipaInfo, let certificateID, let store = credentials.store,
+        guard busyMessage == nil, !shelfSaveState.isSaving, let ipaURL, let info = ipaInfo, let certificateID, let store = credentials.store,
               let cert = credentials.certificates.first(where: { $0.id == certificateID }) else { return nil }
-        report = nil
-        errorText = nil
+        clearResult()
+        let generation = resultGeneration
         busyMessage = "Preparing…"
         let title = info.displayName.isEmpty ? "Wax" : info.displayName
         if standalone {
@@ -254,6 +272,7 @@ final class SigningModel: ObservableObject {
         let entitlementsOverride = customEntitlements
         let keep = keepBundleID
         let model = self
+        let shelf = library.storage
         ImportLogs.shared.log("sign: start id=\(ipaInfo?.bundleIdentifier ?? "?") rewrite=\(rewrite)")
 
         signFraction = 0
@@ -276,11 +295,8 @@ final class SigningModel: ObservableObject {
         options.keepBundleIdentifier = keep
         options.overrideEntitlements = entitlementsOverride
 
-                let outDir = FileManager.default.temporaryDirectory.appendingPathComponent("Wax-Signed", isDirectory: true)
-                try? FileManager.default.removeItem(at: outDir)
-                let stem = (info.displayName.isEmpty ? "App" : info.displayName)
-                    .filter { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
-                let output = outDir.appendingPathComponent("\(stem.isEmpty ? "App" : stem)-signed.ipa")
+                let pending = try shelf.reserve(kind: .signed, name: title, provenance: .waxSigned)
+                let output = try shelf.pendingURL(pending.id)
 
                 let outcome = try IPASigner.sign(
                     ipa: ipaURL, identity: identity, certificateTeamID: cert.teamID,
@@ -292,6 +308,7 @@ final class SigningModel: ObservableObject {
                     // The engine reports often; only pass on a visible change.
                     guard throttle.shouldPublish(p) else { return }
                     Task { @MainActor in
+                        guard model.report == nil, model.resultGeneration == generation else { return }
                         model.busyMessage = p.message; model.signFraction = p.fraction
                         BackgroundJob.shared.update(fraction: weights.overall(sign: p.fraction, upload: 0), subtitle: p.message)
                     }
@@ -325,13 +342,15 @@ final class SigningModel: ObservableObject {
                         ipa: outcome.output, bundleIdentifier: outcome.outputArchive.bundleIdentifier,
                         version: outcome.outputArchive.version, build: outcome.outputArchive.build, title: outcome.outputArchive.displayName))
                 ImportLogs.shared.log("sign: ok items=\(outcome.signing.items.count) bytes=\(size)")
+                await model.acceptSignedResult(r, pendingID: pending.id, generation: generation)
                 await MainActor.run {
+                    guard model.resultGeneration == generation else { return }
                     model.lastSignSeconds = Date().timeIntervalSince(model.signStarted ?? Date())
-                    model.report = r; model.busyMessage = nil
-                    LibraryModel.shared.file(outcome.output, info: outcome.outputArchive, signed: true)
+                    model.busyMessage = nil
                     if standalone {
-                        BackgroundJob.shared.end(success: true)
-                        BackgroundJob.shared.notifyIfInBackground(InstallNotification.signed(appTitle: title))
+                        let saved = model.shelfSaveState.confirmedSaved
+                        BackgroundJob.shared.end(success: saved)
+                        if saved { BackgroundJob.shared.notifyIfInBackground(InstallNotification.signed(appTitle: title)) }
                     }
                 }
             } catch {

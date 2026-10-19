@@ -98,3 +98,24 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+
+  WaxModelTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/AppModelTests
+      - path: Tests/SigningKitTests/Fixtures/TestApp.ipa
+        buildPhase: resources
+    dependencies:
+      - target: LocalIPASigner
+      - package: IPAKit
+        product: InstallKit
+      - package: IPAKit
+        product: IPAKit
+      - package: IPAKit
+        product: CredentialKit
+      - package: IPAKit
+        product: SourcesKit
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
