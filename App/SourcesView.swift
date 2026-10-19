@@ -254,7 +254,9 @@ struct SourceAppsView: View {
     }
 
     @ViewBuilder private func getButton(_ app: SourceApp) -> some View {
-        if let p = model.downloads[app.id] {
+        if model.savingDownloads.contains(app.id) {
+            ProgressView().frame(width: Wax.touch, height: Wax.touch).accessibilityLabel("Saving \(app.name) to the IPA shelf")
+        } else if let p = model.downloads[app.id] {
             ZStack {
                 Circle().stroke(Wax.line, lineWidth: 3)
                 Circle().trim(from: 0, to: max(0.03, p)).stroke(Wax.link, style: StrokeStyle(lineWidth: 3, lineCap: .round)).rotationEffect(.degrees(-90))

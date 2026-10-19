@@ -14,6 +14,7 @@ final class SourcesModel: ObservableObject {
     @Published private(set) var filed: Set<String> = []                // app ids already on the shelf this session
     @Published var message: String?
     @Published private(set) var retainedDownloads: [String: URL] = [:]
+    @Published private(set) var savingDownloads: Set<String> = []
     private let downloadOverride: ((SourceApp, URL) async throws -> URL)?
     private let announce: (String) -> Void
 
@@ -105,14 +106,15 @@ final class SourcesModel: ObservableObject {
         let store = store
         return Task {
             var ok = false
-            defer { BackgroundJob.shared.end(success: ok); downloads[app.id] = nil }
+            defer { BackgroundJob.shared.end(success: ok); downloads[app.id] = nil; savingDownloads.remove(app.id) }
             do {
                 let storage = library.storage
-                let temp = try await Task.detached { try storage.incomingDirectory() }.value
                 let file: URL
                 if let kept = retainedDownloads[app.id] { file = kept }
-                else if let downloadOverride { file = try await downloadOverride(app, temp) }
-                else { file = try await downloader.download(app, to: temp, refetch: {
+                else {
+                    let temp = try await Task.detached { try storage.incomingDirectory() }.value
+                    if let downloadOverride { file = try await downloadOverride(app, temp) }
+                    else { file = try await downloader.download(app, to: temp, refetch: {
                     // An expired link: ask the source again and use its fresh link for this same app.
                     guard let id = sourceID else { throw DownloadError.linkExpired }
                     let repo = try await store.refresh(id)
@@ -120,10 +122,13 @@ final class SourcesModel: ObservableObject {
                     return fresh
                 }, progress: { p in
                     Task { @MainActor in
+                        guard self.downloads[app.id] != nil, !self.savingDownloads.contains(app.id) else { return }
                         self.downloads[app.id] = p
                         BackgroundJob.shared.update(fraction: p, subtitle: "Downloading")
                     }
                 }) }
+                }
+                savingDownloads.insert(app.id)
                 retainedDownloads[app.id] = file
                 let info = try await Task.detached { try IPAInspector.inspect(url: file) }.value
                 // A downloaded app is something to re-sign, so it goes on the Unsigned shelf even when the file

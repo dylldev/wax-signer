@@ -229,4 +229,26 @@ final class LibraryTransactionTests: XCTestCase {
         XCTAssertEqual(result.entry.size, 8 * 1024 * 1024)
         XCTAssertEqual(try LibraryFileIO.hash(lib.url(for: result.entry)).sha256, result.entry.sha256)
     }
+    func testLegacyCaseAliasesNeverDeleteAnotherReference() throws {
+        let a = UUID(), b = UUID(); try legacy([(a,"Shared.ipa","original"),(b,"shared.ipa","original")])
+        let lib = IPALibrary(root: root), first = try XCTUnwrap(lib.entries(.unsigned).first { $0.id == a })
+        try lib.remove(first)
+        XCTAssertEqual(lib.entries(.unsigned).map(\.id), [b])
+        try assertSource(lib.url(for: lib.entries(.unsigned)[0]))
+    }
+    func testSourceDisappearingDuringCopyRetainsTheStagedCopy() throws {
+        let file = try source(), lib = IPALibrary(root: root) { point, _ in
+            if point == .copyChunk, FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+        }
+        XCTAssertThrowsError(try save(lib, file)); XCTAssertTrue(lib.entries(.unsigned).isEmpty)
+        let retained = try XCTUnwrap(lib.recoveryItems().first); try assertSource(retained.url)
+    }
+    func testExtraUnrecognizedCandidateIsExposedWithoutDeletion() throws {
+        let lib = IPALibrary(root: root), pending = try lib.reserve(kind: .signed, name: "Unfinished", provenance: .waxSigned)
+        let folder = try lib.pendingURL(pending.id).deletingLastPathComponent()
+        let file = folder.appendingPathComponent(".wax-archive-candidate.part"); try Data("original".utf8).write(to: file)
+        try lib.recover(); XCTAssertEqual(lib.recoveryItems().count, 1)
+        XCTAssertNil(lib.recoveryItems()[0].pendingID); try assertSource(file)
+    }
+
 }

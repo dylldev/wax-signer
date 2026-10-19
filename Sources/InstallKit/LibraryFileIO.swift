@@ -10,7 +10,7 @@ enum LibraryFileIO {
         try stream(url, read: read, emit: { _ in })
     }
 
-    static func copy(_ source: URL, to destination: URL, checkpoint: (IPALibrary.Checkpoint, URL) throws -> Void) throws -> Digest {
+    static func copy(_ source: URL, to destination: URL, checkpoint: @escaping (IPALibrary.Checkpoint, URL) throws -> Void) throws -> Digest {
         try checkpoint(.beforeCopy, destination)
         let fd = open(destination.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
         guard fd >= 0 else { throw LibraryError.io("Creating the staged copy", String(cString: strerror(errno))) }

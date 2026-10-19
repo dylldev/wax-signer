@@ -204,6 +204,12 @@ struct IPADetailSheet: View {
         }
         WaxSectionLabel(text: "Archive")
         WaxPanel {
+            WaxKV(key: "Origin", value: entry.provenance?.rawValue ?? "Unknown (legacy entry)")
+            WaxDivider()
+            if let hash = entry.sha256 {
+                Text("IPA SHA-256: " + hash).font(.caption.monospaced()).textSelection(.enabled)
+                WaxDivider()
+            }
             WaxKV(key: "Entries", value: "\(m.entryCount)")
             WaxDivider()
             WaxKV(key: "Code signature", value: m.hasCodeSignature ? "Present" : "None")

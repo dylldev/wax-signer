@@ -258,19 +258,20 @@ public final class IPALibrary: @unchecked Sendable {
                 for folder in (try? FileManager.default.contentsOfDirectory(at: pendingRoot, includingPropertiesForKeys: nil)) ?? [] {
                     guard (try? plainDirectory(folder)) != nil else { continue }
                     let known = UUID(uuidString: folder.lastPathComponent).flatMap { try? readPending($0) } != nil
-                    if known { continue }
+                    _ = known // Unknown extra artifacts in a known transaction also need an export/retry path.
                     for file in (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [] {
-                        guard ["ipa", "part"].contains(file.pathExtension.lowercased()), (try? plainFile(file)) != nil else { continue }
+                        guard ["ipa", "part"].contains(file.pathExtension.lowercased()), (try? plainFile(file)) != nil,
+                              !result.contains(where: { pathKey($0.url) == pathKey(file) }) else { continue }
                         result.append(LibraryRecoveryItem(id: file.path, url: file, name: "Unrecognized retained file: " + file.lastPathComponent, pendingID: nil))
                     }
                 }
             }
-            let referenced = Set((stored + deletions).map { rawURL($0).standardizedFileURL.path })
+            let referenced = Set((stored + deletions).map { pathKey(rawURL($0)) })
             for kind in [LibraryEntry.Kind.unsigned, .signed] {
                 let folder = root.appendingPathComponent(kind.rawValue)
                 guard (try? plainDirectory(folder)) != nil else { continue }
                 for file in (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [] {
-                    guard file.pathExtension.lowercased() == "ipa", !referenced.contains(file.standardizedFileURL.path), (try? plainFile(file)) != nil else { continue }
+                    guard file.pathExtension.lowercased() == "ipa", !referenced.contains(pathKey(file)), (try? plainFile(file)) != nil else { continue }
                     result.append(LibraryRecoveryItem(id: file.path, url: file, name: file.lastPathComponent, pendingID: nil))
                 }
             }
@@ -430,7 +431,7 @@ public final class IPALibrary: @unchecked Sendable {
     private func cleanDeletions() throws {
         var remaining: [LibraryEntry] = []
         for entry in deletions {
-            if stored.contains(where: { $0.kind == entry.kind && $0.fileName == entry.fileName }) { continue }
+            if stored.contains(where: { $0.kind == entry.kind && folded($0.fileName) == folded(entry.fileName) }) { continue }
             do {
                 let url = rawURL(entry)
                 if FileManager.default.fileExists(atPath: url.path) { try checkFile(url, kind: entry.kind); try checkpoint(.beforeCleanup, url); try FileManager.default.removeItem(at: url) }
@@ -444,6 +445,10 @@ public final class IPALibrary: @unchecked Sendable {
     private func pendingIDs() -> [UUID] {
         guard (try? plainDirectory(root)) != nil, (try? plainDirectory(pendingRoot)) != nil else { return [] }
         return ((try? FileManager.default.contentsOfDirectory(atPath: pendingRoot.path)) ?? []).compactMap(UUID.init(uuidString:))
+    }
+    private func folded(_ name: String) -> String { name.precomposedStringWithCanonicalMapping.lowercased() }
+    private func pathKey(_ url: URL) -> String {
+        folded(url.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent(url.lastPathComponent).path)
     }
     private func rawURL(_ entry: LibraryEntry) -> URL { root.appendingPathComponent(entry.kind.rawValue).appendingPathComponent(safeName(entry.fileName) ? entry.fileName : "invalid-entry") }
     private func safeName(_ name: String) -> Bool { !name.isEmpty && name != "." && name != ".." && !name.contains("/") && !name.contains("\\") && !name.contains("\0") }
