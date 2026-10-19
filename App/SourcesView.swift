@@ -268,7 +268,7 @@ struct SourceAppsView: View {
             Button { model.get(app, from: sourceID, signAfter: signAfterDownload, library: library, signing: signing, router: router) } label: {
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(Wax.ok).frame(width: Wax.touch, height: Wax.touch)
             }.buttonStyle(.plain)
-                .accessibilityLabel("A previous download of \(app.name) is on your IPA shelf")
+                .accessibilityLabel("A previous download from this entry is on your IPA shelf")
                 .accessibilityHint("Download again to check for changed contents")
         } else {
             Button {

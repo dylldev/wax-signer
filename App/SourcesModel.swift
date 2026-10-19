@@ -10,7 +10,7 @@ import UIKit
 final class SourcesModel: ObservableObject {
     @Published private(set) var sources: [SavedSource] = []
     @Published private(set) var loading: Set<UUID> = []
-    private struct DownloadKey: Hashable {
+    private struct DownloadKey: Hashable, Sendable {
         let source: UUID?
         let appID: String
         let bundleID: String
@@ -118,7 +118,7 @@ final class SourcesModel: ObservableObject {
 
     /// Downloads an app onto the Unsigned shelf; optionally opens it on the Sign tab afterwards.
     @discardableResult func get(_ app: SourceApp, from sourceID: UUID?, signAfter: Bool, library: LibraryModel, signing: SigningModel, router: Router) -> Task<Void, Never>? {
-        let key = key(app, sourceID)
+        let key = self.key(app, sourceID)
         guard downloads[key] == nil else { return nil }
         downloads[key] = 0
         message = nil
@@ -162,7 +162,8 @@ final class SourcesModel: ObservableObject {
                 filed[key] = saved.entry.id
                 ok = true
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
-                announce(saved.alreadySaved ? "\(app.name) already saved" : "\(app.name) downloaded and saved")
+                let savedTitle = saved.entry.name.isEmpty ? app.name : saved.entry.name
+                announce(saved.alreadySaved ? "\(savedTitle) already saved" : "\(savedTitle) downloaded and saved")
                 retainedDownloads[key] = nil; retainedPending[key] = nil
                 do { try await Task.detached { try storage.removeIncoming(file) }.value }
                 catch { message = "Saved, but the retained download needs cleanup: " + error.localizedDescription }
