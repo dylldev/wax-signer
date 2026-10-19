@@ -288,11 +288,23 @@ final class ParserSafetyTests: XCTestCase {
         try run("/usr/bin/tar", ["-cf", "data.tar", "x.dylib"])
         let tar = try Data(contentsOf: dir.appendingPathComponent("data.tar"))
         XCTAssertEqual(try DebArchive.tarFiles(tar).first?.bytes, bytes)
-        try run("/usr/bin/ar", ["-q", "tweak.deb", "data.tar"])
+        // This is a data archive, not a static library. On macOS plain -q runs the symbol-table tool,
+        // which produced only __.SYMDEF SORTED and discarded this non-object TAR in CI. -S preserves data.
+        try run("/usr/bin/ar", ["-qS", "tweak.deb", "data.tar"])
         let archive = try Data(contentsOf: dir.appendingPathComponent("tweak.deb"))
         let members = try DebArchive.arMembers(archive)
+        XCTAssertEqual(members.map(\.name), ["data.tar"])
         XCTAssertEqual(members.first?.bytes, tar,
                        "ar archive bytes=\(archive.count), prefix=\(archive.prefix(256).map { String(format: "%02x", $0) }.joined()), members=\(members.map(\.name))")
+        #if os(macOS)
+        // Spaces and >16 bytes force the real BSD #1/N extended-name encoding, including NUL padding.
+        let longName = "data archive with BSD extended name.tar"
+        try tar.write(to: dir.appendingPathComponent(longName))
+        try run("/usr/bin/ar", ["-qS", "long.deb", longName])
+        let extended = try DebArchive.arMembers(Data(contentsOf: dir.appendingPathComponent("long.deb")))
+        XCTAssertEqual(extended.map(\.name), [longName])
+        XCTAssertEqual(extended.first?.bytes, tar)
+        #endif
         try run("/usr/bin/gzip", ["-k", "x.dylib"])
         try DebGzip.parse(Data(contentsOf: dir.appendingPathComponent("x.dylib.gz"))).validate(bytes)
     }
@@ -314,8 +326,15 @@ final class ParserSafetyTests: XCTestCase {
         for cut in 9..<good.count { reject(try DebArchive.arMembers(Data(good.prefix(cut)))) }
         reject(try DebArchive.arMembers(good + Data([1])))
         var bad = good; bad[bad.count - 1] = 0; reject(try DebArchive.arMembers(bad))
-        let bsd = ar(name: "#1/8", body: Data("data.tar".utf8) + Data([42]))
-        XCTAssertEqual(try DebArchive.arMembers(bsd).first?.name, "data.tar")
+        for n in [8, 12, 20] {
+            let bsd = ar(name: "#1/\(n)", body: Data("data.tar".utf8) + Data(count: n - 8) + Data([42]))
+            let member = try DebArchive.arMembers(bsd).first
+            XCTAssertEqual(member?.name, "data.tar"); XCTAssertEqual(member?.bytes, Data([42]))
+        }
+        let symbol = ar(name: "#1/20", body: Data("__.SYMDEF SORTED".utf8) + Data(count: 12))
+        let withSymbol = symbol + ar(body: Data([42])).dropFirst(8)
+        XCTAssertEqual(try DebArchive.arMembers(withSymbol).map(\.name), ["data.tar"])
+        XCTAssertEqual(try DebArchive.arMembers(withSymbol).first?.bytes, Data([42]))
     }
 
     private func tar(size: String = "00000000001", body: Data = Data([42])) -> Data {
