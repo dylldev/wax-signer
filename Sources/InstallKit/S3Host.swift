@@ -90,7 +90,7 @@ public struct S3Host: InstallHost {
                                        credentials: credentials, date: now(), headers: ["Content-Type": type])
         r.timeoutInterval = 600
         let result: (body: Data, code: Int)
-        do { result = try await InstallTransport.sendUpload(r, file: file, session: session, delegate: ProgressDelegate(progress)) }
+        do { result = try await InstallTransport.sendUpload(r, file: file, session: session, progress: progress) }
         catch { throw Failure(message: "Could not reach the bucket: \(error.localizedDescription)") }
         guard (200..<300).contains(result.code) else { throw Self.explain(result.code, body: String(decoding: result.body.prefix(4096), as: UTF8.self)) }
     }
