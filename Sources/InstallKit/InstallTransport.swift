@@ -107,7 +107,12 @@ enum InstallTransport {
                 guard let response = response as? HTTPURLResponse else { return Failure.missingResponse }
                 guard InstallTransport.allowed(response.url) else { return Failure.unsafeURL }
                 self.response = response
+                // Darwin custom protocols can report unknown expectedContentLength despite a raw length header.
+                // Both are advisory early checks; actual decoded chunks remain authoritative.
                 if response.expectedContentLength > Int64(budget.maxBytes) { return Failure.tooLarge }
+                if let header = response.value(forHTTPHeaderField: "Content-Length")?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !header.isEmpty, header.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }),
+                   UInt64(header).map({ $0 > UInt64(budget.maxBytes) }) ?? true { return Failure.tooLarge }
                 return nil
             }
             if let error { cancel(error); completionHandler(.cancel) } else { completionHandler(.allow) }

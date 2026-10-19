@@ -43,8 +43,10 @@ final class InstallResponseBudgetTests: XCTestCase {
             catch { guard case InstallTransport.Failure.tooLarge = error else { return XCTFail("wrong error: \(error)") } }
         }
     }
-    func testDeclaredOversizeIsRefusedWithoutWaitingForBody() async throws {
-        ResponseBudgetProtocol.begin = { p in p.headers(["Content-Length": "9000"]) }
+    func testDeclaredOversizeIsRefusedBeforeTheBodyCompletes() async throws {
+        // Deliver one byte to flush Darwin URLProtocol header delivery, but never complete the body.
+        // One byte is below the cap: only the declared-length check can reject this as too large.
+        ResponseBudgetProtocol.begin = { p in p.headers(["Content-Length": "9000"]); p.chunk(Data([1])) }
         do { _ = try await send(); XCTFail() }
         catch { guard case InstallTransport.Failure.tooLarge = error else { return XCTFail("wrong error: \(error)") } }
     }
