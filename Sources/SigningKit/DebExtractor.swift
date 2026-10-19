@@ -46,7 +46,7 @@ enum DebExtractor {
             return d
         case "gz":
             let member = try DebGzip.parse(d)
-            let output = try inflate(member.payload, algorithm: COMPRESSION_ZLIB)
+            let output = try DebDeflate.decode(member.payload)
             try member.validate(output)
             return output
         case "xz", "lzma": return try inflate(d, algorithm: COMPRESSION_LZMA)

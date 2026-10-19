@@ -289,7 +289,10 @@ final class ParserSafetyTests: XCTestCase {
         let tar = try Data(contentsOf: dir.appendingPathComponent("data.tar"))
         XCTAssertEqual(try DebArchive.tarFiles(tar).first?.bytes, bytes)
         try run("/usr/bin/ar", ["-q", "tweak.deb", "data.tar"])
-        XCTAssertEqual(try DebArchive.arMembers(Data(contentsOf: dir.appendingPathComponent("tweak.deb"))).first?.bytes, tar)
+        let archive = try Data(contentsOf: dir.appendingPathComponent("tweak.deb"))
+        let members = try DebArchive.arMembers(archive)
+        XCTAssertEqual(members.first?.bytes, tar,
+                       "ar archive bytes=\(archive.count), prefix=\(archive.prefix(256).map { String(format: "%02x", $0) }.joined()), members=\(members.map(\.name))")
         try run("/usr/bin/gzip", ["-k", "x.dylib"])
         try DebGzip.parse(Data(contentsOf: dir.appendingPathComponent("x.dylib.gz"))).validate(bytes)
     }
@@ -332,6 +335,21 @@ final class ParserSafetyTests: XCTestCase {
         for size in ["77777777777", "-0000000001", "+0000000001", "88888888888"] { reject(try DebArchive.tarFiles(tar(size: size))) }
         for cut in [0, 511, 512, 513, 1023, 1024, 1536, 2047] { reject(try DebArchive.tarFiles(Data(good.prefix(cut)))) }
         reject(try DebArchive.tarFiles(good + Data([1])))
+    }
+
+    func testRawDeflateRequiresExactCompleteStream() throws {
+        let payload = Data([203,72,205,201,201,7,0]) // fixed-Huffman DEFLATE of "hello"
+        XCTAssertEqual(try DebDeflate.decode(payload), Data("hello".utf8))
+        XCTAssertEqual(try DebDeflate.decode(Data([3, 0])), Data()) // legitimate empty stream
+        for suffix in [Data([0]), Data([0xAA]), Data([0xFF]), Data([3, 0]), payload] {
+            reject(try DebDeflate.decode(payload + suffix))
+        }
+        for cut in 0..<payload.count { reject(try DebDeflate.decode(Data(payload.prefix(cut)))) }
+        // Uncompressed final block: byte boundary, LEN, one's-complement NLEN, payload.
+        let stored = Data([1, 5, 0, 250, 255]) + Data("hello".utf8)
+        XCTAssertEqual(try DebDeflate.decode(stored), Data("hello".utf8))
+        reject(try DebDeflate.decode(stored + Data([0])))
+        var invalid = stored; invalid[3] ^= 1; reject(try DebDeflate.decode(invalid))
     }
 
     func testGzipWrapperOptionalFieldsCRCAndLength() throws {

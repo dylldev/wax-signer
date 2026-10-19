@@ -182,8 +182,11 @@ final class DebExtractorTests: XCTestCase {
             var bad = good; bad[index] ^= 1
             XCTAssertThrowsError(try DebExtractor.decompress(bad, name: "data.tar.gz"))
         }
-        var trailing = good; trailing.insert(0xAA, at: trailing.count - 8)
-        XCTAssertThrowsError(try DebExtractor.decompress(trailing, name: "data.tar.gz"))
+        for suffix in [Data([0xAA]), Data([0]), Data([0xFF]), Data([3, 0]), Data(repeating: 0, count: 128)] {
+            var trailing = good; trailing.insert(contentsOf: suffix, at: trailing.count - 8)
+            XCTAssertThrowsError(try DebExtractor.decompress(trailing, name: "data.tar.gz"))
+        }
+        XCTAssertThrowsError(try DebExtractor.decompress(good + good, name: "data.tar.gz"), "concatenated members must not be silently truncated")
     }
 
 }
