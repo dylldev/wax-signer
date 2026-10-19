@@ -150,7 +150,8 @@ public struct IPAArchiveManifest {
         }
     }
 
-    func verifyTree() throws {
+    /// Recheck content, paths, modes and symlinks against this snapshot without writing the tree.
+    public func verifyTree() throws {
         let current = try Self.capture(directory: directory, rootFolder: rootFolder)
         guard current.records == records else { throw IPAError.integrity("working tree changed after its snapshot was captured") }
     }
