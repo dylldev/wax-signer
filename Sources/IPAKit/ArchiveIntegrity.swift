@@ -77,6 +77,7 @@ public struct IPAArchiveManifest {
         guard !IPAInspector.isUnsafe(rootFolder), !rootFolder.contains("/") else { throw IPAError.unsafePath(rootFolder) }
         let directory = directory.standardizedFileURL.resolvingSymlinksInPath()
         let base = directory.appendingPathComponent(rootFolder)
+        let baseResolved = base.resolvingSymlinksInPath().path
         guard (try? fm.attributesOfItem(atPath: base.path)[.type]) as? FileAttributeType == .typeDirectory else { throw IPAError.noApp }
         var failure: Error?
         guard let walker = fm.enumerator(at: base, includingPropertiesForKeys: nil, errorHandler: { _, error in
@@ -88,8 +89,11 @@ public struct IPAArchiveManifest {
         try ClassicZIP.entryCount(urls.count)
         var records: [String: Record] = [:], seen = Set<String>()
         for url in urls {
-            guard url.path == base.path || url.path.hasPrefix(base.path + "/") else { throw IPAError.unsafePath(url.path) }
-            var name = url.path == base.path ? rootFolder : rootFolder + "/" + String(url.path.dropFirst(base.path.count + 1))
+            // Resolve the parent only, preserving each symlink's own name. Use the same canonical spelling
+            // on both sides: macOS enumeration may return /private/var for a /var temporary-directory URL.
+            let full = url.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent(url.lastPathComponent).path
+            guard full == baseResolved || full.hasPrefix(baseResolved + "/") else { throw IPAError.unsafePath(url.path) }
+            var name = full == baseResolved ? rootFolder : rootFolder + "/" + String(full.dropFirst(baseResolved.count + 1))
             let attrs = try fm.attributesOfItem(atPath: url.path)
             let type = attrs[.type] as? FileAttributeType
             let permissions = UInt32((attrs[.posixPermissions] as? Int) ?? 0)
@@ -109,7 +113,7 @@ public struct IPAArchiveManifest {
                       IPAExtractor.staysInsideTheApp(link: name, target: t) else { throw IPAError.unsafePath(name) }
                 let parts = name.split(separator: "/")
                 let allowed = parts.count >= 3 && parts[1].hasSuffix(".app")
-                    ? directory.appendingPathComponent(String(parts[0]) + "/" + String(parts[1])).path : directory.path
+                    ? directory.appendingPathComponent(String(parts[0]) + "/" + String(parts[1])).resolvingSymlinksInPath().path : directory.resolvingSymlinksInPath().path
                 let resolved = url.resolvingSymlinksInPath().path
                 guard resolved == allowed || resolved.hasPrefix(allowed + "/") else { throw IPAError.unsafePath(name) }
                 target = t
@@ -130,6 +134,7 @@ public struct IPAArchiveManifest {
         for entry in zip.entries {
             guard let record = records[entry.name], record.name.utf8.elementsEqual(entry.name.utf8),
                   entry.madeByUnix, entry.unixMode == record.mode,
+                  entry.externalAttributes & 0x10 == (record.kind == .directory ? 0x10 : 0),
                   entry.isDirectory == (record.kind == .directory), entry.isSymlink == (record.kind == .symlink) else {
                 throw IPAError.integrity("packaged path, type or permissions differ: \(entry.name)")
             }

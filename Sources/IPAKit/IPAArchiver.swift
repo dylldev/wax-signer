@@ -41,7 +41,7 @@ public enum IPAArchiver {
         }
         guard centralBytes <= ZipArchive.maxCentralDirectoryBytes else { throw IPAError.unsupportedZip("central directory is too large") }
         let outputPath = output.standardizedFileURL.resolvingSymlinksInPath().path
-        let rootPath = manifest.directory.appendingPathComponent(rootFolder).path
+        let rootPath = manifest.directory.appendingPathComponent(rootFolder).resolvingSymlinksInPath().path
         guard outputPath != rootPath, !outputPath.hasPrefix(rootPath + "/") else { throw IPAError.integrity("output is inside the archived tree") }
 
         // Only changed large files need parallel compression. SHA-256 is computed during the same reads.

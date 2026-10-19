@@ -173,14 +173,17 @@ final class ArchiveIntegrityTests: XCTestCase {
         let zip = try ZipArchive(url: out)
         XCTAssertEqual(zip.entries.first { $0.name == "Payload/Demo.app/" }?.unixMode, 0o040750)
         XCTAssertEqual(try bytes(out, name: "Payload/Demo.app/link"), Data("asset".utf8))
-        for change in 0..<6 {
+        for change in 0..<7 {
             var fixture = ZipFixture()
             for record in snapshot.records.values {
                 if change == 0 && record.name == path { continue }
                 let name = change == 1 && record.name == path ? path + "-renamed" : record.name
                 let data = record.kind == .file ? (change == 2 ? collisionB : collisionA) : Data((record.target ?? "").utf8)
                 let actual = change == 4 && record.kind == .symlink ? Data("missing".utf8) : data
-                fixture.add(name, actual) { $0.unixMode = change == 3 && record.name == path ? 0o100644 : record.mode }
+                fixture.add(name, actual) {
+                    $0.unixMode = change == 3 && record.name == path ? 0o100644 : record.mode
+                    $0.externalAttributes = $0.unixMode! << 16 | (record.kind == .directory || (change == 6 && record.name == path) ? 0x10 : 0)
+                }
             }
             if change == 5 { fixture.add("Payload/extra", Data()) { $0.unixMode = 0o100644 } }
             let bad = dir.appendingPathComponent("bad-\(change).zip"); try fixture.write(to: bad)
@@ -302,6 +305,8 @@ final class ArchiveIntegrityTests: XCTestCase {
             }
         }
         let root = try tree(bytes: data), original = dir.appendingPathComponent("original.zip")
+        let beginHash = Date(); _ = try IPAArchiveManifest.capture(directory: root)
+        let hashing = Date().timeIntervalSince(beginHash)
         let begin = Date(); try IPAArchiver.archive(directory: root, to: original)
         let compressed = Date().timeIntervalSince(begin)
         let session = try IPAArchiveSession(url: original), extracted = dir.appendingPathComponent("extracted")
@@ -310,7 +315,38 @@ final class ArchiveIntegrityTests: XCTestCase {
         let startReuse = Date()
         try IPAArchiver.archive(directory: extracted, to: dir.appendingPathComponent("reused.zip"), reusing: original, reusingExtraction: inventory)
         let reuse = Date().timeIntervalSince(startReuse)
-        print("R2_BENCH fixture=8MiB mixed-compressibility compress_and_gate_s=\(compressed) extraction_s=\(extract) reuse_and_gate_s=\(reuse) archive_bytes=\((try FileManager.default.attributesOfItem(atPath: original.path)[.size])!)")
+        print("R2_BENCH fixture=8MiB mixed-compressibility snapshot_hash_s=\(hashing) compress_and_gate_s=\(compressed) extraction_s=\(extract) reuse_and_gate_s=\(reuse) archive_bytes=\((try FileManager.default.attributesOfItem(atPath: original.path)[.size])!)")
+    }
+
+    func testUnreadableRegularFileIsAnExplicitError() throws {
+        guard geteuid() != 0 else { throw XCTSkip("root bypasses file read permissions") }
+        let root = try tree(bytes: collisionA), file = root.appendingPathComponent(path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: file.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path) }
+        XCTAssertThrowsError(try IPAArchiveManifest.capture(directory: root)) { error in
+            guard case IPAError.unreadable = error else { return XCTFail("expected I/O rejection, got \(error)") }
+        }
+    }
+
+    func testDistantDatesAndEmptyRegularFilesRemainSupported() throws {
+        let root = try tree(bytes: Data()), file = root.appendingPathComponent(path)
+        for (index, date) in [Date.distantPast, Date.distantFuture].enumerated() {
+            try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: file.path)
+            let out = dir.appendingPathComponent("date-\(index).zip")
+            try IPAArchiver.archive(directory: root, to: out)
+            XCTAssertEqual(try bytes(out), Data())
+        }
+    }
+
+    func testManifestUsesCanonicalParentPathsWithoutFollowingEntryLinks() throws {
+        let root = try tree(bytes: collisionA)
+        let alias = dir.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(atPath: alias.path, withDestinationPath: root.path)
+        let snapshot = try IPAArchiveManifest.capture(directory: alias)
+        XCTAssertEqual(Set(snapshot.records.keys), ["Payload/", "Payload/Demo.app/", path])
+        let out = dir.appendingPathComponent("out.zip")
+        try IPAArchiver.archive(directory: alias, to: out, verifiedManifest: snapshot)
+        XCTAssertEqual(try bytes(out), collisionA)
     }
 
 }

@@ -21,6 +21,7 @@ struct ZipFixture {
         var centralOffset: UInt32?
         /// Unix mode (e.g. 0o120777 for a symlink); written as a Unix-host entry.
         var unixMode: UInt32?
+        var externalAttributes: UInt32?
     }
 
     var entries: [Entry] = []
@@ -60,7 +61,7 @@ struct ZipFixture {
             central.le16(0); central.le16(0); central.le32(crc)
             central.le32(comp); central.le32(uncomp)
             central.le16(UInt16(name.count)); central.le16(0); central.le16(0)
-            central.le16(0); central.le16(0); central.le32((e.unixMode ?? 0) << 16); central.le32(e.centralOffset ?? offset)
+            central.le16(0); central.le16(0); central.le32(e.externalAttributes ?? ((e.unixMode ?? 0) << 16)); central.le32(e.centralOffset ?? offset)
             central.append(name)
         }
         let cdOffset = UInt32(out.count)
