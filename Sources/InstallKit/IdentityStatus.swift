@@ -1,6 +1,6 @@
 import Foundation
 
-/// What a test install showed for one signing identity.
+/// Legacy stored names: installed means URL-scheme detection, not independently confirmed install/launch.
 public enum InstallTestResult: String, Codable, Sendable { case installed, failed }
 
 /// What Wax knows about a certificate and the profile paired with it, from their data and from any test install.
@@ -19,12 +19,12 @@ public struct IdentityFacts: Equatable, Sendable {
     }
 }
 
-/// Whether an identity can be used to sign and install on this phone. It never guesses from a certificate's name:
-/// development certificates installed fine in testing, so only the data and a real test install decide.
+/// Static pairing checks plus historical probe observations. Neither a certificate name nor a URL scheme
+/// determines current provisioning/trust acceptance or proves application launch.
 public enum IdentityStatus: Equatable, Sendable {
     case ready              // paired and in date; no test install yet
-    case verified           // a test install worked on this phone
-    case installFailed      // a test install did not complete
+    case verified           // legacy test record reports probe detection; not trust/launch proof
+    case installFailed      // probe was not detected during the observation window
     case needsAttention(String)
 
     public static func evaluate(_ f: IdentityFacts) -> IdentityStatus {
@@ -42,23 +42,23 @@ public enum IdentityStatus: Equatable, Sendable {
     public var label: String {
         switch self {
         case .ready: "Ready"
-        case .verified: "Installs here"
-        case .installFailed: "Install failed"
+        case .verified: "Probe detected"
+        case .installFailed: "Not detected"
         case .needsAttention: "Check"
         }
     }
 
     public var detail: String {
         switch self {
-        case .ready: "Certificate and profile match. Not tested on this phone yet."
-        case .verified: "A test app installed on this phone with this identity."
-        case .installFailed: "A test install didn't complete. You can still export for a Mac, or test again."
+        case .ready: "Static certificate and profile checks pass. Installation and launch have not been verified."
+        case .verified: "An earlier test record reports probe detection. It does not verify the current profile, iOS version, installation or launch."
+        case .installFailed: "The probe was not detected during an earlier test. Cancellation or delivery failure can cause this; you can retry or export."
         case .needsAttention(let why): why
         }
     }
 }
 
-/// Remembers test-install results per certificate (by SHA-1 fingerprint).
+/// Legacy per-certificate observations. No profile/OS/time context: never use these as current eligibility proof.
 public struct InstallTestStore {
     private let defaults: UserDefaults
     private static let key = "wax.installTests"
@@ -74,4 +74,10 @@ public struct InstallTestStore {
         all[fingerprint] = result?.rawValue
         defaults.set(all, forKey: Self.key)
     }
+}
+
+/// The URL-scheme probe observes availability only; it cannot observe the OS install decision or app launch.
+public enum InstallProbeMessaging {
+    public static let detected = "Wax detected the probe's URL scheme. Installation and launch are not independently confirmed. You can delete Wax Probe when finished."
+    public static let notDetected = "Wax did not detect the probe before the timeout. The installation outcome is unknown. If you canceled the prompt or delivery failed, retry."
 }

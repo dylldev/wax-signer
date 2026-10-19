@@ -41,7 +41,7 @@ extension IdentityStatus {
 }
 
 /// Signs and installs the tiny built-in Wax Probe app with one identity, then watches for it to appear.
-/// Whether it installed is the real answer to "does this identity work on this phone".
+/// URL-scheme detection is an observation, not proof of current eligibility or application launch.
 @MainActor
 final class IdentityTester: ObservableObject {
     enum State: Equatable {
@@ -116,13 +116,13 @@ final class IdentityTester: ObservableObject {
             state = .waiting(secondsLeft: left)
             if UIApplication.shared.canOpenURL(probeScheme) {
                 InstallTestStore().set(.installed, for: cert.sha1Fingerprint)
-                state = .finished(.installed, "It installed. Delete Wax Probe from your home screen when you like.")
+                state = .finished(.installed, InstallProbeMessaging.detected)
                 return
             }
             try? await Task.sleep(for: .seconds(2))
         }
         InstallTestStore().set(.failed, for: cert.sha1Fingerprint)
-        state = .finished(.failed, "It didn't install. If you cancelled the prompt, test again.")
+        state = .finished(.failed, InstallProbeMessaging.notDetected)
     }
 
     func forget(_ cert: CertificateInfo) { InstallTestStore().set(nil, for: cert.sha1Fingerprint); state = .idle }

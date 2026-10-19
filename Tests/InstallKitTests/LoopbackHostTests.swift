@@ -211,4 +211,13 @@ final class LoopbackHostTests: XCTestCase {
         do { _ = try await bad.publish(ipa: ipa, bundleIdentifier: "a.b", version: "1", build: "1", title: "T", progress: { _ in }); XCTFail("expected throw") }
         catch { XCTAssertTrue(error.localizedDescription.lowercased().contains("this iphone"), error.localizedDescription) }
     }
+    func testIncompleteDeliveryNeverClaimsToObserveTheOSInstallOutcome() {
+        for served in [true, false] {
+            let text = LoopbackHost.transferFailureMessage(served: served)
+            XCTAssertFalse(text.contains("nothing was installed"))
+            XCTAssertFalse(text.contains("installation failed"))
+            XCTAssertTrue(text.contains("could not confirm installation") || text.contains("outcome is unknown"))
+        }
+    }
+
 }
