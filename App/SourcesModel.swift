@@ -167,6 +167,7 @@ final class SourcesModel: ObservableObject {
                 retainedDownloads[key] = nil; retainedPending[key] = nil
                 do { try await Task.detached { try storage.removeIncoming(file) }.value }
                 catch { message = "Saved, but the retained download needs cleanup: " + error.localizedDescription }
+                await library.refresh(recover: false)
                 if signAfter { signing.use(saved.entry); router.tab = .sign }
             } catch {
                 if let pending = (error as? ShelfSaveFailure)?.pendingID { retainedPending[key] = pending }

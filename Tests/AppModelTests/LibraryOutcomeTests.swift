@@ -214,6 +214,7 @@ final class LibraryOutcomeTests: XCTestCase {
         XCTAssertFalse(model.isFiled(a, source: firstSource, library: library))
         await model.get(a, from: firstSource, signAfter: false, library: library, signing: signing, router: router)?.value
         XCTAssertEqual(library.unsigned.count, 2)
+        XCTAssertTrue(library.recovery.isEmpty, "successful cleanup must remove stale recovery rows")
         let savedB = try XCTUnwrap(library.unsigned.first { $0.build == "456" })
         await library.remove(savedB)
         XCTAssertFalse(model.isFiled(b, source: secondSource, library: library))

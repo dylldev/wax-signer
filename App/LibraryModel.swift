@@ -152,6 +152,7 @@ final class LibraryModel: ObservableObject {
             let saved = try await fileNow(file, info: info, provenance: .recoveredUnknown)
             do { try await Task.detached { try storage.removeIncoming(file) }.value }
             catch { message = "Saved, but the retained original needs cleanup: " + error.localizedDescription }
+            await refresh(recover: false)
             return saved
         } catch {
             let failure = (error as? ShelfSaveFailure) ?? ShelfSaveFailure(reason: error.localizedDescription, artifact: file, pendingID: nil)
