@@ -62,17 +62,30 @@ final class OTAInstallModel: ObservableObject {
     private let store: SecretStore
     private let bucketStore: SecretStore
     private var phoneHost: LoopbackHost?
+    private let bucketHost: (S3Credentials, String) throws -> S3Host
+    private let cleanupStore: BucketCleanupStore
+    private let cleanup: @Sendable (S3Credentials, String, String) async throws -> Void
+    private let defaults: UserDefaults
+    private var activeBucketRecords = Set<UUID>()
 
     /// The Keychain service name for cloud bucket keys. DO NOT RENAME: Wax has shipped under this string, and
     /// changing it would orphan the keys already stored on people's phones.
     static let bucketKeysService = "dev.localsigner.wax.bucket-keys"
 
-    init(store: SecretStore = KeychainSecretStore(), bucketStore: SecretStore = KeychainSecretStore(service: OTAInstallModel.bucketKeysService)) {
+    init(store: SecretStore = KeychainSecretStore(), bucketStore: SecretStore = KeychainSecretStore(service: OTAInstallModel.bucketKeysService),
+         cleanupStore: BucketCleanupStore? = nil, defaults: UserDefaults = .standard, sweepOnStart: Bool = true,
+         bucketHost: @escaping (S3Credentials, String) throws -> S3Host = { try S3Host(credentials: $0, bucket: $1) },
+         cleanup: @escaping @Sendable (S3Credentials, String, String) async throws -> Void = { credentials, bucket, id in
+             try await S3Host(credentials: credentials, bucket: bucket, id: id).cleanupConfirmed()
+         }) {
         self.store = store
         self.bucketStore = bucketStore
+        self.defaults = defaults; self.cleanup = cleanup; self.bucketHost = bucketHost
+        self.cleanupStore = cleanupStore ?? BucketCleanupStore(file: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Install/bucket-cleanup-v1.json"))
         hasToken = store.load() != nil
         hasBucketKeys = bucketStore.load() != nil
-        Task { await sweepBucket() }
+        if sweepOnStart { Task { await sweepBucket() } }
     }
 
     /// The saved setup is complete for the chosen host.
@@ -164,20 +177,35 @@ final class OTAInstallModel: ObservableObject {
         }
     }
 
-    /// Uploaded sessions wait here until their links have expired, then are deleted from the bucket.
-    private var pendingBucket: [String: Double] {
-        get { UserDefaults.standard.dictionary(forKey: "s3Pending") as? [String: Double] ?? [:] }
-        set { UserDefaults.standard.set(newValue, forKey: "s3Pending") }
+    func retryBucketCleanup() { Task { await sweepBucket() } }
+
+    /// Legacy records lack their destination: preserve them, never guess the current host for deletion.
+    private func sweepBucket() async {
+        guard let (credentials, bucket) = bucketCredentials() else { return }
+        await sweepBucket(credentials: credentials, bucket: bucket)
     }
 
-    private func sweepBucket() async {
-        guard let (c, name) = bucketCredentials() else { return }
-        let cutoff = Date().timeIntervalSince1970 - Double(S3Host.linkLifetime)
-        for (id, at) in pendingBucket where at < cutoff {
-            // An explicit id is supplied here, so this cannot fail; `try?` keeps sweepBucket non-throwing.
-            try? await S3Host(credentials: c, bucket: name, id: id).cleanup()
-            pendingBucket[id] = nil
-        }
+    func sweepBucket(credentials: S3Credentials, bucket: String, now: Date = Date()) async {
+        do {
+            let scope = try BucketCleanupScope(credentials: credentials, bucket: bucket)
+            let store = cleanupStore
+            let records = try await Task.detached { try store.records() }.value
+            bucketNote = "Checking expired bucket uploads…"
+            let unresolvedLegacy = defaults.dictionary(forKey: "s3Pending")?.count ?? 0
+            if unresolvedLegacy > 0 { bucketNote = "\(unresolvedLegacy) older cleanup records have no destination. They are preserved; use your bucket's expiry rule or remove the old objects in its console." }
+            for record in records where record.scope == scope && (record.expiresAt == nil || record.expiresAt! <= now) {
+                guard activeBucketRecords.insert(record.id).inserted else { continue }
+                defer { activeBucketRecords.remove(record.id) }
+                do {
+                    try await cleanup(credentials, bucket, record.sessionID)
+                    try await Task.detached { try store.remove(record) }.value
+                } catch { bucketNote = "Bucket cleanup could not finish. Its record is kept; check access and retry on the next upload or launch." }
+            }
+            if bucketNote == "Checking expired bucket uploads…" { bucketNote = "Expired bucket cleanup finished; unexpired links are kept." }
+            if records.contains(where: { $0.scope != scope }) {
+                bucketNote = "Cleanup records for another bucket or access key are preserved. Restore that configuration to retry, or use the original bucket's expiry rule."
+            }
+        } catch { bucketNote = "Bucket cleanup records could not be read. They were preserved; new uploads must wait for storage recovery." }
     }
 
     func reset() { state = .idle; phoneHost?.stop() }
@@ -207,7 +235,7 @@ final class OTAInstallModel: ObservableObject {
     /// Returns the install link to open, or nil after setting `state` to a failure.
     func upload(ipa: URL, bundleIdentifier: String, version: String, build: String = "", title: String) async -> URL? {
         let host: InstallHost
-        var bucketID: String?
+        var bucketRecord: BucketCleanupRecord?
         switch hostKind {
         case .phone:
             guard let feed = URL(string: certificateFeedText), !certificateFeedText.isEmpty else {
@@ -236,7 +264,9 @@ final class OTAInstallModel: ObservableObject {
             guard let (c, name) = bucketCredentials() else { state = .failed("Set up the bucket first (endpoint, name, region and keys)."); return nil }
             await sweepBucket()
             do {
-                let s3 = try S3Host(credentials: c, bucket: name); bucketID = s3.id; host = s3
+                let s3 = try bucketHost(c, name)
+                bucketRecord = try BucketCleanupRecord(sessionID: s3.id, scope: BucketCleanupScope(credentials: c, bucket: name))
+                host = s3
             } catch {
                 state = .failed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
                 return nil
@@ -245,11 +275,25 @@ final class OTAInstallModel: ObservableObject {
         state = .uploading(0)
         ImportLogs.shared.log("ota: upload start (\(hostKind.rawValue))")
         let began = Date()
+        defer { if let record = bucketRecord { activeBucketRecords.remove(record.id) } }
         do {
-            if let bucketID { pendingBucket[bucketID] = began.timeIntervalSince1970 }   // recorded first: a failed run is cleaned up too
+            if let record = bucketRecord {
+                activeBucketRecords.insert(record.id)
+                let store = cleanupStore
+                // A preparation record must commit before the first remote object can be created.
+                try await Task.detached { try store.put(record) }.value
+            }
             let link = try await host.publish(ipa: ipa, bundleIdentifier: bundleIdentifier, version: version, build: build, title: title
             ) { p in Task { @MainActor in self.state = .uploading(p) } }
-            if let bucketID { pendingBucket[bucketID] = Date().timeIntervalSince1970 }   // links live 6 h from now, not from the start
+            if var record = bucketRecord {
+                record.expiresAt = Date().addingTimeInterval(Double(S3Host.linkLifetime))
+                let committed = record, store = cleanupStore
+                do { try await Task.detached { try store.put(committed) }.value }
+                catch {
+                    state = .failed("The IPA was uploaded, but Wax could not save its cleanup deadline. The installer was not opened. Free space and retry.")
+                    return nil
+                }
+            }
             state = .handedToiOS
             ImportLogs.shared.log("ota: uploaded in \(Int(Date().timeIntervalSince(began))) s, opening installer")
             return link

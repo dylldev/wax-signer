@@ -17,6 +17,25 @@ private final class S3Stub: URLProtocol {
     override func stopLoading() {}
 }
 
+private final class CleanupRedirectStub: URLProtocol {
+    static var destinations: [String] = []
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.destinations.append(request.url!.host!)
+        if request.url!.host == "acct.r2.example" {
+            let target = URL(string: "https://other.example/not-our-artifact")!
+            var forwarded = request; forwarded.url = target
+            client?.urlProtocol(self, wasRedirectedTo: forwarded,
+                redirectResponse: HTTPURLResponse(url: request.url!, statusCode: 307, httpVersion: nil, headerFields: ["Location": target.absoluteString])!)
+        } else {
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 204, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+    override func stopLoading() {}
+}
+
 final class S3HostTests: XCTestCase {
     private var ipa: URL!
     private let creds = S3Credentials(accessKey: "AK", secretKey: "SK", region: "auto", endpoint: URL(string: "https://acct.r2.example")!)
@@ -93,4 +112,32 @@ final class S3HostTests: XCTestCase {
         do { try await host().checkAccess(); XCTFail("expected throw") }
         catch { XCTAssertTrue(error.localizedDescription.contains("secret key"), error.localizedDescription) }
     }
+    func testConfirmedCleanupDoesNotHideHTTPFailureAndStillAttemptsBothObjects() async throws {
+        S3Stub.handler = { r in (r.url!.lastPathComponent == "app.ipa" ? 403 : 204, Data()) }
+        do { try await host().cleanupConfirmed(); XCTFail("expected cleanup rejection") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("403")) }
+        XCTAssertEqual(S3Stub.seen.map { $0.httpMethod ?? "" }, ["DELETE", "DELETE"])
+        XCTAssertTrue(S3Stub.seen.allSatisfy { $0.timeoutInterval == 20 })
+    }
+    func testConfirmedCleanupAcceptsAlreadyAbsentObjects() async throws {
+        S3Stub.handler = { _ in (404, Data()) }
+        try await host().cleanupConfirmed()
+        XCTAssertEqual(S3Stub.seen.count, 2)
+    }
+    func testConfirmedCleanupDoesNotTreatRedirectAsSuccess() async throws {
+        S3Stub.handler = { _ in (307, Data()) }
+        do { try await host().cleanupConfirmed(); XCTFail("expected redirect rejection") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("307")) }
+        XCTAssertTrue(S3Stub.seen.allSatisfy { $0.url?.host == "acct.r2.example" })
+    }
+
+    func testCleanupRedirectDelegateStopsRealRedirectCallback() async throws {
+        CleanupRedirectStub.destinations = []
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [CleanupRedirectStub.self]
+        let network = URLSession(configuration: config); defer { network.invalidateAndCancel() }
+        let target = try S3Host(credentials: creds, bucket: "wax", session: network, id: "ABCDEFGHIJKLMNOPQRSTUV")
+        do { try await target.cleanupConfirmed(); XCTFail("redirect must fail cleanup") } catch {}
+        XCTAssertEqual(CleanupRedirectStub.destinations, ["acct.r2.example", "acct.r2.example"], "neither destructive request may reach the redirect destination")
+    }
+
 }
