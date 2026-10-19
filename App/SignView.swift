@@ -41,7 +41,7 @@ struct SignView: View {
         SignPhase.resolve(busy: model.busyMessage != nil && !isReading, hasError: errorText != nil, hasReport: model.report != nil)
     }
 
-    private var uploading: Bool { if case .uploading = ota.state { return true } else { return false } }
+    private var uploading: Bool { ota.activeSession != nil && model.installing && model.busyMessage == nil }
 
     private var errorText: String? {
         if let e = model.errorText { return e }
@@ -68,6 +68,10 @@ struct SignView: View {
                 ScrollView {
                     VStack(spacing: 10) {
                         header.id("top")
+                        if model.installing, ota.activeSession != nil {
+                            Button("Cancel installation", role: .destructive) { ota.cancelActive() }
+                                .accessibilityHint("Keeps signed and saved IPA files. Signing already in progress may finish safely before stopping.")
+                        }
                         if let r = model.report {
                             resultCard(r)
                         } else if let stage {
@@ -262,7 +266,7 @@ struct SignView: View {
                 Label(primary.title, systemImage: primaryIcon)
             }
             .buttonStyle(WaxPrimaryButtonStyle())
-            .disabled(model.installing)
+            .disabled(model.installing || ota.activeSession != nil)
             .padding(.top, 4)
             Text(primary.reason)
                 .font(.footnote).foregroundStyle(Wax.sub).multilineTextAlignment(.center)
