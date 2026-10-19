@@ -138,3 +138,67 @@ final class SourceStoreTests: XCTestCase {
         XCTAssertTrue(store.sources.isEmpty)
     }
 }
+
+extension SourceStoreTests {
+    func testNew200WithoutETagClearsTheOldValidator() async throws {
+        StubProtocol.handler = { _ in (200, ["ETag": "\"old\""], self.good) }
+        let store = makeStore(); _ = try await store.add(url: sourceURL)
+        let id = try XCTUnwrap(store.sources.first).id
+        StubProtocol.handler = { _ in (200, [:], self.good) }
+        _ = try await store.refresh(id)
+        _ = try await store.refresh(id)
+        XCTAssertNil(StubProtocol.seen.last?.value(forHTTPHeaderField: "If-None-Match"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("cache-\(id.uuidString).etag").path))
+    }
+
+    func testRemovedSourceCannotBeResurrectedByAnInflightRefresh() async throws {
+        StubProtocol.handler = { _ in (200, ["ETag": "old"], self.good) }
+        let store = makeStore(); let repo = try await store.add(url: sourceURL)
+        let id = try XCTUnwrap(store.sources.first).id, refresh = try store.beginRefresh(id)
+        try store.remove(id)
+        XCTAssertThrowsError(try store.finishRefresh(refresh, repo: repo, etag: "late")) {
+            XCTAssertEqual($0 as? SourceStoreError, .refreshSuperseded)
+        }
+        XCTAssertNil(store.cached(id)); XCTAssertTrue(makeStore().sources.isEmpty)
+    }
+
+    func testLateOldRefreshCannotOverwriteANewerCommit() async throws {
+        StubProtocol.handler = { _ in (200, ["ETag": "old"], self.good) }
+        let store = makeStore(); let original = try await store.add(url: sourceURL)
+        let id = try XCTUnwrap(store.sources.first).id
+        let old = try store.beginRefresh(id), new = try store.beginRefresh(id)
+        let fresh = try SourceParser.parse(Data(String(decoding: good, as: UTF8.self).replacingOccurrences(of: "Test Repo", with: "Fresh Repo").utf8))
+        _ = try store.finishRefresh(new, repo: fresh, etag: "new")
+        XCTAssertThrowsError(try store.finishRefresh(old, repo: original, etag: "old")) {
+            XCTAssertEqual($0 as? SourceStoreError, .refreshSuperseded)
+        }
+        XCTAssertEqual(store.cached(id)?.name, "Fresh Repo")
+        XCTAssertEqual(store.sources.first?.name, "Fresh Repo")
+        XCTAssertEqual(try store.beginRefresh(id).etag, "new")
+    }
+
+    func testCacheWriteFailureCannotLeaveAnOldETagForNewContent() async throws {
+        StubProtocol.handler = { _ in (200, ["ETag": "old"], self.good) }
+        let store = makeStore(); let original = try await store.add(url: sourceURL)
+        let id = try XCTUnwrap(store.sources.first).id, refresh = try store.beginRefresh(id)
+        let cache = dir.appendingPathComponent("cache-\(id.uuidString).json")
+        try FileManager.default.removeItem(at: cache)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: false)
+        XCTAssertThrowsError(try store.finishRefresh(refresh, repo: original, etag: "new"))
+        XCTAssertNil(try store.beginRefresh(id).etag)
+        XCTAssertEqual(store.sources.count, 1)
+    }
+
+    func testIndexWriteFailureReportsFailureAndPreservesCoherentCacheValidator() async throws {
+        StubProtocol.handler = { _ in (200, ["ETag": "old"], self.good) }
+        let store = makeStore(); _ = try await store.add(url: sourceURL)
+        let id = try XCTUnwrap(store.sources.first).id, refresh = try store.beginRefresh(id)
+        let fresh = try SourceParser.parse(Data(String(decoding: good, as: UTF8.self).replacingOccurrences(of: "Test Repo", with: "Fresh Repo").utf8))
+        let index = dir.appendingPathComponent("sources.json")
+        try FileManager.default.removeItem(at: index); try FileManager.default.createDirectory(at: index, withIntermediateDirectories: false)
+        XCTAssertThrowsError(try store.finishRefresh(refresh, repo: fresh, etag: "new"))
+        XCTAssertEqual(store.sources.first?.name, "Test Repo")
+        XCTAssertEqual(store.cached(id)?.name, "Fresh Repo")
+        XCTAssertEqual(try store.beginRefresh(id).etag, "new")
+    }
+}
