@@ -66,10 +66,10 @@ enum LibraryInjector {
     }
 
     private static func requireMachO(_ file: URL) throws {
-        guard let h = try? FileHandle(forReadingFrom: file), let head = try? h.read(upToCount: 4), MachO.looksLikeMachO(head) else {
-            throw SigningError.bundle("\(file.lastPathComponent) is not a compiled library for iOS.")
+        let image = try MachO(FatMachO.thin(Data(contentsOf: file, options: .mappedIfSafe)))
+        guard image.fileType == 6 || image.fileType == 8, !image.isEncrypted else {
+            throw SigningError.bundle("\(file.lastPathComponent) is not an unencrypted supported iOS library.")
         }
-        try? h.close()
     }
 
     private static func readInfo(_ bundle: URL) throws -> [String: Any] {

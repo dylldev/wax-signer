@@ -14,7 +14,9 @@ final class FatMachOTests: XCTestCase {
         for s in slices {
             header += be32(0x0100000C) + be32(s.subtype) + be32(UInt32(offset)) + be32(UInt32(s.data.count)) + be32(14)
             body.append(Data(repeating: 0, count: offset - align - body.count))
-            body.append(s.data)
+            var slice = s.data
+            slice.setU32(8, s.subtype) // The architecture table must describe the actual slice.
+            body.append(slice)
             offset = align + ((body.count + align - 1) / align) * align
         }
         var out = Data(header)
@@ -38,7 +40,7 @@ final class FatMachOTests: XCTestCase {
 
     /// A refused binary found late in the scan must not leave earlier universal binaries already rewritten.
     func testAnUnsupportedBinaryFoundAfterAGoodOneLeavesTheTreeUntouched() throws {
-        let slice = Data((0..<64).map { UInt8($0) })
+        let slice = try thinBinary()
         let good = fat([(0, slice)])
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("fatscan-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -63,7 +65,7 @@ final class FatMachOTests: XCTestCase {
     }
 
     func testThinReturnsArm64eWhenItIsTheOnlyChoice() throws {
-        let d = try thinBinary()
+        var d = try thinBinary(); d.setU32(8, 2)
         XCTAssertEqual(try FatMachO.thin(fat([(2, d)])), d)
     }
 

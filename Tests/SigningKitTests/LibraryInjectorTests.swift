@@ -76,6 +76,19 @@ final class LibraryInjectorTests: XCTestCase {
         XCTAssertThrowsError(try LibraryInjector.inject([junk], into: app))
     }
 
+    func testMalformedImportedLibraryDoesNotMutateTheHost() throws {
+        let app = try makeWorkingApp()
+        let executable = try exeURL(app)
+        let before = try Data(contentsOf: executable)
+        let lib = try makeLibrary(named: "Bad.dylib", in: app)
+        var bad = try Data(contentsOf: lib); bad.setU32(16, .max); try bad.write(to: lib)
+        XCTAssertThrowsError(try LibraryInjector.inject([lib], into: app)) {
+            XCTAssertTrue($0 is SigningError)
+        }
+        XCTAssertEqual(try Data(contentsOf: executable), before)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: app.appendingPathComponent("Frameworks/Bad.dylib").path))
+    }
+
     func testFrameworkInjectionUsesItsExecutableName() throws {
         let app = try makeWorkingApp()
         let src = app.appendingPathComponent("Frameworks/TestKit.framework")
@@ -119,7 +132,7 @@ final class MachOHostileCommandTests: XCTestCase {
     /// A minimal image: a __LINKEDIT segment, then one hostile command that ends exactly at the end of the file.
     private func image(command: UInt32, size: UInt32, nameOffset: UInt32? = nil) -> Data {
         var d = Data(count: 32)
-        d.setU32(0, 0xFEED_FACF); d.setU32(16, 2); d.setU32(20, 72 + size)
+        d.setU32(0, 0xFEED_FACF); d.setU32(4, 0x0100000C); d.setU32(12, 2); d.setU32(16, 2); d.setU32(20, 72 + size)
         var seg = Data(count: 72)
         seg.setU32(0, 0x19); seg.setU32(4, 72)
         seg.replaceSubrange(8..<18, with: Array("__LINKEDIT".utf8))
@@ -138,8 +151,8 @@ final class MachOHostileCommandTests: XCTestCase {
     }
 
     func testAnRpathWhosePathOffsetIsOutsideTheCommandDoesNotTrap() throws {
-        let m = try MachO(image(command: 0x8000_001C, size: 16, nameOffset: 0xFFFF))
-        XCTAssertFalse(m.hasFrameworksRpath)
-        XCTAssertEqual(m.loadDylibNames, [])
+        XCTAssertThrowsError(try MachO(image(command: 0x8000_001C, size: 16, nameOffset: 0xFFFF))) {
+            XCTAssertTrue($0.localizedDescription.contains("string offset"), "\($0)")
+        }
     }
 }

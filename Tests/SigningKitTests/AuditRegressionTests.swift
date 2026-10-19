@@ -55,7 +55,7 @@ final class AuditRegressionTests: XCTestCase {
         d += cat([u32(UInt32(sectionOffset)), Data(count: 28)])
         d += cat([u32(0x19), u32(UInt32(linkCmd)), name("__LINKEDIT"), u64(0x1_0000_4000), u64(0x4000)])
         d += cat([u64(UInt64(textSize)), u64(UInt64(linkSize)), u32(1), u32(1), u32(0), u32(0)])
-        if let cryptid { d += cat([u32(0x2C), u32(24), u32(0x4000), u32(0x100), u32(cryptid), u32(0)]) }
+        if let cryptid { d += cat([u32(0x2C), u32(24), u32(0x4000), u32(0x10), u32(cryptid), u32(0)]) }
         if signature { d += cat([u32(0x1d), u32(16), u32(UInt32(textSize + 16)), u32(UInt32(sigSize))]) }
         d += Data(count: textSize - d.count)
         let sigBytes: Data = signature ? Data(repeating: 0xBB, count: sigSize) : Data()

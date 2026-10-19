@@ -115,52 +115,48 @@ public enum SignatureVerifier {
             report.record("\(name) is a readable Mach-O", false, "")
             return
         }
-        guard let sig = macho.existingSignature, sig.offset + sig.size <= file.count, sig.size >= 20 else {
+        guard let sig = macho.existingSignature, CheckedBytes.contains(sig.offset, sig.size, in: file.count), sig.size >= 20 else {
             report.record("\(name) has a code signature", false, "none, or outside the file")
             return
         }
         report.record("\(name) has a code signature", true)
-        report.record("\(name) signature is the last thing in the file", sig.offset + sig.size == file.count)
+        report.record("\(name) signature is the last thing in the file", sig.offset == file.count - sig.size)
         report.record("\(name) __LINKEDIT covers the signature",
-                      macho.linkeditFileOffset + macho.linkeditFileSize == UInt64(file.count),
-                      "__LINKEDIT ends at \(macho.linkeditFileOffset + macho.linkeditFileSize), file at \(file.count)")
+                      macho.linkeditFileOffset <= UInt64(file.count) && macho.linkeditFileSize == UInt64(file.count) - macho.linkeditFileOffset,
+                      "__LINKEDIT \(macho.linkeditFileOffset)+\(macho.linkeditFileSize), file size \(file.count)")
         report.record("\(name) binary is not FairPlay-encrypted", !macho.isEncrypted)
 
         let blob = file[sig.offset..<(sig.offset + sig.size)]
-        func be32(_ b: Data, _ o: Int) -> Int { (0..<4).reduce(0) { $0 << 8 | Int(b[b.startIndex + o + $1]) } }
-        guard be32(blob, 0) == Int(Blob.embeddedSignature), be32(blob, 4) <= blob.count else {
-            report.record("\(name) signature container", false, "bad magic or length")
+        let slots: [Int: Data]
+        do { slots = try SignatureLayout.slots(blob) }
+        catch {
+            report.record("\(name) blob index is within the signature and has no duplicate blob slots", false, "\(error)")
             return
         }
-
-        // Every index entry must point inside the signature; only the slots we produce may exist, each once.
-        let count = be32(blob, 8)
-        var slots: [Int: Data] = [:]
-        var inRange = 12 + 8 * count <= blob.count, unexpected: [Int] = [], duplicates: [Int] = []
-        if inRange {
-            for i in 0..<count {
-                let type = be32(blob, 12 + 8 * i), off = be32(blob, 16 + 8 * i)
-                guard off >= 12 + 8 * count, off + 8 <= blob.count, off + be32(blob, off + 4) <= blob.count,
-                      be32(blob, off + 4) >= 8 else { inRange = false; continue }
-                if !expectedSlots.contains(type) { unexpected.append(type) }
-                if slots[type] != nil { duplicates.append(type) }
-                let len = be32(blob, off + 4)
-                slots[type] = Data(blob[(blob.startIndex + off)..<(blob.startIndex + off + len)])
-            }
-        }
-        report.record("\(name) blob index is within the signature", inRange)
+        report.record("\(name) blob index is within the signature", true)
+        report.record("\(name) no duplicate blob slots", true)
+        let unexpected = slots.keys.filter { !expectedSlots.contains($0) }
         report.record("\(name) only expected blob slots are present", unexpected.isEmpty,
                       "slots \(unexpected.map { String($0, radix: 16) }) are not produced or evaluated by this verifier")
-        report.record("\(name) no duplicate blob slots", duplicates.isEmpty)
-
-        guard let cd = slots[0], cd.count >= 88, be32(cd, 0) == Int(Blob.codeDirectory) else {
+        let magics = [0: Blob.codeDirectory, 2: Blob.requirementSet, 5: Blob.entitlementsXML,
+                      7: Blob.entitlementsDER, 0x10000: Blob.cmsWrapper]
+        for (slot, bytes) in slots {
+            if let magic = magics[slot], CheckedBytes.be32(bytes, 0) != Int(magic) {
+                report.record("\(name) signature blob has the expected magic", false, "slot \(slot)")
+                return
+            }
+        }
+        guard let cd = slots[0] else {
             report.record("\(name) CodeDirectory present", false, "")
             return
         }
-        report.record("\(name) CodeDirectory length field matches its blob", be32(cd, 4) == cd.count)
+        let layout: SignatureLayout.CodeDirectory
+        do { layout = try SignatureLayout.CodeDirectory(cd) }
+        catch { report.record("\(name) CodeDirectory geometry", false, "\(error)"); return }
+        report.record("\(name) CodeDirectory length field matches its blob", true)
 
         // CodeDirectory geometry and page hashes
-        let hashOffset = be32(cd, 16), nSpecial = be32(cd, 24), nCode = be32(cd, 28), codeLimit = be32(cd, 32)
+        let hashOffset = layout.hashOffset, nSpecial = layout.specialCount, nCode = layout.codeCount, codeLimit = layout.codeLimit
         let hashSize = Int(cd[cd.startIndex + 36]), hashType = Int(cd[cd.startIndex + 37]), pageLog2 = Int(cd[cd.startIndex + 39])
         report.record("\(name) CodeDirectory uses SHA-256", hashType == 2 && hashSize == 32, "hash type \(hashType), size \(hashSize)")
         report.record("\(name) code limit equals signature offset", codeLimit == sig.offset, "\(codeLimit) vs \(sig.offset)")
@@ -171,8 +167,8 @@ public enum SignatureVerifier {
                           "CodeDirectory \(be64(64))+\(be64(72)), __TEXT \(macho.textFileOffset)+\(macho.textFileSize)")
         }
         guard pageLog2 >= 12, pageLog2 < 32 else { report.record("\(name) page size is sane", false, "pageLog2 \(pageLog2)"); return }
-        let pageSize = 1 << pageLog2
-        var pagesOK = hashType == 2 && hashSize == 32 && pageLog2 >= 12 && nCode == (codeLimit + pageSize - 1) / pageSize
+        let pageSize = layout.pageSize
+        var pagesOK = hashType == 2 && hashSize == 32 && pageLog2 >= 12 && nCode == codeLimit / pageSize + (codeLimit % pageSize == 0 ? 0 : 1)
             && hashOffset + nCode * 32 <= cd.count && codeLimit <= file.count
         if pagesOK {
             for p in 0..<nCode {
@@ -187,7 +183,7 @@ public enum SignatureVerifier {
         func special(_ n: Int) -> Data? {
             guard n <= nSpecial else { return nil }
             let start = cd.startIndex + hashOffset - n * 32
-            guard start >= cd.startIndex else { return nil }
+            guard CheckedBytes.contains(start - cd.startIndex, 32, in: cd.count) else { return nil }
             let h = Data(cd[start..<(start + 32)])
             return h == Data(count: 32) ? nil : h
         }
@@ -205,14 +201,17 @@ public enum SignatureVerifier {
         check(5, "XML entitlements", slots[5])
         check(7, "DER entitlements", slots[7])
 
-        if let xml = slots[5], let der = slots[7],
-           let plist = try? PropertyListSerialization.propertyList(from: xml.dropFirst(8), format: nil) as? [String: Any],
-           let derFromXML = try? EntitlementsDER.encode(plist) {
-            report.record("\(name) XML and DER entitlements agree", Blob.wrap(Blob.entitlementsDER, derFromXML) == der)
+        if let xml = slots[5], let der = slots[7] {
+            let plist = (try? PropertyListSerialization.propertyList(from: xml.dropFirst(8), format: nil)) as? [String: Any]
+            let encoded = plist.flatMap { try? EntitlementsDER.encode($0) }
+            report.record("\(name) XML and DER entitlements agree",
+                          encoded.map { Blob.wrap(Blob.entitlementsDER, $0) == der } ?? false)
         }
 
         // CMS signature over the CodeDirectory
-        guard let cmsBlob = slots[0x10000], cmsBlob.count > 8, let cms = try? CMSSignedData.parse(cmsBlob.dropFirst(8)) else {
+        guard let cmsBlob = slots[0x10000], cmsBlob.count > 8,
+              (try? SignatureLayout.validateCMS(Data(cmsBlob.dropFirst(8)))) != nil,
+              let cms = try? CMSSignedData.parse(cmsBlob.dropFirst(8)) else {
             report.record("\(name) CMS signature present and parseable", false, "")
             return
         }

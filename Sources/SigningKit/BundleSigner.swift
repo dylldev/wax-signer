@@ -471,7 +471,7 @@ public enum BundleSigner {
             try image.prepareForSignature(size: size)
             let signature = try buildSignature(for: image)
             guard signature.count == size else { throw SigningError.machO("signature size changed between passes") }
-            image.attach(signature: signature)
+            try image.attach(signature: signature)
             try image.data.write(to: url)
 
             return Self.cdHashHex(signature: signature)
