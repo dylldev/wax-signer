@@ -7,6 +7,7 @@ struct CredentialsView: View {
     @EnvironmentObject private var model: CredentialsModel
     @EnvironmentObject private var ota: OTAInstallModel
     @EnvironmentObject private var tester: IdentityTester
+    @EnvironmentObject private var router: Router
     @Environment(\.openURL) private var openURL
     private enum ImportKind { case certificate, profile }
     // One picker for both kinds. It is the system document picker in copy mode (see DocumentPicker).
@@ -94,6 +95,10 @@ struct CredentialsView: View {
         }
         .onChange(of: model.busyMessage) { _, busy in if busy != nil { successNote = nil } }
         .onDisappear { password = ""; model.dismissPassword() }
+        // Tabs stay mounted behind opacity, so onDisappear alone does not clear an abandoned prompt.
+        .onChange(of: router.tab) { _, tab in
+            if tab != .settings { password = ""; model.dismissPassword() }
+        }
         .sheet(isPresented: $showImporter) {
             DocumentPicker { picked in
                 showImporter = false
