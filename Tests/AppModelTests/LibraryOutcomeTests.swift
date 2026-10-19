@@ -79,8 +79,8 @@ final class LibraryOutcomeTests: XCTestCase {
                             downloadURL: URL(string: "https://example.invalid/test.ipa")!, date: nil, summary: "", developer: "")
         let signing = try signingModel(), router = Router(); router.tab = .sources
         await model.get(app, from: nil, signAfter: true, library: library, signing: signing, router: router)?.value
-        XCTAssertFalse(model.filed.contains(app.id)); XCTAssertTrue(spoken.isEmpty); XCTAssertEqual(router.tab, .sources)
-        let retained = try XCTUnwrap(model.retainedDownloads[app.id]); XCTAssertTrue(FileManager.default.fileExists(atPath: retained.path))
+        XCTAssertFalse(model.isFiled(app, source: nil, library: library)); XCTAssertTrue(spoken.isEmpty); XCTAssertEqual(router.tab, .sources)
+        let retained = try XCTUnwrap(model.retainedFile(app, source: nil)); XCTAssertTrue(FileManager.default.fileExists(atPath: retained.path))
         XCTAssertNotNil(model.message); XCTAssertEqual(downloads, 1)
         let pendingBefore = try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("pending").path)
         await model.get(app, from: nil, signAfter: false, library: library, signing: signing, router: router)?.value
@@ -88,8 +88,8 @@ final class LibraryOutcomeTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("pending").path), pendingBefore)
         try unblockIndex()
         await model.get(app, from: nil, signAfter: false, library: library, signing: signing, router: router)?.value
-        XCTAssertEqual(downloads, 1); XCTAssertTrue(model.filed.contains(app.id)); XCTAssertEqual(spoken.count, 1)
-        XCTAssertNil(model.retainedDownloads[app.id]); XCTAssertEqual(library.unsigned.count, 1)
+        XCTAssertEqual(downloads, 1); XCTAssertTrue(model.isFiled(app, source: nil, library: library)); XCTAssertEqual(spoken.count, 1)
+        XCTAssertNil(model.retainedFile(app, source: nil)); XCTAssertEqual(library.unsigned.count, 1)
         XCTAssertEqual(library.unsigned.first?.provenance, .sourceDownload)
     }
     private func signedPendingAndReport() throws -> (UUID, SigningModel.Report) {
@@ -178,6 +178,46 @@ final class LibraryOutcomeTests: XCTestCase {
         let result = try await library.finishPending(id)
         XCTAssertTrue(result.alreadySaved); XCTAssertTrue(library.saveState.confirmedSaved)
         XCTAssertNotNil(try? IPAInspector.inspect(url: library.url(for: result.entry)))
+    }
+
+    func testSameAppIDAcrossSourcesNeverReusesAnotherRetainedArtifact() async throws {
+        let tree = base.appendingPathComponent("variant-tree")
+        try IPAExtractor.extract(ipa: fixture, to: tree)
+        let original = try IPAInspector.inspect(url: fixture)
+        let plist = tree.appendingPathComponent("Payload/" + original.appFolder + "/Info.plist")
+        var info = try PropertyListSerialization.propertyList(from: Data(contentsOf: plist), format: nil) as! [String: Any]
+        info["CFBundleVersion"] = "456"
+        try PropertyListSerialization.data(fromPropertyList: info, format: .binary, options: 0).write(to: plist)
+        let variant = base.appendingPathComponent("variant.ipa"); try IPAArchiver.archive(directory: tree, to: variant)
+        try blockIndex()
+        let firstSource = UUID(), secondSource = UUID()
+        var downloads = 0
+        let model = SourcesModel(sourceStore: SourceStore(directory: base.appendingPathComponent("sources")), download: { app, directory in
+            downloads += 1
+            let file = directory.appendingPathComponent("download.ipa")
+            try FileManager.default.copyItem(at: app.downloadURL.lastPathComponent == "b.ipa" ? variant : self.fixture, to: file)
+            return file
+        }, announce: { _ in })
+        func app(_ path: String) -> SourceApp {
+            SourceApp(id: "same-app@1", name: "Same app", bundleID: original.bundleIdentifier, version: "1", size: nil,
+                iconURL: nil, downloadURL: URL(string: "https://example.invalid/" + path)!, date: nil, summary: "", developer: "")
+        }
+        let a = app("a.ipa"), b = app("b.ipa"), signing = try signingModel(), router = Router()
+        await model.get(a, from: firstSource, signAfter: false, library: library, signing: signing, router: router)?.value
+        await model.get(b, from: secondSource, signAfter: false, library: library, signing: signing, router: router)?.value
+        XCTAssertEqual(downloads, 2)
+        XCTAssertNotEqual(model.retainedFile(a, source: firstSource), model.retainedFile(b, source: secondSource))
+        try unblockIndex()
+        await model.get(b, from: secondSource, signAfter: false, library: library, signing: signing, router: router)?.value
+        XCTAssertEqual(downloads, 2); XCTAssertEqual(library.unsigned.first?.build, "456")
+        XCTAssertTrue(model.isFiled(b, source: secondSource, library: library))
+        XCTAssertFalse(model.isFiled(a, source: firstSource, library: library))
+        await model.get(a, from: firstSource, signAfter: false, library: library, signing: signing, router: router)?.value
+        XCTAssertEqual(library.unsigned.count, 2)
+        let savedB = try XCTUnwrap(library.unsigned.first { $0.build == "456" })
+        await library.remove(savedB)
+        XCTAssertFalse(model.isFiled(b, source: secondSource, library: library))
+        XCTAssertTrue(model.isFiled(a, source: firstSource, library: library))
     }
 
 }

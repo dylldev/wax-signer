@@ -10,12 +10,32 @@ import UIKit
 final class SourcesModel: ObservableObject {
     @Published private(set) var sources: [SavedSource] = []
     @Published private(set) var loading: Set<UUID> = []
-    @Published private(set) var downloads: [String: Double] = [:]      // app id to 0...1
-    @Published private(set) var filed: Set<String> = []                // app ids already on the shelf this session
+    private struct DownloadKey: Hashable {
+        let source: UUID?
+        let appID: String
+        let bundleID: String
+        let version: String
+        let address: String
+        let size: Int?
+        let date: Date?
+    }
+    @Published private var downloads: [DownloadKey: Double] = [:]
+    @Published private var filed: [DownloadKey: UUID] = [:]
     @Published var message: String?
-    @Published private(set) var retainedDownloads: [String: URL] = [:]
-    @Published private(set) var savingDownloads: Set<String> = []
-    private var retainedPending: [String: UUID] = [:]
+    @Published private var retainedDownloads: [DownloadKey: URL] = [:]
+    @Published private var savingDownloads: Set<DownloadKey> = []
+    private var retainedPending: [DownloadKey: UUID] = [:]
+    private func key(_ app: SourceApp, _ source: UUID?) -> DownloadKey {
+        DownloadKey(source: source, appID: app.id, bundleID: app.bundleID, version: app.version,
+                    address: app.downloadURL.absoluteString, size: app.size, date: app.date)
+    }
+    func progress(_ app: SourceApp, source: UUID?) -> Double? { downloads[key(app, source)] }
+    func isSaving(_ app: SourceApp, source: UUID?) -> Bool { savingDownloads.contains(key(app, source)) }
+    func retainedFile(_ app: SourceApp, source: UUID?) -> URL? { retainedDownloads[key(app, source)] }
+    func isFiled(_ app: SourceApp, source: UUID?, library: LibraryModel) -> Bool {
+        guard let id = filed[key(app, source)] else { return false }
+        return (library.unsigned + library.signed).contains { $0.id == id }
+    }
     private let downloadOverride: ((SourceApp, URL) async throws -> URL)?
     private let announce: (String) -> Void
 
@@ -98,8 +118,9 @@ final class SourcesModel: ObservableObject {
 
     /// Downloads an app onto the Unsigned shelf; optionally opens it on the Sign tab afterwards.
     @discardableResult func get(_ app: SourceApp, from sourceID: UUID?, signAfter: Bool, library: LibraryModel, signing: SigningModel, router: Router) -> Task<Void, Never>? {
-        guard downloads[app.id] == nil else { return nil }
-        downloads[app.id] = 0
+        let key = key(app, sourceID)
+        guard downloads[key] == nil else { return nil }
+        downloads[key] = 0
         message = nil
         UIImpactFeedbackGenerator(style: .light).impactOccurred()   // the tap on Get, so the download feels answered
         BackgroundJob.shared.begin(title: app.name)
@@ -107,11 +128,11 @@ final class SourcesModel: ObservableObject {
         let store = store
         return Task {
             var ok = false
-            defer { BackgroundJob.shared.end(success: ok); downloads[app.id] = nil; savingDownloads.remove(app.id) }
+            defer { BackgroundJob.shared.end(success: ok); downloads[key] = nil; savingDownloads.remove(key) }
             do {
                 let storage = library.storage
                 let file: URL
-                if let kept = retainedDownloads[app.id] { file = kept }
+                if let kept = retainedDownloads[key] { file = kept }
                 else {
                     let temp = try await Task.detached { try storage.incomingDirectory() }.value
                     if let downloadOverride { file = try await downloadOverride(app, temp) }
@@ -123,31 +144,31 @@ final class SourcesModel: ObservableObject {
                     return fresh
                 }, progress: { p in
                     Task { @MainActor in
-                        guard self.downloads[app.id] != nil, !self.savingDownloads.contains(app.id) else { return }
-                        self.downloads[app.id] = p
+                        guard self.downloads[key] != nil, !self.savingDownloads.contains(key) else { return }
+                        self.downloads[key] = p
                         BackgroundJob.shared.update(fraction: p, subtitle: "Downloading")
                     }
                 }) }
                 }
-                savingDownloads.insert(app.id)
-                retainedDownloads[app.id] = file
+                savingDownloads.insert(key)
+                retainedDownloads[key] = file
                 let saved: LibrarySaveResult
-                if let pending = retainedPending[app.id] { saved = try await library.finishPending(pending) }
+                if let pending = retainedPending[key] { saved = try await library.finishPending(pending) }
                 else {
                     let info = try await Task.detached { try IPAInspector.inspect(url: file) }.value
                     // A publisher signature marker does not make this a Wax-generated signing result.
                     saved = try await library.fileNow(file, info: info, signed: false, provenance: .sourceDownload)
                 }
-                filed.insert(app.id)
+                filed[key] = saved.entry.id
                 ok = true
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
                 announce(saved.alreadySaved ? "\(app.name) already saved" : "\(app.name) downloaded and saved")
-                retainedDownloads[app.id] = nil; retainedPending[app.id] = nil
+                retainedDownloads[key] = nil; retainedPending[key] = nil
                 do { try await Task.detached { try storage.removeIncoming(file) }.value }
                 catch { message = "Saved, but the retained download needs cleanup: " + error.localizedDescription }
                 if signAfter { signing.use(saved.entry); router.tab = .sign }
             } catch {
-                if let pending = (error as? ShelfSaveFailure)?.pendingID { retainedPending[app.id] = pending }
+                if let pending = (error as? ShelfSaveFailure)?.pendingID { retainedPending[key] = pending }
                 message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                 ImportLogs.shared.log("sources: get failed \(ImportLog.describe(error))")
             }

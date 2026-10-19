@@ -254,9 +254,9 @@ struct SourceAppsView: View {
     }
 
     @ViewBuilder private func getButton(_ app: SourceApp) -> some View {
-        if model.savingDownloads.contains(app.id) {
+        if model.isSaving(app, source: sourceID) {
             ProgressView().frame(width: Wax.touch, height: Wax.touch).accessibilityLabel("Saving \(app.name) to the IPA shelf")
-        } else if let p = model.downloads[app.id] {
+        } else if let p = model.progress(app, source: sourceID) {
             ZStack {
                 Circle().stroke(Wax.line, lineWidth: 3)
                 Circle().trim(from: 0, to: max(0.03, p)).stroke(Wax.link, style: StrokeStyle(lineWidth: 3, lineCap: .round)).rotationEffect(.degrees(-90))
@@ -264,18 +264,21 @@ struct SourceAppsView: View {
             .frame(width: 26, height: 26)
             .frame(width: Wax.touch, height: Wax.touch)   // the row keeps its 44 pt target while the ring stays small
             .accessibilityLabel("Downloading \(app.name)").accessibilityValue("\(Int(p * 100)) percent")
-        } else if model.filed.contains(app.id) {
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(Wax.ok).frame(width: Wax.touch, height: Wax.touch)
-                .accessibilityLabel("\(app.name) is on your IPA shelf")
+        } else if model.isFiled(app, source: sourceID, library: library) {
+            Button { model.get(app, from: sourceID, signAfter: signAfterDownload, library: library, signing: signing, router: router) } label: {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(Wax.ok).frame(width: Wax.touch, height: Wax.touch)
+            }.buttonStyle(.plain)
+                .accessibilityLabel("A previous download of \(app.name) is on your IPA shelf")
+                .accessibilityHint("Download again to check for changed contents")
         } else {
             Button {
                 model.get(app, from: sourceID, signAfter: signAfterDownload, library: library, signing: signing, router: router)
             } label: {
-                Text(model.retainedDownloads[app.id] == nil ? "Get" : "Retry Save").font(.subheadline.weight(.bold)).foregroundStyle(Wax.onAccent)
+                Text(model.retainedFile(app, source: sourceID) == nil ? "Get" : "Retry Save").font(.subheadline.weight(.bold)).foregroundStyle(Wax.onAccent)
                     .padding(.horizontal, 18).frame(minHeight: Wax.touch).background(Wax.accent, in: Capsule())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(model.retainedDownloads[app.id] == nil ? "Get \(app.name)" : "Retry saving \(app.name)")
+            .accessibilityLabel(model.retainedFile(app, source: sourceID) == nil ? "Get \(app.name)" : "Retry saving \(app.name)")
         }
     }
 }
