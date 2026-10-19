@@ -61,3 +61,21 @@ class ReleaseIntegrity(unittest.TestCase):
     def test_legacy_fields_cannot_disagree_with_latest(self):
         self.generate();feed=self.out/'apps.json';data=json.loads(feed.read_text());data['apps'][0]['version']='0.0';feed.write_text(json.dumps(data))
         self.assertNotEqual(self.validate().returncode,0)
+
+    def test_binary_or_missing_checksum_fails_without_traceback(self):
+        self.generate();sidecar=self.out/(self.ipa.name+'.sha256')
+        for content in [b'\xff\x00', None]:
+            if content is None: sidecar.unlink()
+            else: sidecar.write_bytes(content)
+            result=self.validate();self.assertNotEqual(result.returncode,0);self.assertNotIn('Traceback',result.stderr)
+    def test_invalid_date_and_digest_schema_fail(self):
+        self.generate();feed=self.out/'apps.json';data=json.loads(feed.read_text())
+        data['apps'][0]['versions'][0]['date']='not-a-date';data['apps'][0]['versions'][0]['sha256']='not-a-hash'
+        feed.write_text(json.dumps(data));self.assertNotEqual(self.validate().returncode,0)
+    def test_top_level_icon_cannot_keep_an_old_base(self):
+        self.generate();feed=self.out/'apps.json';data=json.loads(feed.read_text())
+        data['iconURL']='https://old.example/icon.png';feed.write_text(json.dumps(data))
+        self.assertNotEqual(self.validate().returncode,0)
+    def test_missing_history_path_fails_without_creating_destination(self):
+        out=self.root/'history-stage';result=self.generate('--keep-versions',str(self.root/'missing.json'),out=out)
+        self.assertNotEqual(result.returncode,0);self.assertFalse(out.exists())

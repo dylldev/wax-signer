@@ -54,6 +54,7 @@ try:
                 filename = unquote(urlsplit(v['downloadURL']).path.rsplit('/', 1)[-1])
                 if os.path.basename(filename) != filename or not filename.endswith('.ipa'): raise ValueError('unsafe historical IPA filename')
                 file = os.path.join(os.path.dirname(a.keep_versions), filename)
+                datetime.date.fromisoformat(v['date'])
                 old_info, entry = version_record(file, base, v['date'])
                 for key in ('version', 'buildVersion', 'size', 'minOSVersion'):
                     if entry[key] != v[key]: raise ValueError('historical artifact metadata mismatch: ' + key)

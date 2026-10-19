@@ -2,6 +2,8 @@
 """Validate a release feed and its actual staged/downloaded artifacts. No publishing."""
 import argparse
 import json
+import datetime
+import re
 import os
 import tempfile
 import urllib.error
@@ -28,7 +30,7 @@ def main():
         def get(url, limit):
             if not isinstance(url, str): return 0, None
             u = urlsplit(url)
-            if u.query or u.fragment: return 0, None
+            if u.query or u.fragment or u.username or u.password: return 0, None
             if a.dir:
                 b = urlsplit(base); prefix = b.path.rstrip('/') + '/'
                 if (u.scheme, u.netloc) != (b.scheme, b.netloc) or not u.path.startswith(prefix): return 0, None
@@ -59,6 +61,10 @@ def main():
         except (OSError, ValueError): src = {}; check(False, 'source is not valid JSON')
         if not isinstance(src, dict): check(False, 'source is not a JSON object'); src = {}
         for key in ('name', 'identifier', 'apps'): check(key in src, f"source has '{key}'")
+        for key in ('name', 'identifier'):
+            check(isinstance(src.get(key), str) and bool(src[key].strip()), 'source ' + key + ' is nonempty text')
+        status, source_icon = get(src.get('iconURL'), 8 * 1024 * 1024)
+        check(status == 200, f'source icon URL -> {status}')
         apps = src.get('apps')
         if not check(isinstance(apps, list) and bool(apps), 'source lists at least one app'): apps = []
         for app in apps:
@@ -66,6 +72,8 @@ def main():
             tag = str(app.get('bundleIdentifier', '?'))
             for key in ('name', 'bundleIdentifier', 'developerName', 'localizedDescription', 'iconURL', 'versions'):
                 check(key in app, f"{tag}: has '{key}'")
+            for key in ('name', 'bundleIdentifier', 'developerName', 'localizedDescription'):
+                check(isinstance(app.get(key), str) and bool(app[key].strip()), tag + ': nonempty ' + key)
             status, icon = get(app.get('iconURL'), 8 * 1024 * 1024)
             check(status == 200, f'{tag}: icon URL -> {status}')
             if icon:
@@ -78,7 +86,11 @@ def main():
                 if not check(isinstance(v, dict), tag + ': version is an object'): continue
                 required = ('version', 'buildVersion', 'date', 'downloadURL', 'size', 'minOSVersion', 'sha256')
                 if not check(all(k in v for k in required), tag + ': complete version metadata including SHA-256'): continue
-                identity = (str(v['version']), str(v['buildVersion']))
+                if not check(all(isinstance(v[k], str) and bool(v[k].strip()) for k in required if k != 'size'), tag + ': version metadata text types'): continue
+                try: datetime.date.fromisoformat(v['date'])
+                except ValueError: check(False, tag + ': invalid release date')
+                check(re.fullmatch('[0-9a-f]{64}', v['sha256']) is not None, tag + ': valid SHA-256 field')
+                identity = (v['version'], v['buildVersion'])
                 check(identity not in identities, tag + ': unique version/build'); identities.add(identity)
                 if not check(type(v['size']) is int and 0 < v['size'] < 0xffffffff, tag + ': valid classic-ZIP artifact size'): continue
                 status, artifact = get(v['downloadURL'], v['size'])
@@ -88,7 +100,9 @@ def main():
                 check(digest(artifact) == v['sha256'], tag + ': IPA SHA-256 matches')
                 status, checksum = get(v['downloadURL'] + '.sha256', 4096)
                 expected = str(v['sha256']) + '  ' + unquote(urlsplit(v['downloadURL']).path.rsplit('/', 1)[-1]) + '\n'
-                check(status == 200 and checksum.read_text(encoding='utf-8') == expected, tag + ': checksum sidecar matches')
+                try: valid_checksum = status == 200 and checksum.read_text(encoding='utf-8') == expected
+                except (OSError, UnicodeError): valid_checksum = False
+                check(valid_checksum, tag + ': checksum sidecar matches')
                 try:
                     info = metadata(artifact)
                     for key, expected in [('CFBundleIdentifier', app.get('bundleIdentifier')), ('CFBundleShortVersionString', v['version']), ('CFBundleVersion', v['buildVersion']), ('MinimumOSVersion', v['minOSVersion'])]:
