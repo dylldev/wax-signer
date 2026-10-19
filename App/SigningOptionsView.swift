@@ -1,3 +1,5 @@
+import CoreTransferable
+import UniformTypeIdentifiers
 import CredentialKit
 import PhotosUI
 import SigningKit
@@ -9,6 +11,9 @@ struct SigningOptionsView: View {
     @EnvironmentObject private var credentials: CredentialsModel
     @State private var saved = false
     @State private var pickedIcon: PhotosPickerItem?
+    @State private var iconTask: Task<Void, Never>?
+    @State private var iconGeneration = UUID()
+    @State private var readingIcon = false
     @State private var pickingEntitlements = false
     @State private var pickingLibrary = false
     @State private var fileProblem: String?
@@ -73,7 +78,7 @@ struct SigningOptionsView: View {
                 note("Each app carries a settings file. Add a key to set it, or choose Delete to remove one. This is for people who know the key they want; the bundle ID has its own option above.")
 
                 VStack(spacing: 4) {
-                    Button("Reset to defaults") { model.resetEditsToDefaults(); saved = false }.buttonStyle(WaxSecondaryButtonStyle())
+                    Button("Reset to defaults") { cancelIconRead(); model.resetEditsToDefaults(); saved = false }.buttonStyle(WaxSecondaryButtonStyle())
                 }
                 .padding(.top, 8)
                 note("Defaults are used for every app you sign. Switches you change here apply to the next signing even if you do not save them.")
@@ -100,6 +105,7 @@ struct SigningOptionsView: View {
             .background(Wax.bg.opacity(0.96))
         }
         .onAppear { baseline = model.edits }
+        .onDisappear { cancelIconRead() }
         .onChange(of: model.edits) { _, _ in saved = false }
     }
 
@@ -136,6 +142,10 @@ struct SigningOptionsView: View {
         .padding(.vertical, 10)
     }
 
+    private func cancelIconRead() {
+        iconGeneration = UUID(); iconTask?.cancel(); iconTask = nil; readingIcon = false; pickedIcon = nil
+    }
+
     private var iconRow: some View {
         VStack(spacing: 8) {
         HStack(spacing: 12) {
@@ -144,11 +154,12 @@ struct SigningOptionsView: View {
                 Text(model.edits.iconPNG == nil ? "The app's own icon." : "A new icon will be used.").font(.footnote).foregroundStyle(Wax.sub)
             }
             Spacer()
-            if model.edits.iconPNG != nil { Button("Reset") { model.edits.iconPNG = nil }.font(.subheadline).foregroundStyle(Wax.sub) }
+            if model.edits.iconPNG != nil { Button("Reset") { cancelIconRead(); model.edits.iconPNG = nil }.font(.subheadline).foregroundStyle(Wax.sub) }
             PhotosPicker(selection: $pickedIcon, matching: .images) {
                 Text("Choose").font(.subheadline.weight(.semibold)).foregroundStyle(Wax.link)
             }
         }
+        if readingIcon { ProgressView("Reading icon…").font(.footnote) }
         if let data = model.edits.iconPNG, let image = UIImage(data: data) {
             Image(uiImage: image).resizable().scaledToFit().frame(width: 48, height: 48).clipShape(RoundedRectangle(cornerRadius: 10))
                 .accessibilityLabel("Chosen app icon")
@@ -157,10 +168,18 @@ struct SigningOptionsView: View {
         .frame(minHeight: 56)
         .onChange(of: pickedIcon) { _, item in
             guard let item else { return }
-            Task {
-                if let data = try? await item.loadTransferable(type: Data.self) { model.edits.iconPNG = data; fileProblem = nil }
-                else { fileProblem = "That image could not be loaded." }
-                pickedIcon = nil
+            iconTask?.cancel()
+            let generation = UUID(); iconGeneration = generation; readingIcon = true
+            iconTask = Task {
+                do {
+                    guard let icon = try await item.loadTransferable(type: PreparedIcon.self) else { throw BoundedIcon.Failure.unreadable }
+                    guard !Task.isCancelled, iconGeneration == generation else { return }
+                    model.edits.iconPNG = icon.data; fileProblem = nil
+                } catch {
+                    guard !Task.isCancelled, iconGeneration == generation else { return }
+                    fileProblem = (error as? LocalizedError)?.errorDescription ?? "The icon could not be loaded. Choose another image."
+                }
+                if iconGeneration == generation { readingIcon = false; pickedIcon = nil; iconTask = nil }
             }
         }
     }
@@ -334,6 +353,19 @@ private struct PlistEditRow: View {
         case .flag: edit.value = .bool(true)
         case .number: edit.value = .number(0)
         case .delete: edit.value = nil
+        }
+    }
+}
+
+/// FileRepresentation avoids loading the entire Photos item into Data before applying a byte budget.
+private struct PreparedIcon: Transferable {
+    let data: Data
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .image) { received in
+            let file = received.file
+            let worker = Task.detached { try BoundedIcon.prepare(file: file) }
+            let data = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
+            return PreparedIcon(data: data)
         }
     }
 }
