@@ -42,11 +42,17 @@ enum ImportLogs {
     }()
 }
 
-/// Deletes the picker's temporary copy once it has been read.
-func discardPickerCopy(_ url: URL) {
-    if url.path.hasPrefix(NSTemporaryDirectory()) || url.path.contains("/tmp/") {
-        try? FileManager.default.removeItem(at: url)
-    }
+/// Deletes only an app-owned temporary copy. A path component named "tmp" is not ownership evidence.
+/// Resolve parents for iOS /var/private aliases, but never authorize deletion via a leaf symlink.
+func discardPickerCopy(_ url: URL, within temporaryRoot: URL = FileManager.default.temporaryDirectory) {
+    guard url.isFileURL, temporaryRoot.isFileURL else { return }
+    let root = temporaryRoot.resolvingSymlinksInPath().standardizedFileURL
+    let parent = url.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
+    guard parent.path == root.path || parent.path.hasPrefix(root.path + "/") else { return }
+    let candidate = parent.appendingPathComponent(url.lastPathComponent).standardizedFileURL
+    guard candidate.path.hasPrefix(root.path + "/"),
+          let values = try? candidate.resourceValues(forKeys: [.isSymbolicLinkKey]), values.isSymbolicLink != true else { return }
+    try? FileManager.default.removeItem(at: candidate)
 }
 
 struct ImportLogView: View {
