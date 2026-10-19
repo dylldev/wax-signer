@@ -125,14 +125,14 @@ final class SigningModel: ObservableObject {
         installing = true
         let job = BackgroundJob.shared
         job.askForNotificationPermission()
-        job.begin(title: ipaInfo?.displayName ?? "Wax")
+        let backgroundID = job.begin(title: ipaInfo?.displayName ?? "Wax")
         var succeeded = false
-        defer { job.end(success: succeeded); installing = false }
+        defer { job.end(backgroundID, success: succeeded); installing = false }
         readyLink = nil
 
         let target: InstallTarget?
         if certificateID != nil {
-            guard let task = sign(standalone: false, storeBigFiles: ota.hostKind == .phone) else { return }
+            guard let task = sign(standalone: false, storeBigFiles: ota.hostKind == .phone, backgroundID: backgroundID) else { return }
             await task.value
             guard let r = report, r.checkFailures.isEmpty else { return }
             if BundleIDGuard.replacesRunningWax(originalID: ipaInfo?.bundleIdentifier ?? "",
@@ -159,7 +159,7 @@ final class SigningModel: ObservableObject {
         // Mirror the upload's real progress into the system's background progress.
         let weights = jobProgress(uploadFraction: 0, exportOnly: false)
         let watcher = ota.$state.sink { state in
-            if case .uploading(let f) = state { job.update(fraction: weights.overall(sign: 1, upload: f), subtitle: "Sending to your server") }
+            if case .uploading(let f) = state { job.update(backgroundID, fraction: weights.overall(sign: 1, upload: f), subtitle: "Sending to your server") }
         }
         defer { watcher.cancel() }
 
@@ -177,7 +177,7 @@ final class SigningModel: ObservableObject {
             job.notifyIfInBackground(InstallNotification.readyToInstall(appTitle: target.title, link: link))
         }
         // The phone serves the file itself, so it must stay alive (also in the background) until iOS has it all.
-        job.update(fraction: 1, subtitle: "Waiting for iOS to take the app")
+        job.update(backgroundID, fraction: 1, subtitle: "Waiting for iOS to take the app")
         succeeded = await ota.finishPhoneTransfer()
         if ota.hostKind == .phone { readyLink = nil }      // the listener is closed now; the link no longer works
     }
@@ -259,7 +259,7 @@ final class SigningModel: ObservableObject {
     @discardableResult
     /// `storeBigFiles` writes changed big files uncompressed: right for an install that stays on this phone, wrong for
     /// anything uploaded or exported.
-    func sign(standalone: Bool = true, storeBigFiles: Bool = false) -> Task<Void, Never>? {
+    func sign(standalone: Bool = true, storeBigFiles: Bool = false, backgroundID: UUID? = nil) -> Task<Void, Never>? {
         guard busyMessage == nil, !runningSign, !shelfSaveState.isSaving, let ipaURL, let info = ipaInfo, let certificateID, let store = credentials.store,
               let cert = credentials.certificates.first(where: { $0.id == certificateID }) else { return nil }
         clearResult()
@@ -267,10 +267,8 @@ final class SigningModel: ObservableObject {
         busyOwner = generation; runningSign = true
         busyMessage = "Preparing…"
         let title = info.displayName.isEmpty ? "Wax" : info.displayName
-        if standalone {
-            BackgroundJob.shared.askForNotificationPermission()
-            BackgroundJob.shared.begin(title: title)
-        }
+        if standalone { BackgroundJob.shared.askForNotificationPermission() }
+        let ownedBackgroundID = standalone ? BackgroundJob.shared.begin(title: title) : backgroundID
         let weights = jobProgress(uploadFraction: 0, exportOnly: standalone)
         let rewrite = rewriteBundleID
         let appEdits = edits
@@ -316,7 +314,7 @@ final class SigningModel: ObservableObject {
                     Task { @MainActor in
                         guard model.report == nil, model.resultGeneration == generation else { return }
                         model.busyMessage = p.message; model.signFraction = p.fraction
-                        BackgroundJob.shared.update(fraction: weights.overall(sign: p.fraction, upload: 0), subtitle: p.message)
+                        if let ownedBackgroundID { BackgroundJob.shared.update(ownedBackgroundID, fraction: weights.overall(sign: p.fraction, upload: 0), subtitle: p.message) }
                     }
                 }
 
@@ -355,7 +353,7 @@ final class SigningModel: ObservableObject {
                     if model.resultGeneration == generation { model.lastSignSeconds = Date().timeIntervalSince(model.signStarted ?? Date()) }
                     if standalone {
                         let saved = model.resultGeneration == generation && model.shelfSaveState.confirmedSaved
-                        BackgroundJob.shared.end(success: saved)
+                        if let ownedBackgroundID { BackgroundJob.shared.end(ownedBackgroundID, success: saved) }
                         if saved { BackgroundJob.shared.notifyIfInBackground(InstallNotification.signed(appTitle: title)) }
                     }
                 }
@@ -366,7 +364,7 @@ final class SigningModel: ObservableObject {
                     model.runningSign = false
                     if model.resultGeneration == generation { model.errorText = text }
                     if model.busyOwner == generation { model.busyMessage = nil }
-                    if standalone { BackgroundJob.shared.end(success: false) }
+                    if standalone, let ownedBackgroundID { BackgroundJob.shared.end(ownedBackgroundID, success: false) }
                 }
             }
         }
