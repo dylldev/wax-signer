@@ -28,14 +28,14 @@ class ReleaseCandidateGate(unittest.TestCase):
         # Synthetic transport fixture: does not establish Swift compilation or a cryptographic signature.
         probe_bytes=io.BytesIO();binary=b'\xcf\xfa\xed\xfe'+b'fixture executable (not compiled)'
         with zipfile.ZipFile(probe_bytes,'w') as z:
-            z.writestr('Payload/WaxProbe.app/Info.plist',plistlib.dumps(dict(CFBundleIdentifier='io.github.dylldev.wax.probe',CFBundleShortVersionString='1.0',CFBundleVersion='1',CFBundleExecutable='WaxProbe')))
+            z.writestr('Payload/WaxProbe.app/Info.plist',plistlib.dumps(dict(CFBundleIdentifier='io.github.dylldev.wax.probe',CFBundleShortVersionString='1.0',CFBundleVersion='1',CFBundleExecutable='WaxProbe',CFBundleSupportedPlatforms=['iPhoneOS'])))
             z.writestr('Payload/WaxProbe.app/WaxProbe',binary)
         probe=probe_bytes.getvalue()
-        manifest=dict(schemaVersion=1,probeVersion=1,bundleIdentifier='io.github.dylldev.wax.probe',version='1.0',build='1',scheme='waxprobe',ipaSHA256=hashlib.sha256(probe).hexdigest(),executableSHA256=hashlib.sha256(binary).hexdigest(),sources={n:hashlib.sha256((source/'Prototype/WaxProbe'/n).read_bytes()).hexdigest() for n in ('WaxProbe.swift','Info.plist')})
+        manifest=dict(schemaVersion=1,probeVersion=1,bundleIdentifier='io.github.dylldev.wax.probe',version='1.0',build='1',scheme='waxprobe',platforms=['iPhoneOS'],ipaSHA256=hashlib.sha256(probe).hexdigest(),executableSHA256=hashlib.sha256(binary).hexdigest(),sources={n:hashlib.sha256((source/'Prototype/WaxProbe'/n).read_bytes()).hexdigest() for n in ('WaxProbe.swift','Info.plist')})
         with zipfile.ZipFile(out/'Wax-1.0.ipa','w') as z:
-            z.writestr('Payload/Wax.app/Info.plist',plistlib.dumps(dict(CFBundleIdentifier='io.github.dylldev.wax',CFBundleShortVersionString='1.0',CFBundleVersion='7',WAX_DEFAULT_FEED=feed,WAX_INSTALL_DOMAIN=domain)))
+            z.writestr('Payload/Wax.app/Info.plist',plistlib.dumps(dict(CFBundleIdentifier='io.github.dylldev.wax',CFBundleShortVersionString='1.0',CFBundleVersion='7',CFBundleSupportedPlatforms=['iPhoneOS'],WAX_DEFAULT_FEED=feed,WAX_INSTALL_DOMAIN=domain)))
             z.writestr('Payload/Wax.app/probe-build.json',json.dumps(manifest));z.writestr('Payload/Wax.app/WaxProbe.ipa',probe)
-        return dict(xcode='fixture Xcode (not executed)',swift='fixture Swift (not executed)')
+        return dict(xcode='fixture Xcode (not executed)',swift='fixture Swift (not executed)',sdk='fixture SDK (not executed)',xcodegen='fixture XcodeGen (not executed)')
     def prepare(self,**changes):
         args=dict(repo=self.repo,tag='v1.0',output=self.out,icon=self.icon,base='https://dylldev.github.io/wax',date='2026-10-19',expected_build='7',flavor='no-feed',builder=self.build)
         args.update(changes);return prepare(**args)
@@ -88,4 +88,15 @@ class ReleaseCandidateGate(unittest.TestCase):
         def mismatched(source,out,*args):
             result=self.build(source,out,*args);(source/'Prototype/WaxProbe/WaxProbe.swift').write_text('changed');return result
         with self.assertRaises(ValueError):self.prepare(builder=mismatched)
+        self.assertFalse(self.out.exists())
+
+    def test_simulator_candidate_is_rejected_even_with_matching_version(self):
+        def simulator(source,out,*args):
+            result=self.build(source,out,*args);ipa=out/'Wax-1.0.ipa'
+            with zipfile.ZipFile(ipa) as z:entries={n:z.read(n) for n in z.namelist()}
+            key='Payload/Wax.app/Info.plist';info=plistlib.loads(entries[key]);info['CFBundleSupportedPlatforms']=['iPhoneSimulator'];entries[key]=plistlib.dumps(info)
+            with zipfile.ZipFile(ipa,'w') as z:
+                for name,data in entries.items():z.writestr(name,data)
+            return result
+        with self.assertRaises(ValueError):self.prepare(builder=simulator)
         self.assertFalse(self.out.exists())

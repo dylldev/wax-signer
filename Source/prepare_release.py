@@ -47,6 +47,7 @@ def probe_evidence(ipa, source):
         probe = read_member(z, app[0]+'/WaxProbe.ipa', 32*1024*1024)
     if (manifest.get('schemaVersion'), manifest.get('probeVersion'), manifest.get('bundleIdentifier'), manifest.get('version'), manifest.get('build'), manifest.get('scheme')) != (1,1,'io.github.dylldev.wax.probe','1.0','1','waxprobe'):
         raise ValueError('missing or unsupported source-built probe evidence')
+    if manifest.get('platforms')!=['iPhoneOS']: raise ValueError('release probe was not built for physical iOS')
     if manifest.get('ipaSHA256') != hashlib.sha256(probe).hexdigest(): raise ValueError('probe bytes disagree with build evidence')
     with zipfile.ZipFile(io.BytesIO(probe)) as nested:
         entries=nested.infolist(); names=[entry.filename for entry in entries]
@@ -56,6 +57,7 @@ def probe_evidence(ipa, source):
             if str(path)!=entry.filename.rstrip('/') or '..' in path.parts or not entry.filename.startswith('Payload/WaxProbe.app/') or stat.S_ISLNK(entry.external_attr>>16): raise ValueError('unsafe probe entry')
         info=plistlib.loads(read_member(nested,'Payload/WaxProbe.app/Info.plist',1024*1024))
         if any(info.get(k)!=v for k,v in [('CFBundleIdentifier','io.github.dylldev.wax.probe'),('CFBundleShortVersionString','1.0'),('CFBundleVersion','1')]): raise ValueError('wrong nested probe metadata')
+        if info.get('CFBundleSupportedPlatforms')!=['iPhoneOS']: raise ValueError('nested probe is not a physical iOS build')
         executable=info.get('CFBundleExecutable')
         if not isinstance(executable,str) or PurePosixPath(executable).name!=executable or executable in ('.','..'): raise ValueError('unsafe probe executable')
         binary=read_member(nested,'Payload/WaxProbe.app/'+executable,32*1024*1024)
@@ -87,7 +89,9 @@ def live_build(source, output, flavor, feed, domain):
     env['WAX_DEFAULT_FEED'] = feed; env['WAX_INSTALL_DOMAIN'] = domain
     subprocess.run(['bash', str(source/'scripts/build-release-ipa.sh'), str(output)], env=env, check=True)
     return dict(xcode=subprocess.check_output(['xcodebuild','-version'], env=env).decode().strip(),
-                swift=subprocess.check_output(['xcrun','swift','--version'], env=env).decode().strip())
+                swift=subprocess.check_output(['xcrun','swift','--version'], env=env).decode().strip(),
+                sdk=subprocess.check_output(['xcrun','--sdk','iphoneos','--show-sdk-version'], env=env).decode().strip(),
+                xcodegen=subprocess.check_output(['xcodegen','--version'], env=env).decode().strip())
 
 
 def prepare(repo, tag, output, icon, base, date, expected_build, flavor, feed='', domain='', builder=live_build, history=None):
@@ -105,10 +109,11 @@ def prepare(repo, tag, output, icon, base, date, expected_build, flavor, feed=''
         with tarfile.open(archive) as tar: tar.extractall(source,filter='data')
         built=work/'built';built.mkdir()
         toolchain=builder(source,built,flavor,feed,domain)
-        if not isinstance(toolchain,dict) or set(toolchain) != {'xcode','swift'} or any(not isinstance(v,str) or not v.strip() for v in toolchain.values()): raise ValueError('missing build toolchain evidence')
+        if not isinstance(toolchain,dict) or set(toolchain) != {'xcode','swift','sdk','xcodegen'} or any(not isinstance(v,str) or not v.strip() for v in toolchain.values()): raise ValueError('missing build toolchain evidence')
         ipas=list(built.glob('*.ipa'))
         if len(ipas)!=1 or ipas[0].is_symlink(): raise ValueError('build must produce exactly one regular IPA')
         ipa=ipas[0];info=metadata(ipa)
+        if info.get('CFBundleSupportedPlatforms')!=['iPhoneOS']: raise ValueError('candidate is not a physical iOS build')
         if info['CFBundleIdentifier']!='io.github.dylldev.wax' or tag!='v'+info['CFBundleShortVersionString'] or info['CFBundleVersion']!=expected_build:
             raise ValueError('tag/build/bundle metadata disagrees with the built IPA')
         if public_configuration(info,flavor)!=config: raise ValueError('requested public configuration did not reach the artifact')
