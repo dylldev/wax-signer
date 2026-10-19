@@ -30,6 +30,7 @@ enum LibraryFileIO {
     }
 
     private static func stream(_ url: URL, read: (() throws -> Void)?, emit: (Data) throws -> Void) throws -> Digest {
+        guard url.isFileURL else { throw LibraryError.unsafeFile("expected a local file URL") }
         let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
         guard fd >= 0 else { throw LibraryError.io("Reading \(url.lastPathComponent)", String(cString: strerror(errno))) }
         let input = FileHandle(fileDescriptor: fd, closeOnDealloc: true)

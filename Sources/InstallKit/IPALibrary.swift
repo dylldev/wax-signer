@@ -4,7 +4,7 @@ public enum LibraryError: Error, LocalizedError {
     case io(String, String), changed(String), damagedIndex(String), unsafeFile(String), missingPending, cleanupPending(String)
     public var errorDescription: String? {
         switch self {
-        case .io(let stage, let why): return "\(stage) failed: \(why). The source was kept. Free some space and retry saving, or export the retained IPA."
+        case .io(let stage, let why): return "\(stage) failed: \(why). No existing shelf artifact was replaced. Check free space, then retry with the original or a retained copy."
         case .changed(let why): return "\(why). Nothing was replaced. Retry saving from the retained original."
         case .damagedIndex(let why): return "The library index could not be read: \(why). Existing files were kept. Export recoverable files or use Recover Library Index."
         case .unsafeFile(let name): return "The library refused an unsafe file or folder: \(name). Existing files were kept."
@@ -73,8 +73,8 @@ public final class IPALibrary: @unchecked Sendable {
 
     public convenience init(root: URL) { self.init(root: root, fault: nil) }
     init(root: URL, fault: ((Checkpoint, URL) throws -> Void)?) {
-        self.root = root.standardizedFileURL; self.fault = fault
-        let key = root.resolvingSymlinksInPath().path
+        self.root = root.isFileURL ? root.standardizedFileURL : root; self.fault = fault
+        let key = root.resolvingSymlinksInPath().path.precomposedStringWithCanonicalMapping.lowercased()
         lock = Self.registryLock.withLock {
             if let existing = Self.locks[key] { return existing }
             let created = NSRecursiveLock(); Self.locks[key] = created; return created
@@ -492,12 +492,13 @@ public final class IPALibrary: @unchecked Sendable {
     private func checkPendingFolder(_ id: UUID) throws { try plainDirectory(root); try plainDirectory(pendingRoot); try plainDirectory(pendingFolder(id)) }
     private func checkFile(_ url: URL, kind: LibraryEntry.Kind) throws { try plainDirectory(root); try plainDirectory(root.appendingPathComponent(kind.rawValue)); try plainFile(url) }
     private func directory(_ url: URL) throws {
+        guard url.isFileURL else { throw LibraryError.unsafeFile("expected a local library directory") }
         if FileManager.default.fileExists(atPath: url.path) { try plainDirectory(url) }
         else { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true); try plainDirectory(url) }
     }
     private func rejectLink(_ url: URL) throws {
         if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path), attrs[.type] as? FileAttributeType == .typeSymbolicLink { throw LibraryError.unsafeFile(url.lastPathComponent) }
     }
-    private func plainDirectory(_ url: URL) throws { guard try FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType == .typeDirectory else { throw LibraryError.unsafeFile(url.lastPathComponent) } }
-    private func plainFile(_ url: URL) throws { guard try FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType == .typeRegular else { throw LibraryError.unsafeFile(url.lastPathComponent) } }
+    private func plainDirectory(_ url: URL) throws { guard url.isFileURL else { throw LibraryError.unsafeFile("expected a local directory") }; guard try FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType == .typeDirectory else { throw LibraryError.unsafeFile(url.lastPathComponent) } }
+    private func plainFile(_ url: URL) throws { guard url.isFileURL else { throw LibraryError.unsafeFile("expected a local file") }; guard try FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType == .typeRegular else { throw LibraryError.unsafeFile(url.lastPathComponent) } }
 }

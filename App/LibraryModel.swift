@@ -7,7 +7,7 @@ struct ShelfSaveFailure: LocalizedError {
     let reason: String
     let artifact: URL
     let pendingID: UUID?
-    var errorDescription: String? { "Save failed: \(reason) Your IPA was retained. Retry Save or export it before removing the original." }
+    var errorDescription: String? { "Save failed: \(reason) Retry Save or choose the original from Files. Keep the original; any retained copies can be recovered or exported from the IPA tab." }
 }
 
 @MainActor
@@ -57,8 +57,11 @@ final class LibraryModel: ObservableObject {
     func preparePicked(_ file: URL) async throws -> (LibraryPending, IPAMetadata) {
         let storage = storage
         return try await Task.detached {
-            let pending = try ExternalFile.withReadAccess(to: file) {
-                try storage.prepare(file: $0, kind: .unsigned, name: file.lastPathComponent, version: "", bundleID: "", provenance: .fileImport)
+            let pending = try ExternalFile.withReadAccess(to: file) { source in
+                // Reject unsupported/corrupt archives before copying a potentially huge picker input.
+                let preview = try IPAInspector.inspect(url: source)
+                return try storage.prepare(file: source, kind: .unsigned, name: preview.displayName, version: preview.version,
+                                           bundleID: preview.bundleIdentifier, build: preview.build, provenance: .fileImport)
             }
             let owned = try storage.pendingURL(pending.id)
             return (pending, try IPAInspector.inspect(url: owned))

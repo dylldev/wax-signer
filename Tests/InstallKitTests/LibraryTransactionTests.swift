@@ -269,4 +269,28 @@ final class LibraryTransactionTests: XCTestCase {
         try assertSource(lib.url(for: retry.entry))
     }
 
+    func testNonFileURLsAreRejectedWithoutNetworkOrPathInterpretation() throws {
+        let lib = IPALibrary(root: root), remote = URL(string: "https://example.invalid/input.ipa")!
+        XCTAssertThrowsError(try save(lib, remote)) { guard case LibraryError.unsafeFile = $0 else { return XCTFail("\($0)") } }
+        XCTAssertTrue(lib.entries(.unsigned).isEmpty)
+        let invalidRoot = IPALibrary(root: remote)
+        XCTAssertThrowsError(try invalidRoot.reserve(kind: .unsigned, name: "X"))
+    }
+
+    func testConcurrentCaseAliasesShareOneTransactionLockWhenSupported() throws {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let alias = root.deletingLastPathComponent().appendingPathComponent(root.lastPathComponent.lowercased())
+        guard FileManager.default.fileExists(atPath: alias.path) else { throw XCTSkip("case-sensitive filesystem has no root case alias") }
+        let file = try source(), lock = NSLock()
+        var ids: [UUID] = [], failures: [String] = []
+        DispatchQueue.concurrentPerform(iterations: 8) { i in
+            do {
+                let result = try self.save(IPALibrary(root: i % 2 == 0 ? self.root : alias), file)
+                lock.withLock { ids.append(result.entry.id) }
+            } catch { lock.withLock { failures.append(error.localizedDescription) } }
+        }
+        XCTAssertTrue(failures.isEmpty, "\(failures)"); XCTAssertEqual(Set(ids).count, 1)
+        XCTAssertEqual(IPALibrary(root: root).entries(.unsigned).count, 1)
+    }
+
 }
