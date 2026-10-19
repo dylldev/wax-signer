@@ -105,7 +105,7 @@ final class IdentityTester: ObservableObject {
         defer { try? FileManager.default.removeItem(at: signed.deletingLastPathComponent()) }   // the probe's signed copy is only needed for the upload
         let watcher = ota.$state.sink { [weak self] s in if case .uploading(let f) = s { self?.state = .uploading(f) } }
         defer { watcher.cancel() }
-        guard let link = await ota.upload(ipa: signed, bundleIdentifier: "io.github.dylldev.wax.probe", version: "1.0", title: "Wax Probe") else {
+        guard let link = await ota.upload(ipa: signed, bundleIdentifier: "io.github.dylldev.wax.probe", version: "1.0", build: "1", title: "Wax Probe") else {
             if case .failed(let why) = ota.state { state = .problem(why) } else { state = .problem("The upload did not finish.") }
             return
         }
