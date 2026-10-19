@@ -8,6 +8,8 @@ struct ZipFixture {
         var name: String
         var data: Data
         var deflate = false
+        /// Explicit raw compressed bytes for deterministic decoder/reuse fixtures.
+        var encodedData: Data?
         var corruptCRC = false
         var encrypted = false
         /// Name written to the local header only (central keeps `name`).
@@ -41,7 +43,7 @@ struct ZipFixture {
         var out = Data()
         var central = Data()
         for e in entries {
-            let stored = e.deflate ? Self.deflate(e.data) : e.data
+            let stored = e.encodedData ?? (e.deflate ? Self.deflate(e.data) : e.data)
             let crc = e.claimedCRC ?? (CRC32.checksum(e.data) ^ (e.corruptCRC ? 1 : 0))
             let name = e.rawName ?? Data(e.name.utf8)
             let localName = e.localName.map { Data($0.utf8) } ?? name

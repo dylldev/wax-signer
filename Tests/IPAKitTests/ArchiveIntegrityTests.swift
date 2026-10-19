@@ -55,8 +55,19 @@ final class ArchiveIntegrityTests: XCTestCase {
     func testLegacyReuseCallAlsoUsesContentIdentity() throws { try collision(suffix: 0, inventory: false) }
 
     func testUnchangedEntryReusesExactCompressedBytes() throws {
-        let root = try tree(bytes: Data(repeating: 123, count: 800_000)), original = dir.appendingPathComponent("original.zip")
-        try IPAArchiver.archive(directory: root, to: original)
+        let data = Data(repeating: 123, count: 800_000), original = dir.appendingPathComponent("original.zip")
+        // Raw DEFLATE stored blocks: deliberately much larger than Wax's default compression. A recompression
+        // cannot accidentally satisfy the byte-exact assertion, even if the default encoder is deterministic.
+        var rawDeflate = Data(), start = 0
+        while start < data.count {
+            let count = min(65_535, data.count - start)
+            rawDeflate.append(start + count == data.count ? 1 : 0)
+            rawDeflate.le16(UInt16(count)); rawDeflate.le16(~UInt16(count))
+            rawDeflate.append(data[start..<(start + count)]); start += count
+        }
+        var fixture = ZipFixture()
+        fixture.add(path, data, deflate: true) { $0.encodedData = rawDeflate; $0.unixMode = 0o100644 }
+        try fixture.write(to: original)
         let session = try IPAArchiveSession(url: original), extracted = dir.appendingPathComponent("extracted")
         let inventory = try session.extract(to: extracted)
         // Metadata edits do not require recompression, but must reach the final ZIP.
@@ -67,7 +78,9 @@ final class ArchiveIntegrityTests: XCTestCase {
             let entry = try XCTUnwrap(zip.entries.first { $0.name == path })
             var data = Data(); try zip.copyRaw(entry, expecting: zip.fingerprint(entry)) { data.append($0) }; return data
         }
+        XCTAssertEqual(try raw(session.zip), rawDeflate)
         XCTAssertEqual(try raw(session.zip), try raw(ZipArchive(url: output)))
+        XCTAssertEqual(try ZipArchive(url: output).entries.first { $0.name == path }?.method, 8)
         XCTAssertEqual(try ZipArchive(url: output).entries.first { $0.name == path }?.unixMode, 0o100755)
     }
 
@@ -175,7 +188,7 @@ final class ArchiveIntegrityTests: XCTestCase {
         XCTAssertEqual(try bytes(out, name: "Payload/Demo.app/link"), Data("asset".utf8))
         for change in 0..<7 {
             var fixture = ZipFixture()
-            for record in snapshot.records.values {
+            for record in snapshot.records.values.sorted(by: { $0.name < $1.name }) {
                 if change == 0 && record.name == path { continue }
                 let name = change == 1 && record.name == path ? path + "-renamed" : record.name
                 let data = record.kind == .file ? (change == 2 ? collisionB : collisionA) : Data((record.target ?? "").utf8)
@@ -229,7 +242,9 @@ final class ArchiveIntegrityTests: XCTestCase {
         let record = IPAArchiveManifest.Record(name: "unused/", kind: .directory, mode: 0o040755, fingerprint: nil, target: nil)
         let records = Dictionary(uniqueKeysWithValues: (0..<65_535).map { ("d\($0)/", record) })
         let snapshot = IPAArchiveManifest(directory: root.standardizedFileURL.resolvingSymlinksInPath(), rootFolder: "Payload", records: records)
-        XCTAssertThrowsError(try IPAArchiver.archive(directory: root, to: out, verifiedManifest: snapshot))
+        XCTAssertThrowsError(try IPAArchiver.archive(directory: root, to: out, verifiedManifest: snapshot)) {
+            XCTAssertEqual($0 as? IPAError, .unsupportedZip("ZIP64 sentinel entry count (maximum 65,534)"))
+        }
         XCTAssertEqual(try Data(contentsOf: out), previous)
     }
     func testTruncatedSourceAndThrowingCopySinkPropagateFailure() throws {

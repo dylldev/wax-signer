@@ -6,6 +6,7 @@ import Foundation
 public enum IPAArchiver {
     /// Original compressed bytes are reused only after SHA-256 content identity has been established.
     /// An extraction inventory avoids reading/decompressing the original entries a second time.
+    /// `compressChangedFiles: false` stores changed files of at least 2 MiB without compression.
     /// `verifiedManifest` must be captured before verifying the bundle; packaging must preserve that snapshot.
     /// `validateArchive` runs on the private candidate before the mandatory final integrity gate.
     public static func archive(directory: URL, to output: URL, rootFolder: String = "Payload", reusing original: URL? = nil,
