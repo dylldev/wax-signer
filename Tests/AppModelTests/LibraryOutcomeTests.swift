@@ -54,7 +54,8 @@ final class LibraryOutcomeTests: XCTestCase {
         let error = await failure { _ = try await self.library.importPicked(self.pickedCopy()) }
         let id = try XCTUnwrap(error?.pendingID)
         try unblockIndex()
-        let saved = try await library.finishPending(id)
+        let saved = try await library.retryImport(id)
+        XCTAssertEqual(announcements.count, 1)
         XCTAssertTrue(library.saveState.confirmedSaved); XCTAssertEqual(library.unsigned.count, 1)
         XCTAssertNotNil(try? IPAInspector.inspect(url: library.url(for: saved.entry)))
     }
@@ -81,6 +82,10 @@ final class LibraryOutcomeTests: XCTestCase {
         XCTAssertFalse(model.filed.contains(app.id)); XCTAssertTrue(spoken.isEmpty); XCTAssertEqual(router.tab, .sources)
         let retained = try XCTUnwrap(model.retainedDownloads[app.id]); XCTAssertTrue(FileManager.default.fileExists(atPath: retained.path))
         XCTAssertNotNil(model.message); XCTAssertEqual(downloads, 1)
+        let pendingBefore = try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("pending").path)
+        await model.get(app, from: nil, signAfter: false, library: library, signing: signing, router: router)?.value
+        XCTAssertEqual(downloads, 1)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("pending").path), pendingBefore)
         try unblockIndex()
         await model.get(app, from: nil, signAfter: false, library: library, signing: signing, router: router)?.value
         XCTAssertEqual(downloads, 1); XCTAssertTrue(model.filed.contains(app.id)); XCTAssertEqual(spoken.count, 1)
@@ -162,6 +167,17 @@ final class LibraryOutcomeTests: XCTestCase {
         let saved = try await library.fileNow(marked, info: info, provenance: .sourceDownload)
         XCTAssertEqual(saved.entry.kind, .unsigned); XCTAssertEqual(saved.entry.provenance, .sourceDownload)
         XCTAssertTrue(library.signed.isEmpty)
+    }
+
+    func testRetryAfterAnotherRecoveryCommittedStillReturnsUsableEntry() async throws {
+        try blockIndex()
+        let error = await failure { _ = try await self.library.importPicked(self.pickedCopy()) }
+        let id = try XCTUnwrap(error?.pendingID)
+        try unblockIndex()
+        _ = try library.storage.commit(id)
+        let result = try await library.finishPending(id)
+        XCTAssertTrue(result.alreadySaved); XCTAssertTrue(library.saveState.confirmedSaved)
+        XCTAssertNotNil(try? IPAInspector.inspect(url: library.url(for: result.entry)))
     }
 
 }

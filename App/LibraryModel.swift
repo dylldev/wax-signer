@@ -47,7 +47,8 @@ final class LibraryModel: ObservableObject {
         }.value
         guard generation == refreshGeneration else { return }
         unsigned = snapshot.0; signed = snapshot.1; recovery = snapshot.2; locations = snapshot.4
-        if let issue = snapshot.3 { message = issue }
+        if recover { message = snapshot.3 }
+        else if let issue = snapshot.3 { message = issue }
     }
     func url(for entry: LibraryEntry) -> URL { locations[entry.id] ?? storage.root.appendingPathComponent("unavailable-\(entry.id).ipa") }
     func bytes(_ kind: LibraryEntry.Kind) -> Int { (kind == .signed ? signed : unsigned).reduce(0) { $0 + $1.size } }
@@ -79,6 +80,11 @@ final class LibraryModel: ObservableObject {
             await refresh(recover: false); throw failure
         }
     }
+    @discardableResult func retryImport(_ id: UUID) async throws -> LibrarySaveResult {
+        let result = try await finishPending(id)
+        announce(result.alreadySaved ? "Already saved: \(result.entry.name)" : "Added \(result.entry.name)")
+        return result
+    }
     @discardableResult func fileNow(_ file: URL, info: IPAMetadata, signed: Bool = false,
                                     provenance: LibraryEntry.Provenance? = nil) async throws -> LibrarySaveResult {
         saveState = .saving; operations += 1; busy = true
@@ -103,7 +109,10 @@ final class LibraryModel: ObservableObject {
         let storage = storage
         do {
             let result = try await Task.detached {
-                let pending = try storage.pendingRecord(id), file = try storage.pendingURL(id)
+                let pending: LibraryPending
+                do { pending = try storage.pendingRecord(id) }
+                catch { return try storage.commit(id) }
+                let file = try storage.pendingURL(id)
                 let info = try IPAInspector.inspect(url: file)
                 _ = try storage.complete(id, name: info.displayName.isEmpty ? info.bundleIdentifier : info.displayName, version: info.version,
                                          bundleID: info.bundleIdentifier, build: info.build, provenance: pending.provenance)
@@ -115,6 +124,7 @@ final class LibraryModel: ObservableObject {
         } catch {
             let artifact = await Task.detached {
                 if let kept = try? storage.pendingURL(id) { return kept }
+                if let entry = (storage.entries(.unsigned) + storage.entries(.signed)).first(where: { $0.id == id }) { return storage.url(for: entry) }
                 if let recovered = storage.recoveryItems().first(where: { $0.pendingID == id || $0.url.lastPathComponent == "\(id.uuidString).ipa" }) { return recovered.url }
                 return storage.root.appendingPathComponent("pending/\(id.uuidString)/artifact.ipa")
             }.value

@@ -262,4 +262,11 @@ final class LibraryTransactionTests: XCTestCase {
         XCTAssertEqual(try lib.adoptOrphan(file, name: "Recovered", version: "1", bundleID: "com.demo", build: "1")?.entry.id, saved.entry.id)
     }
 
+    func testCommitRetryAfterJournalCleanupConfirmsIndexedBytes() throws {
+        let lib = IPALibrary(root: root), saved = try save(lib, source())
+        let retry = try lib.commit(saved.entry.id)
+        XCTAssertTrue(retry.alreadySaved); XCTAssertEqual(retry.entry.id, saved.entry.id)
+        try assertSource(lib.url(for: retry.entry))
+    }
+
 }

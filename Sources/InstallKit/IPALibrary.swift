@@ -174,6 +174,14 @@ public final class IPALibrary: @unchecked Sendable {
     public func commit(_ id: UUID) throws -> LibrarySaveResult {
         try lock.withLock {
             try ready()
+            // Another recovery may already have committed and cleaned this journal. Confirm the indexed bytes
+            // instead of losing the caller's retry/export path merely because cleanup completed first.
+            if let entry = stored.first(where: { $0.id == id }), (try? readPending(id)) == nil {
+                let url = rawURL(entry); try checkFile(url, kind: entry.kind)
+                let digest = try LibraryFileIO.hash(url)
+                guard digest.sha256 == entry.sha256, digest.size == entry.size else { throw LibraryError.changed("An indexed artifact changed") }
+                return LibrarySaveResult(entry: entry, alreadySaved: true, warning: nil)
+            }
             var pending = try readPending(id)
             guard pending.phase != .preparing, let expected = pending.entry.sha256 else { throw LibraryError.missingPending }
             let file = try pendingURL(id)

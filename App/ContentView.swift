@@ -12,6 +12,7 @@ struct ContentView: View {
     @State private var problem: String?
     @State private var detail: LibraryEntry?
     @State private var retryImport: URL?
+    @State private var retryPending: UUID?
     @State private var confirmRepair = false
 
     @State private var actionEntry: LibraryEntry?
@@ -38,7 +39,7 @@ struct ContentView: View {
                     if let problem { WaxFeedbackCard(tone: .bad, text: problem) }
                     if let message = library.message { WaxFeedbackCard(tone: .bad, text: message) }
                     if let retryImport {
-                        Button("Retry Save") { add(retryImport) }.buttonStyle(WaxSecondaryButtonStyle()).disabled(adding)
+                        Button("Retry Save") { add(retryImport, pending: retryPending) }.buttonStyle(WaxSecondaryButtonStyle()).disabled(adding)
                         ShareLink("Export retained IPA", item: retryImport)
                     }
                     if library.message != nil {
@@ -140,16 +141,19 @@ struct ContentView: View {
     }
 
     /// Only the awaited commit earns an Added announcement. A publisher's signature is not Wax provenance.
-    private func add(_ url: URL) {
+    private func add(_ url: URL, pending: UUID? = nil) {
         adding = true; problem = nil
         Task {
             defer { adding = false }
             do {
-                let saved = try await library.importPicked(url)
-                retryImport = nil; router.shelf = .unsigned
+                let saved: LibrarySaveResult
+                if let pending { saved = try await library.retryImport(pending) }
+                else { saved = try await library.importPicked(url) }
+                retryImport = nil; retryPending = nil; router.shelf = .unsigned
                 _ = saved // The model announces only a confirmed commit.
             } catch {
                 retryImport = (error as? ShelfSaveFailure)?.artifact ?? url
+                retryPending = (error as? ShelfSaveFailure)?.pendingID ?? pending
                 problem = error.localizedDescription
             }
         }

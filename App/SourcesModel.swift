@@ -15,6 +15,7 @@ final class SourcesModel: ObservableObject {
     @Published var message: String?
     @Published private(set) var retainedDownloads: [String: URL] = [:]
     @Published private(set) var savingDownloads: Set<String> = []
+    private var retainedPending: [String: UUID] = [:]
     private let downloadOverride: ((SourceApp, URL) async throws -> URL)?
     private let announce: (String) -> Void
 
@@ -130,19 +131,23 @@ final class SourcesModel: ObservableObject {
                 }
                 savingDownloads.insert(app.id)
                 retainedDownloads[app.id] = file
-                let info = try await Task.detached { try IPAInspector.inspect(url: file) }.value
-                // A downloaded app is something to re-sign, so it goes on the Unsigned shelf even when the file
-                // carries the publisher's own signature (which will not install on this phone).
-                let saved = try await library.fileNow(file, info: info, signed: false, provenance: .sourceDownload)
+                let saved: LibrarySaveResult
+                if let pending = retainedPending[app.id] { saved = try await library.finishPending(pending) }
+                else {
+                    let info = try await Task.detached { try IPAInspector.inspect(url: file) }.value
+                    // A publisher signature marker does not make this a Wax-generated signing result.
+                    saved = try await library.fileNow(file, info: info, signed: false, provenance: .sourceDownload)
+                }
                 filed.insert(app.id)
                 ok = true
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
                 announce(saved.alreadySaved ? "\(app.name) already saved" : "\(app.name) downloaded and saved")
-                retainedDownloads[app.id] = nil
+                retainedDownloads[app.id] = nil; retainedPending[app.id] = nil
                 do { try await Task.detached { try storage.removeIncoming(file) }.value }
                 catch { message = "Saved, but the retained download needs cleanup: " + error.localizedDescription }
                 if signAfter { signing.use(saved.entry); router.tab = .sign }
             } catch {
+                if let pending = (error as? ShelfSaveFailure)?.pendingID { retainedPending[app.id] = pending }
                 message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                 ImportLogs.shared.log("sources: get failed \(ImportLog.describe(error))")
             }

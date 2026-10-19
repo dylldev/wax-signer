@@ -83,6 +83,8 @@ final class SigningModel: ObservableObject {
     @Published private(set) var shelfSaveState: LibraryModel.SaveState = .idle
     private var signedPendingID: UUID?
     private var resultGeneration = UUID()
+    private var busyOwner = UUID()
+    @Published private(set) var runningSign = false
 
     init(credentials: CredentialsModel, library: LibraryModel? = nil) { self.credentials = credentials; self.library = library ?? .shared }
 
@@ -181,10 +183,10 @@ final class SigningModel: ObservableObject {
     }
 
     var canSignAndInstall: Bool {
-        busyMessage == nil && !shelfSaveState.isSaving && !installing && ipaInfo != nil && (certificateID != nil || signedInputTarget != nil)
+        busyMessage == nil && !runningSign && !shelfSaveState.isSaving && !installing && ipaInfo != nil && (certificateID != nil || signedInputTarget != nil)
     }
 
-    var canSign: Bool { ipaInfo != nil && certificateID != nil && busyMessage == nil && !shelfSaveState.isSaving }
+    var canSign: Bool { ipaInfo != nil && certificateID != nil && busyMessage == nil && !runningSign && !shelfSaveState.isSaving }
 
     // MARK: Choosing the IPA
 
@@ -193,6 +195,7 @@ final class SigningModel: ObservableObject {
 
     func picked(ipa url: URL, fromLibrary: LibraryEntry? = nil) {
         clearResult(); ipaInfo = nil
+        let generation = resultGeneration; busyOwner = generation
         edits = edits.defaultsOnly()
         profileChoice = nil; customEntitlements = nil; customEntitlementsName = nil
         ipaName = url.lastPathComponent; busyMessage = "Reading “\(url.lastPathComponent)”…"
@@ -200,10 +203,12 @@ final class SigningModel: ObservableObject {
             do {
                 if fromLibrary != nil {
                     let info = try await Task.detached { try IPAInspector.inspect(url: url) }.value
+                    guard resultGeneration == generation else { return }
                     ipaURL = url; ipaInfo = info
                 } else {
                     let (pending, info) = try await library.preparePicked(url)
                     discardPickerCopy(url)
+                    guard resultGeneration == generation else { return }
                     let storage = library.storage
                     ipaURL = try await Task.detached { try storage.pendingURL(pending.id) }.value; ipaInfo = info
                     do {
@@ -214,8 +219,8 @@ final class SigningModel: ObservableObject {
                         errorText = "The IPA is ready to sign, but its unsigned shelf save failed. " + error.localizedDescription
                     }
                 }
-            } catch { errorText = error.localizedDescription }
-            busyMessage = nil
+            } catch { if resultGeneration == generation { errorText = error.localizedDescription } }
+            if busyOwner == generation { busyMessage = nil }
         }
     }
 
@@ -255,10 +260,11 @@ final class SigningModel: ObservableObject {
     /// `storeBigFiles` writes changed big files uncompressed: right for an install that stays on this phone, wrong for
     /// anything uploaded or exported.
     func sign(standalone: Bool = true, storeBigFiles: Bool = false) -> Task<Void, Never>? {
-        guard busyMessage == nil, !shelfSaveState.isSaving, let ipaURL, let info = ipaInfo, let certificateID, let store = credentials.store,
+        guard busyMessage == nil, !runningSign, !shelfSaveState.isSaving, let ipaURL, let info = ipaInfo, let certificateID, let store = credentials.store,
               let cert = credentials.certificates.first(where: { $0.id == certificateID }) else { return nil }
         clearResult()
         let generation = resultGeneration
+        busyOwner = generation; runningSign = true
         busyMessage = "Preparing…"
         let title = info.displayName.isEmpty ? "Wax" : info.displayName
         if standalone {
@@ -344,11 +350,11 @@ final class SigningModel: ObservableObject {
                 ImportLogs.shared.log("sign: ok items=\(outcome.signing.items.count) bytes=\(size)")
                 await model.acceptSignedResult(r, pendingID: pending.id, generation: generation)
                 await MainActor.run {
-                    guard model.resultGeneration == generation else { return }
-                    model.lastSignSeconds = Date().timeIntervalSince(model.signStarted ?? Date())
-                    model.busyMessage = nil
+                    model.runningSign = false
+                    if model.busyOwner == generation { model.busyMessage = nil }
+                    if model.resultGeneration == generation { model.lastSignSeconds = Date().timeIntervalSince(model.signStarted ?? Date()) }
                     if standalone {
-                        let saved = model.shelfSaveState.confirmedSaved
+                        let saved = model.resultGeneration == generation && model.shelfSaveState.confirmedSaved
                         BackgroundJob.shared.end(success: saved)
                         if saved { BackgroundJob.shared.notifyIfInBackground(InstallNotification.signed(appTitle: title)) }
                     }
@@ -357,7 +363,9 @@ final class SigningModel: ObservableObject {
                 let text = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                 ImportLogs.shared.log("sign: failed \(ImportLog.describe(error))")
                 await MainActor.run {
-                    model.errorText = text; model.busyMessage = nil
+                    model.runningSign = false
+                    if model.resultGeneration == generation { model.errorText = text }
+                    if model.busyOwner == generation { model.busyMessage = nil }
                     if standalone { BackgroundJob.shared.end(success: false) }
                 }
             }
