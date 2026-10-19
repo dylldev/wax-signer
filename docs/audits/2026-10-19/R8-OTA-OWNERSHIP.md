@@ -27,3 +27,5 @@ Swift frontend parsing of changed Swift sources/tests succeeds in the offline Sw
 ## Limits and device protocol
 
 Physical checks still required: cancel before/after TLS readiness, during real range transfer, after handing off; edit host settings mid-transfer; attempt probe during signing/install; background/lock/grace expiration; verify prior IPA hashes and export after cancellation. Distinguish delivered bytes, detected scheme, OS installation and actual app launch. Shared loopback certificate trust remains R19. Cross-process/durable pipeline resumption and fully cooperative engine cancellation remain incomplete original R8/R20 scope. No deployment or security bypass is introduced.
+
+UI ownership follow-up: Sign's Start over/cancel actions now target only SigningModel's own reservation; they cannot stop a probe that started after an older installation was canceled. Reopening a retained link is disabled over another owner. Notification foreground waits retain/cancel a task and recheck the captured session after the delay, so an old notification cannot open over a newer operation. Two additional model tests cover both cases.

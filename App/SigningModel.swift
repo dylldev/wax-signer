@@ -116,6 +116,22 @@ final class SigningModel: ObservableObject {
     @Published private(set) var readyLink: URL?
     /// True from the tap on Sign & Install until the app has been handed over (or failed), so a second install cannot start.
     @Published private(set) var installing = false
+    private var installSession: OTAInstallModel.Session?
+
+    func ownsInstallation(_ ota: OTAInstallModel) -> Bool { installSession.map { ota.owns($0) } ?? false }
+    func cancelInstallation(ota: OTAInstallModel) { if let installSession { ota.cancel(installSession) } }
+    func startOver(ota: OTAInstallModel) { cancelInstallation(ota: ota); clearResult(); ota.resetIfIdle() }
+    func canOpenInstallLink(_ link: URL, ota: OTAInstallModel) -> Bool {
+        ota.activeSession == nil || (ownsInstallation(ota) && readyLink == link)
+    }
+    /// Notification activation can be delayed by foregrounding. It must not open over a replacement operation.
+    func openInstallLink(_ link: URL, ota: OTAInstallModel, prepare: () async throws -> Void, open: (URL) -> Void) async -> Bool {
+        guard canOpenInstallLink(link, ota: ota), !Task.isCancelled else { return false }
+        let owner = ota.activeSession?.id
+        do { try await prepare() } catch { return false }
+        guard !Task.isCancelled, owner == ota.activeSession?.id, canOpenInstallLink(link, ota: ota) else { return false }
+        open(link); return true
+    }
 
     /// One tap: sign with the chosen certificate (when there is one), then upload and hand the app to iOS.
     /// Nothing is uploaded unless signing succeeded and its self-check passed. Keeps going if Wax is sent to the
@@ -125,8 +141,8 @@ final class SigningModel: ObservableObject {
         let session: OTAInstallModel.Session
         do { session = try ota.reserve() }
         catch { errorText = error.localizedDescription; return }
-        installing = true
-        defer { ota.release(session) }
+        installing = true; installSession = session
+        defer { ota.release(session); if installSession === session { installSession = nil } }
         let needsSigning = certificateID != nil
         let job = BackgroundJob.shared
         job.askForNotificationPermission()

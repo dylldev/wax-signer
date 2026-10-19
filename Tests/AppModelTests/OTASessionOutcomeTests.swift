@@ -1,3 +1,4 @@
+import CredentialKit
 import Combine
 import InstallKit
 import XCTest
@@ -196,6 +197,26 @@ final class OTASessionOutcomeTests: XCTestCase {
         model.bucketName = "new"; XCTAssertNil(model.bucketNote)
         await gate.release(); await task.value
         XCTAssertNil(model.bucketNote); XCTAssertEqual(try storage.records(), [record]); try assertArtifact()
+    }
+    private func signingModel() throws -> SigningModel {
+        let library = LibraryModel(library: IPALibrary(root: root.appendingPathComponent("shelf")), announce: { _ in }, load: false)
+        return SigningModel(credentials: CredentialsModel(store: try CredentialStore(directory: root.appendingPathComponent("credentials"))), library: library)
+    }
+    func testSigningStartOverAndCancelCannotStopAnUnrelatedProbeReservation() throws {
+        let ota = model(), signing = try signingModel(), probe = try ota.reserve()
+        XCTAssertFalse(signing.ownsInstallation(ota))
+        signing.cancelInstallation(ota: ota); signing.startOver(ota: ota)
+        XCTAssertTrue(ota.owns(probe)); XCTAssertEqual(ota.state, .preparing); try assertArtifact(); ota.release(probe)
+    }
+    func testDelayedNotificationCannotOpenOverANewerProbeOrInstall() async throws {
+        let ota = model(), signing = try signingModel(), entered = expectation(description: "foreground wait"), gate = SessionGate()
+        let link = URL(string: "itms-services://?action=download-manifest&url=https://fixture.example/old")!
+        let task = Task { await signing.openInstallLink(link, ota: ota, prepare: { entered.fulfill(); await gate.wait() }, open: { _ in XCTFail("stale activation must not open") }) }
+        await fulfillment(of: [entered], timeout: 5)
+        let newer = try ota.reserve()
+        await gate.release(); let opened = await task.value
+        XCTAssertFalse(opened); XCTAssertTrue(ota.owns(newer)); XCTAssertFalse(signing.canOpenInstallLink(link, ota: ota))
+        ota.release(newer); try assertArtifact()
     }
     func testOnlyOneUploadAndOneCompletionAreAllowedPerSession() async throws {
         let model = model(), session = try model.reserve()

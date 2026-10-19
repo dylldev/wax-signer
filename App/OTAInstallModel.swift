@@ -325,6 +325,7 @@ final class OTAInstallModel: ObservableObject {
         release(session); state = .failed(reason)
     }
     func cancelActive() { if let session = activeSession { cancel(session) } }
+    func resetIfIdle() { if activeSession == nil { state = .idle } }
     func reset() { if let session = activeSession { release(session) }; state = .idle }
     func forgetToken() { tokenCheck?.cancel(); tokenCheckID = UUID(); store.delete(); hasToken = false; tokenNote = nil }
 
