@@ -1,5 +1,7 @@
 # Wax master roadmap execution checkpoint
 
+**Program status: PARTIALLY COMPLETE.** All final implementation PR heads in this checkpoint have passing applicable macOS CI. Partial milestones do not complete their original R identifiers. Documentation/checkpoint updates are separate from code verification.
+
 Baseline source: `8ad4b2eed8b062b0ddb419f33fa0f858ff0b0379` (R2 merge); R1 ancestor `ff50f001f8ee768b5fe3cbd5835377bc563fd2b9`. Distribution baseline: `d4d4ca79160e75f9dc119b9e6ab4bf8908f16123`.
 
 Original definitions recovered from the existing, untracked `ROADMAP.md` and `WAX-ENGINEERING-AUDIT.md` under `/workspace/wax-signer/docs/audits/2026-10-19/`. Those source artifacts are read-only and are not added by this program. Inventory below transcribes their actual descriptions, dependencies, scope and acceptance criteria; it does not invent replacement R identifiers.
@@ -14,23 +16,23 @@ First finish R3 verification, without waiting indefinitely for its independent r
 
 | ID | Original task | State / disposition | Branch / PR / verification |
 |---|---|---|---|
-| R3 | P1: Durable non-destructive library | Ready for review — implemented with device/durability limitations | `codex/r3-durable-library`, [PR #3](https://github.com/dylldev/wax-signer/pull/3), `469a10e`, [green CI 39284426692](https://github.com/dylldev/wax-signer/actions/runs/39284426692) |
+| R3 | P1: Durable non-destructive library | Implemented with verification limitations; final cleanup containment regression added | [PR #3](https://github.com/dylldev/wax-signer/pull/3) `2a045f9` / [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39309629029/job/118255543908) |
 | R4 | P0: Cohesive distribution update | Ready for review — staged repair; no publication | `codex/r4-distribution-correctness`, [PR #4](https://github.com/dylldev/wax-signer/pull/4), `4534231`, [green CI 39286293647](https://github.com/dylldev/wax-signer/actions/runs/39286293647) |
 | R5 | P1: Isolate uploads/session mutation | Ready for review — actual SHA cache-hit verification also green | `codex/r5-ota-upload-reliability`, [PR #5](https://github.com/dylldev/wax-signer/pull/5), `3e30326`, [green CI39304752811](https://github.com/dylldev/wax-signer/actions/runs/39304752811) |
 | R6 | P1: Independent App ID prefixes | Ready for review — implemented; real-profile/keychain device gate open | `codex/r6-app-id-prefix`, [PR #7](https://github.com/dylldev/wax-signer/pull/7), `3ef32fe`, [green CI 39283732825](https://github.com/dylldev/wax-signer/actions/runs/39283732825) |
 | R7 | P1: Input/scratch budgets | Partial milestone ready for review — network budgets; remaining local/extraction/image budgets not completed | `codex/r7-download-budgets`, [PR #10](https://github.com/dylldev/wax-signer/pull/10), `023a29b`, [green CI 39285751184](https://github.com/dylldev/wax-signer/actions/runs/39285751184) |
-| R8 | P1: Job/cancellation/session ownership | Partial milestone in CI — loopback resources/generations; app job/coordinator scope unfinished | `codex/r8-loopback-session-ownership`, [PR #13](https://github.com/dylldev/wax-signer/pull/13), `0a044e0`, [CI39305374860](https://github.com/dylldev/wax-signer/actions/runs/39305374860) package/build passed; simulator pending |
-| R9 | P1: Responsive retryable imports | Implemented; final follow-up CI pending — R3 stack | `codex/r9-responsive-import`, [PR #12](https://github.com/dylldev/wax-signer/pull/12), `157412a`, [CI39306428961](https://github.com/dylldev/wax-signer/actions/runs/39306428961); prior f16cb5c green including all11 new app tests |
-| R10 | P2: Truthful result/retry state | Partial observation-language milestone in CI; configuration snapshots/contextual history/retry scope unfinished | `codex/r10-install-observation-language`, [PR #15](https://github.com/dylldev/wax-signer/pull/15), `73d3020`, [CI39306630462](https://github.com/dylldev/wax-signer/actions/runs/39306630462) |
-| R11 | P2 release gate: Artifact/feed consistency | Partial groundwork in R4; immutable-tag provenance/promotion automation not completed | See revalidation and continuation below |
+| R8 | P1: Job/cancellation/session ownership | Partial: loopback resource/generation and background ownership implemented; OTA coordination/pipeline cancellation unfinished | [PR #13](https://github.com/dylldev/wax-signer/pull/13) `0a044e0` / [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39305374860/job/118240929086); [PR #17](https://github.com/dylldev/wax-signer/pull/17) `731e5fc` / [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39310132797/job/118257254509) |
+| R9 | P1: Responsive retryable imports | Implemented with verification limitations; stacked on updated R3 | [PR #12](https://github.com/dylldev/wax-signer/pull/12) `e607741` / [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39310127468/job/118257236365) |
+| R10 | P2: Truthful result/retry state | Partial: observed outcome language + R3 save truth; snapshots/contextual history/retry scope unfinished | [PR #15](https://github.com/dylldev/wax-signer/pull/15) `73d3020` / [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39306630462/job/118245275860) |
+| R11 | P2 release gate: Artifact/feed consistency | Partial: tagged-source candidate gate; actual approved-tag build/protected promotion/rollback unfinished | [PR #18](https://github.com/dylldev/wax-signer/pull/18) `524ef77` / [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39310041670/job/118256951748) |
 | R12 | P1 release gate: Independent/device conformance | Partial milestone ready for review — source-built probe/CI evidence; physical controls not run | `codex/r12-probe-conformance`, [PR #11](https://github.com/dylldev/wax-signer/pull/11), `afb1ce5`, [green CI 39287037674](https://github.com/dylldev/wax-signer/actions/runs/39287037674) |
 | R13 | P2: Trustworthy performance measurements | Partial milestone ready for review — synchronized timing/output isolation; corpus/metrics/phone budgets not completed | `codex/r13-performance-evidence`, [PR #9](https://github.com/dylldev/wax-signer/pull/9), `6d4ccf0`, [green CI 39285180880](https://github.com/dylldev/wax-signer/actions/runs/39285180880) |
-| R14 | P2: Persistence/secrets/host cleanup | Two partial milestones: source-cache ready; destination-bound bucket ledger in CI; Keychain migration work unfinished | [PR #8](https://github.com/dylldev/wax-signer/pull/8) be5c53c green; `codex/r14-bucket-cleanup-ledger`, [PR #14](https://github.com/dylldev/wax-signer/pull/14) c7a58ac [CI39306189587](https://github.com/dylldev/wax-signer/actions/runs/39306189587), stacked on R3 |
+| R14 | P2: Persistence/secrets/host cleanup | Partial: cache transactions + bucket ledger; remaining secret/accessibility migration unfinished | [PR #8](https://github.com/dylldev/wax-signer/pull/8) `be5c53c` / [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39284307056/job/118165791707); [PR #14](https://github.com/dylldev/wax-signer/pull/14) `0760cf5` / [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39310132639/job/118257253470) |
 | R15 | P2: Read-only preflight/change preview | Investigated — not completed | See revalidation and continuation below |
-| R16 | P2: Source browsing/accessibility | Hidden/inactive animation milestone pushed; other source/artwork/localization/AX scope unfinished | `codex/r16-pause-hidden-animation`, `035c0dd`; R3 source-scoped download state separately resolved |
+| R16 | P2: Source browsing/accessibility | Partial: hidden/inactive animation + R3 source IDs; details/artwork/localization/AX unfinished | [PR #16](https://github.com/dylldev/wax-signer/pull/16) `035c0dd` / [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39306866626/job/118246083078) |
 | R17 | P3: Signing graph/integrity history | Investigated — not completed | See revalidation and continuation below |
 | R18 | P3: Measured engine/new formats | Investigated — not completed; R12/R13/R17 gates remain | See revalidation and continuation below |
-| R19 | P3 research: User-owned loopback TLS | Not implemented; authorized domain/issuer-policy and physical device dependencies | See revalidation and continuation below |
+| R19 | P3 research: User-owned loopback TLS | Research partly completed; domain/issuer authorization and physical experiments blocked | [Primary-source evidence and protocol](R19-RESEARCH.md); no product implementation or successful device acceptance claimed |
 | R20 | P3: Recoverable jobs/probes/diagnostics | Investigated — not completed; library journal/probe v1 only groundwork | See revalidation and continuation below |
 
 ## Original implementation specifications
@@ -243,10 +245,10 @@ Distribution metadata repair is [dylldev/wax PR #1](https://github.com/dylldev/w
 
 ### Revalidation of outstanding scope
 
-- R8: PR #13 owns LoopbackHost pending listeners/connections/handles and generations, with five new TLS/lifecycle tests. BackgroundJob singleton resource overwrite, OTA preparation/snapshots, serial coordinator and pipeline cancellation remain.
+- R8: PR #13 owns loopback resources/generations (five new TLS/lifecycle tests). PR #17 owns per-job grace/progress and aggregate continued processing (11 new deterministic app tests). OTA preparation/snapshots, serial install/IdentityTester coordinator and pipeline cancellation remain.
 - R9: Off-main worker, bounded reads, password retry/cancel/redaction and generation guards implemented with11 new app-model cases. Final view follow-up handles mounted-but-hidden tab departure; pending final CI.
 - R10: R3 addresses shelf truth/provenance; PR #15 fixes observed delivery/probe language and eligibility uncertainty. Certificate-only historical context and immutable result/config binding still remain.23 actual Foundation-only Swift tests passed locally.
-- R11: Current release scripts lack immutable-tag/toolchain provenance and separated reviewed promotion. Do not run history-rewriting publish scripts.
+- R11: PR #18 adds fresh annotated-tag export/build, toolchain/SDK/configuration/source-built-probe checks, common credential-file refusal and validated candidate staging;26 Python tests pass locally. Its real Mac release path is unexecuted; approved tag/R12 integration required. Protected promotion and rollback remain. Do not run history-rewriting publish scripts.
 - R12: Source-built versioned probe replaces opaque resource in its PR; scheme availability is not launch/capability proof. All physical matrix rows remain NOT RUN.
 - R13: Parallel timing mutation/shared output fixed in milestone; no measured engine speedup, corpus or phone budget claimed.
 - R14: Source-cache milestone ready. PR #14 adds a destination/access-key-bound atomic bucket ledger, strict confirmed DELETE outcomes, legacy retention, retry and preparation/acknowledgment boundaries (21 new tests). Keychain partial outcomes/accessibility migration and broader backup policy remain.
@@ -254,8 +256,84 @@ Distribution metadata repair is [dylldev/wax PR #1](https://github.com/dylldev/w
 - R16: R3 isolates same-app downloads across repositories. Details/artwork limits/AX/localization still outstanding. Existing Reduce Motion preserved;035c0dd pauses decorative ticks on hidden/inactive/completed signing screens. Physical Instruments/AX checks remain.
 - R17: No SigningGraph/IntegrityReport feature; hashes/CDHashes are groundwork only.
 - R18: Whole executable Data/classic-ZIP restrictions remain intentionally unchanged. New formats require conformance and measurement gates.
-- R19: SECURITY.md public shared-key architectural risks remain; no authorized domain, issuer-policy or physical OTA acceptance evidence; no issuance/DNS changes made.
+- R19: Current primary sources corroborate public-domain DNS-01 feasibility and shared-key disclosure/revocation risks. See R19-RESEARCH.md. No authorized domain/issuer context or physical acceptance evidence; no issuance/DNS/Keychain changes made.
 - R20: No pipeline JobJournal/JobCoordinator or bounded diagnostic recipe feature. R3 library transactions are not pipeline resume; probe v1 has no nonce/capability execution.
+
+## Performance evidence and resource costs
+
+No new iPhone speed, battery, thermal or peak-RSS result is claimed. R13 fixes measurement correctness before optimization; it does not establish a complete benchmark corpus. Reproduce the existing observations on macOS with `swift test --filter LibraryTransactionTests.testLargeStreamingSaveTimingObservation` and the R2 archive benchmark case in the full package suite. Existing CI39284426692 printed:
+
+- `R3_BENCH bytes=8388608 save_s=0.0626840591430664 buffer_bytes=262144` — one warm-run8MiB file-save observation, not a realistic large-IPA/device benchmark or before/after speedup.
+- `R2_BENCH fixture=8MiB mixed-compressibility snapshot_hash_s=0.06616699695587158 compress_and_gate_s=0.3582940101623535 extraction_s=0.08353698253631592 reuse_and_gate_s=0.25481998920440674 archive_bytes=2159571` — synthetic fixture on one CI runner, not a phone result. Timings can vary substantially across runs/cache state.
+
+R7 downloads stream decoded chunks into owned temporary files, enforcing actual-byte caps; later JSON decoding still materializes the bounded source and lacks full object/image budgets. R9 bounds encrypted input to5MiB P12/1MiB profile, but system crypto allocations/CPU and iCloud waits need further measurement. R3 retains pending/staged/stored copies across transaction boundaries; space amplification is intentional for recoverability and must be included in remaining R7 scratch budgets. R14's journal is capped at4MiB/10,000 records and rewrites atomic snapshots; source-cache and cleanup latency remain unmeasured. R5 cache hits now reread/hash actual stored bytes (bounded chunk memory; additional sequential I/O), prioritizing identity correctness over metadata-only speed. R16 pauses decorative schedule ticks, but no measured energy savings or zero-redraw claim is made. R11 is desktop release preparation, with fresh-source/build/stage scratch costs and repeated verification reads; no runtime-phone impact.
+
+For final performance approval, use fixed small/medium/large corpus bytes and runner/OS/toolchain metadata, cold/warm distributions, RSS/CPU/read-write/scratch metrics, iPhone thermal/lock state and matched baseline runs. Never remove integrity/containment checks to achieve a timing target.
+
+## Executed commands and skipped verification
+
+Common macOS CI commands actually run: `swift test`; `python3 -m unittest discover -s Server/wax-ota -p 'test_*.py'`; `bash scripts/test_make_install_cert.sh`; `bash scripts/test_publish_prep.sh`; `python3 -m unittest discover -s Source -p 'test_*.py'`; `xcodegen generate`; `xcodebuild -project LocalIPASigner.xcodeproj -scheme LocalIPASigner -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build`; `xcodebuild test -project LocalIPASigner.xcodeproj -scheme LocalIPASigner -destination "id=$ID" CODE_SIGNING_ALLOWED=NO` after selecting an available iPhone Simulator with simctl. R12 additionally runs `python3 -m unittest discover -s scripts -p 'test_package_probe.py'` and retains package log/xcresult. Per-run counts/links are above; don't sum duplicate suite executions across branches as unique tests.
+
+Observed package13 skips: eight Keychain entitlement-gated cases (six SystemKeychainTests/two KeychainIdentityTests, errSecMissingEntitlement), two real-profile cases without PROFILE_PATH, one real IPA without IPA_PATH, one live OTA without a configured server, one performance corpus without WAX_PERF_IPA. Simulator11 skips: the eight Keychain cases, two real profiles and performance corpus. These were not disabled by this work. Passing injected app-model policy tests does not prove actual Keychain entitlement/custody behavior on a phone. Modern/legacy PKCS#12 parser/crypto fixture tests do run separately.
+
+Local Linux has no host Swift/Xcode/Apple SDK/simulator. Existing offline Docker Swift6.2.3 provided syntax/portable checks. Actual Foundation-only source/tests passed:23 observation-logic tests in `/tmp/wax-r10-portable`, seven picker-cleanup filesystem tests in `/tmp/wax-picker-portable`; `swift test` was executed inside each bounded offline container package. These extract actual functions/files without substituting fake parser/crypto implementations, but do not replace full Apple integration. Local Python: server55; R4 source15; final R11 source26 (15 R4+11 candidate cases); probe packager6. The full package workflow independently repeats its applicable suites on macOS. No live bucket/server, physical iPhone, power-cut test or protected release-tag candidate build is claimed.
+
+### Final cleanup integration evidence
+
+R3 head `2a045f9` [CI39309629029](https://github.com/dylldev/wax-signer/actions/runs/39309629029) passed:576 package/13 skips/0 failures; unsigned iOS build; **260 simulator/11 skips/0 failures** (20 app-model including all seven picker containment tests,166 SigningKit/3 skips,74 CredentialKit/8 skips), server45/source3 and shell assertions. Its single8MiB save observation was0.07361102104187012s with256KiB chunks; this differs from earlier warm observations and is not a regression benchmark or phone result.
+
+The same cleanup fix was integrated into #12/#14/#17 via ordinary forward merge commits on their development branches, with no history rewrite and no PR/main merge. Their latest combined checks supersede pre-integration evidence. R11's final credential-file/physical-platform gate head524ef77 has its own successful CI39310041670; old candidate-gate runs are not substituted.
+
+## Final combined CI evidence
+
+Latest heads were matched against completed successful workflow head SHAs, and raw logs were read. No queued/older run substitutes for a changed head. Counts include declared skips; every listed failure count is zero.
+
+| PR / head / CI | Package / skips | Simulator / skips | Python server / source |
+|---|---:|---:|---:|
+| [#3](https://github.com/dylldev/wax-signer/pull/3) `2a045f9` [CI39309629029](https://github.com/dylldev/wax-signer/actions/runs/39309629029) | 576 /13 | 260 /11 | 45 / 3 |
+| [#12](https://github.com/dylldev/wax-signer/pull/12) `e607741` [CI39310127468](https://github.com/dylldev/wax-signer/actions/runs/39310127468) | 576 /13 | 271 /11 | 45 / 3 |
+| [#14](https://github.com/dylldev/wax-signer/pull/14) `0760cf5` [CI39310132639](https://github.com/dylldev/wax-signer/actions/runs/39310132639) | 589 /13 | 268 /11 | 45 / 3 |
+| [#17](https://github.com/dylldev/wax-signer/pull/17) `731e5fc` [CI39310132797](https://github.com/dylldev/wax-signer/actions/runs/39310132797) | 576 /13 | 271 /11 | 45 / 3 |
+| [#18](https://github.com/dylldev/wax-signer/pull/18) `524ef77` [CI39310041670](https://github.com/dylldev/wax-signer/actions/runs/39310041670) | 540 /13 | 240 /11 | 45 / 26 |
+
+All five also passed unsigned iOS build and existing shell assertions. R3 model20; R9 model31; bucket ledger model28; background model31. Other independent final green heads are in the inventory above (R4/R5/R6/R7/R8 loopback/R10/R12/R13/R14 source/R16). No all-roadmap combined integration or physical-device result is claimed.
+
+## Exact baseline evidence anchors
+
+These ranges were rechecked using `git show 8ad4b2e:PATH | nl -ba`. They correct approximate line ranges in the individual milestone reports; the mechanisms and fixes are unchanged. Links bind to the immutable R2 source, not a moving branch.
+
+| Confirmed defect | Exact original source |
+|---|---|
+| Listener stop leaves accepted resources alive | [LoopbackHost.swift:162](https://github.com/dylldev/wax-signer/blob/8ad4b2eed8b062b0ddb419f33fa0f858ff0b0379/Sources/InstallKit/LoopbackHost.swift#L162), lines162–165; unowned accept/read170–184; send/stream below |
+| Delivery absence falsely implies nothing installed | [LoopbackHost.swift:60](https://github.com/dylldev/wax-signer/blob/8ad4b2eed8b062b0ddb419f33fa0f858ff0b0379/Sources/InstallKit/LoopbackHost.swift#L60), lines60–65 |
+| Cleanup loses original bucket and forgets failures | [OTAInstallModel.swift:167](https://github.com/dylldev/wax-signer/blob/8ad4b2eed8b062b0ddb419f33fa0f858ff0b0379/App/OTAInstallModel.swift#L167), lines167–180 |
+| S3 delete discards network/status result | [S3Host.swift:76](https://github.com/dylldev/wax-signer/blob/8ad4b2eed8b062b0ddb419f33fa0f858ff0b0379/Sources/InstallKit/S3Host.swift#L76), lines76–83 |
+| Shared grace/title overwritten; global end releases another job | [BackgroundJob.swift:44](https://github.com/dylldev/wax-signer/blob/8ad4b2eed8b062b0ddb419f33fa0f858ff0b0379/App/BackgroundJob.swift#L44), lines44–58,72–79; expiration identity check32–38 |
+
+Independent Apple fixture verification is real but limited: macOS package logs show `testSignedAppPassesAppleCodesignVerification`, `testOutputPassesAppleCodesignAfterNativeRepack`, `testCMSSignatureVerifiesWithIndependentTool`, and system-unzip controls executed/passed. These invoke `/usr/bin/codesign --verify --deep --strict` and OpenSSL CMS verification with controls. OpenSSL `-noverify` does not establish Apple certificate trust, and none proves physical provisioning/install/launch acceptance.
+
+## GitHub implementation inventory
+
+<!-- BEGIN GENERATED PR INVENTORY -->
+| Task / PR | Branch → base | Exact head SHA | Latest check |
+|---|---|---|---|
+| [R3: Make IPA library storage durable and non-destructive](https://github.com/dylldev/wax-signer/pull/3) | `codex/r3-durable-library` → `main` | `2a045f98c18ae2d09fc881c192c13b3828f9f610` | [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39309629029/job/118255543908) |
+| [R4: Generate coherent distribution metadata from verified IPA artifacts](https://github.com/dylldev/wax-signer/pull/4) | `codex/r4-distribution-correctness` → `main` | `45342312868f6e31af28f1b7402edcdc55631b2e` | [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39286293647/job/118173356289) |
+| [R5: Isolate OTA uploads and protect active session publication](https://github.com/dylldev/wax-signer/pull/5) | `codex/r5-ota-upload-reliability` → `main` | `3e30326629fa1db3536b0e03dd994122b502fa47` | [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39304752811/job/118238801038) |
+| [R6: Preserve App ID prefixes independently of Team IDs](https://github.com/dylldev/wax-signer/pull/7) | `codex/r6-app-id-prefix` → `main` | `3ef32fec540cc7af3ea979ce9cb2b17a42786d8a` | [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39283732825/job/118163751366) |
+| [R14: Serialize source cache commits and invalidate obsolete ETags](https://github.com/dylldev/wax-signer/pull/8) | `codex/r14-source-cache-transactions` → `main` | `be5c53c6a63c0f8d5dd2a86e41f1f0b90a74d249` | [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39284307056/job/118165791707) |
+| [R13: Make benchmark timing collection deterministic and race-free](https://github.com/dylldev/wax-signer/pull/9) | `codex/r13-performance-evidence` → `main` | `6d4ccf0e8bfeee2d4bc22b06cccc4e1c9d2cd6ef` | [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39285180880/job/118168980153) |
+| [R7: Enforce source and IPA download budgets during acquisition](https://github.com/dylldev/wax-signer/pull/10) | `codex/r7-download-budgets` → `main` | `023a29b67390575f1815b99c8526ccbbd5822880` | [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39285751184/job/118171077801) |
+| [R12: Build the installation probe from source and retain CI evidence](https://github.com/dylldev/wax-signer/pull/11) | `codex/r12-probe-conformance` → `main` | `afb1ce598c4de957c9edaecc555cecdd77570a65` | [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39287037674/job/118176687596) |
+| [R9: Keep credential imports responsive and retryable](https://github.com/dylldev/wax-signer/pull/12) | `codex/r9-responsive-import` → `codex/r3-durable-library` | `e60774128ce0d7b48c679af4583d5afb9356bb85` | [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39310127468/job/118257236365) |
+| [R8: Own loopback transfers across stop and republish](https://github.com/dylldev/wax-signer/pull/13) | `codex/r8-loopback-session-ownership` → `main` | `0a044e02d753c93d65b1200700a206532e50183c` | [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39305374860/job/118240929086) |
+| [R14: Retain destination-bound bucket cleanup obligations](https://github.com/dylldev/wax-signer/pull/14) | `codex/r14-bucket-cleanup-ledger` → `codex/r3-durable-library` | `0760cf52adb02a47cfb5ae0dcb853a20a27f147a` | [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39310132639/job/118257253470) |
+| [R10: Report delivery and probe observations without installation claims](https://github.com/dylldev/wax-signer/pull/15) | `codex/r10-install-observation-language` → `main` | `73d3020f92781a3978e7ba7a857537fb48a04f91` | [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39306630462/job/118245275860) |
+| [R16: Pause decorative signing animation when hidden or inactive](https://github.com/dylldev/wax-signer/pull/16) | `codex/r16-pause-hidden-animation` → `main` | `035c0ddc3e6c91667747644e9ff07ec07d074b99` | [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39306866626/job/118246083078) |
+| [R8: Isolate background resources for concurrent operations](https://github.com/dylldev/wax-signer/pull/17) | `codex/r8-background-job-ownership` → `codex/r3-durable-library` | `731e5fc46d30e0c1520c7b561bce6687dc691932` | [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39310132797/job/118257254509) |
+| [R11: Prepare validated release candidates from tagged sources](https://github.com/dylldev/wax-signer/pull/18) | `codex/r11-release-candidate-gate` → `codex/r4-distribution-correctness` | `524ef773ab58784440347165bdde65fc106cefb0` | [SUCCESS](https://github.com/dylldev/wax-signer/actions/runs/39310041670/job/118256951748) |
+| R4 distribution repair | `codex/r4-distribution-correctness` → `main` in dylldev/wax | `2bce8857accc063316f08854eec8afb887ca903a` | [PR #1](https://github.com/dylldev/wax/pull/1); offline stage validation passed; no deployed update/CI configured |
+<!-- END GENERATED PR INVENTORY -->
 
 ## Physical-device verification matrix (all unexecuted here)
 
@@ -275,9 +353,30 @@ Record exact source/build SHA, iPhone model/iOS, credential kind and public fing
 
 No physical installation, launch, power-cut durability, phone performance or issuer-policy success is claimed. R19 requires a separately authorized domain/CA policy decision; no issuance or production DNS changes. R18 new formats/algorithms need independent conformance before support claims. R12/R19/R20 device-dependent acceptance remains open until real evidence exists.
 
+## Implementation file inventory
+
+Exact net PR file lists, retrieved from GitHub after the R3 dependency integrations. Tests and reports are included; unrelated untracked audit artifacts are excluded.
+
+| PR / scope | Files |
+|---|---|
+| [#3](https://github.com/dylldev/wax-signer/pull/3) | `App/ContentView.swift`, `App/DocumentPicker.swift`, `App/LibraryModel.swift`, `App/SettingsView.swift`, `App/SignView.swift`, `App/SigningModel.swift`, `App/SourcesModel.swift`, `App/SourcesView.swift`, `Sources/InstallKit/IPALibrary.swift`, `Sources/InstallKit/LibraryFileIO.swift`, `Tests/AppModelTests/LibraryOutcomeTests.swift`, `Tests/AppModelTests/PickerCopyCleanupTests.swift`, `Tests/InstallKitTests/IPALibraryTests.swift`, `Tests/InstallKitTests/LibraryTransactionTests.swift`, `docs/audits/2026-10-19/R3-IMPLEMENTATION.md`, `project.yml` |
+| [#5](https://github.com/dylldev/wax-signer/pull/5) | `Server/wax-ota/README.md`, `Server/wax-ota/test_wax_ota.py`, `Server/wax-ota/wax_ota.py`, `docs/audits/2026-10-19/R5-IMPLEMENTATION.md` |
+| [#12](https://github.com/dylldev/wax-signer/pull/12) | `App/CredentialsModel.swift`, `App/CredentialsView.swift`, `Tests/AppModelTests/CredentialImportOutcomeTests.swift`, `docs/audits/2026-10-19/R9-IMPLEMENTATION.md` |
+| [#13](https://github.com/dylldev/wax-signer/pull/13) | `Sources/InstallKit/LoopbackHost.swift`, `Tests/InstallKitTests/LoopbackHostTests.swift`, `docs/audits/2026-10-19/R8-LOOPBACK-OWNERSHIP.md` |
+| [#14](https://github.com/dylldev/wax-signer/pull/14) | `App/InstallSection.swift`, `App/OTAInstallModel.swift`, `Sources/InstallKit/BucketCleanupStore.swift`, `Sources/InstallKit/S3Host.swift`, `Tests/AppModelTests/BucketCleanupOutcomeTests.swift`, `Tests/InstallKitTests/BucketCleanupStoreTests.swift`, `Tests/InstallKitTests/S3HostTests.swift`, `docs/audits/2026-10-19/R14-BUCKET-CLEANUP.md` |
+| [#15](https://github.com/dylldev/wax-signer/pull/15) | `App/IdentityReadiness.swift`, `Sources/InstallKit/IdentityStatus.swift`, `Sources/InstallKit/LoopbackHost.swift`, `Sources/InstallKit/SignScreenLogic.swift`, `Tests/InstallKitTests/LoopbackHostTests.swift`, `Tests/InstallKitTests/SignScreenLogicTests.swift`, `docs/audits/2026-10-19/R10-OBSERVATION-LANGUAGE.md` |
+| [#16](https://github.com/dylldev/wax-signer/pull/16) | `App/SignView.swift`, `App/WaxMelt.swift`, `docs/audits/2026-10-19/R16-ANIMATION-LIFETIME.md` |
+| [#17](https://github.com/dylldev/wax-signer/pull/17) | `App/BackgroundJob.swift`, `App/SigningModel.swift`, `App/SourcesModel.swift`, `Tests/AppModelTests/BackgroundJobOutcomeTests.swift`, `docs/audits/2026-10-19/R8-BACKGROUND-OWNERSHIP.md` |
+| [#18](https://github.com/dylldev/wax-signer/pull/18) | `Source/RELEASE-CANDIDATES.md`, `Source/prepare_release.py`, `Source/test_prepare_release.py`, `docs/audits/2026-10-19/R11-CANDIDATE-GATE.md` |
+
 ## Next exact action
 
-1. Inspect final CI for R8 PR #13, R9 PR #12, R14 bucket PR #14, R10 PR #15 and R16 animation branch. Read actual failing logs and fix introduced issues on the same branch; collect exact final counts. R5 final already green.
-2. Continue independent original P1 work: R8 background-task token/refcount ownership and OTA preparation/session snapshots; remaining R7 local/extraction/image/response budgets. No broad rewrite or signature algorithm changes.
-3. Continue original R11 release/provenance gate, R15 immutable read-only preflight, then dependent R17/R18/R20 milestones. R19 requires authorized issuer/domain/device evidence; no production issuance. Never claim all R identifiers complete from partial milestones.
-4. R9 and bucket ledger stack on R3, other milestones are independent main/R2 branches. After independent review/explicit merge authorization, integrate and rerun combined regressions; no automatic merges. Preserve original untracked audit artifacts.
+1. All listed final code heads are green as observed; re-fetch before resuming and inspect any newer actual failures. R3 cleanup follow-up2a045f9 was merged **only into its dependent development branches** (#12/#14/#17); no PR was merged into main. Those children require current combined CI, not their older green runs. Exact live checks are in the inventory. Code heads are frozen pending evidence collection; don't add cosmetic commits that unnecessarily restart full CI.
+2. Next implementation: finish original P1 R8 OTA ownership. `App/OTAInstallModel.upload` must own busy state before certificate/feed/cleanup awaits, retain a cancellable task, snapshot host/credentials/configuration, generation-check progress/completion, and bind finishPhoneTransfer to its original host/session rather than live settings. Serial admission must stop IdentityTester from replacing a live install; stop/cancel must never stop a newer host. Build on the bucket-ledger branch explicitly, preserving prepared/acknowledged cleanup records. Test delayed preparation, overlapping test/install, settings edits, cancellation before/after readiness, stale completion, host changes during delivery and retained signed-output recovery. Keep actual install/launch claims separate.
+3. Finish remaining R7 budgets (InstallTransport/CertificateFeed responses and silent-body cancellation, extraction/worker/scratch budgets, source object/image pixels); retain R1/R2 checks. Current network milestone and credential read caps do not complete original R7.
+4. Then implement R15 immutable read-only preflight/plan parity, R10 result/configuration and contextual observations, remaining R14 secret migrations, and R16 details/artwork/AX. R17 depends on real R15 plans; R18/R20 larger work is not done. R11 approved-tag live build/promotion and R12/R19 physical gates remain explicit. Unmerged branches can be stacked, but no new PR may be merged without later authorization/review.
+5. Preserve untouched untracked original audit artifacts; all code worktrees should be clean and pushed. Record final-head CI summaries in this report/PR descriptions; do not label queued checks successful. End state remains PARTIALLY COMPLETE until outstanding original scope is implemented or evidence-backed resolved.
+
+## End-of-batch repository state
+
+Main remains `8ad4b2eed8b062b0ddb419f33fa0f858ff0b0379`; no new PR merged. All implementation branches are committed/pushed and clean. Primary R3 workspace retains only the original untracked audit artifacts, deliberately untouched. Distribution main remains `d4d4ca79160e75f9dc119b9e6ab4bf8908f16123`; its repair is an open branch/PR, not a live deployment. This checkpoint and primary-source R19 research live on the documentation branch/PR #6. Its final documentation-only CI may run after this report update and must not be described as already successful before observed.
