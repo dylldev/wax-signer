@@ -23,7 +23,7 @@ public struct IPASigningOutcome {
 }
 
 /// IPA in, signed IPA out, entirely with the library: validate, extract, sign, self-check, repack.
-/// Nothing is written to `output` unless the self-check passed.
+/// The self-check and final packaged-byte integrity gate must pass before atomic output replacement.
 public enum IPASigner {
     public static func sign(ipa: URL, identity: CodeSigningIdentity, certificateTeamID: String?, profiles: ProfileSet,
                             options: SigningOptions = SigningOptions(), edits: AppEdits = AppEdits(), output: URL, workDirectory: URL,
@@ -36,7 +36,8 @@ public enum IPASigner {
             progress?(SigningProgress(message: message, fraction: lo + (hi - lo) * min(1, max(0, f))))
         }
         stage("Checking the archive…", 0, 0.02)
-        let input = try IPAInspector.inspect(url: ipa)
+        let source = try IPAArchiveSession(url: ipa)
+        let input = try source.inspect()
 
         let work = workDirectory.appendingPathComponent("sign-\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: work, withIntermediateDirectories: true)
@@ -44,7 +45,7 @@ public enum IPASigner {
 
         stage("Unpacking…", 0.02, 0.40)
         let tree = work.appendingPathComponent("tree", isDirectory: true)
-        try IPAExtractor.extract(ipa: ipa, to: tree, byteProgress: { stage("Unpacking…", 0.02, 0.40, $0) })
+        let inventory = try source.extract(to: tree, byteProgress: { stage("Unpacking…", 0.02, 0.40, $0) })
         let payload = tree.appendingPathComponent("Payload")
         let app = payload.appendingPathComponent(input.appFolder)
 
@@ -57,23 +58,18 @@ public enum IPASigner {
                                            profiles: profiles, options: signOptions)
 
         stage("Checking the signature…", 0.52, 0.62)
+        let expected = try IPAArchiveManifest.capture(directory: tree)
         let report = SignatureVerifier.verifyBundle(at: app, expectedSignerSHA1: X509Fingerprint.sha1(leaf))
         guard report.passed else {
             throw SigningError.selfCheckFailed(report.failures.prefix(5).map { "\($0.name) \($0.detail)" })
         }
 
         stage("Packing…", 0.62, 1.0)
-        let staged = work.appendingPathComponent("out.ipa")
-        try IPAArchiver.archive(directory: tree, to: staged, reusing: ipa, compressChangedFiles: compressChangedFiles, byteProgress: { stage("Packing…", 0.62, 1.0, $0) })
-        let after = try IPAInspector.inspect(url: staged)
-
-        // The previous output is replaced in one step: it is never deleted before the new file is in place.
-        if fm.fileExists(atPath: output.path) {
-            _ = try fm.replaceItemAt(output, withItemAt: staged)
-        } else {
-            try fm.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try fm.moveItem(at: staged, to: output)
-        }
+        var inspected: IPAMetadata?
+        try IPAArchiver.archive(directory: tree, to: output, reusing: ipa, compressChangedFiles: compressChangedFiles,
+                                byteProgress: { stage("Packing…", 0.62, 1.0, $0) }, reusingExtraction: inventory,
+                                verifiedManifest: expected, validateArchive: { inspected = try IPAInspector.inspect(url: $0) })
+        guard let after = inspected else { throw IPAError.integrity("packaged archive was not inspected") }
         return IPASigningOutcome(output: output, inputArchive: input, outputArchive: after, signing: result, selfCheck: report, editNotes: editNotes)
     }
 }

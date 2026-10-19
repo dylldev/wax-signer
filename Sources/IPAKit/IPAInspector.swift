@@ -20,6 +20,7 @@ public struct IPAMetadata: Equatable, Sendable {
 
 public enum IPAError: Error, Equatable, LocalizedError {
     case unreadable(String)
+    case integrity(String)
     case notAZip
     case unsupportedZip(String)
     case unsafePath(String)
@@ -35,6 +36,7 @@ public enum IPAError: Error, Equatable, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .unreadable(let why): return "Cannot read file: \(why)"
+        case .integrity(let why): return "Artifact integrity check failed: \(why)"
         case .notAZip: return "Not a valid zip archive (corrupt or truncated)."
         case .unsupportedZip(let what): return "Unsupported zip feature: \(what)."
         case .unsafePath(let p): return "Archive contains an unsafe path: \(p)"
@@ -55,8 +57,10 @@ public enum IPAError: Error, Equatable, LocalizedError {
 public enum IPAInspector {
     /// Validates the archive structure and reads Info.plist. Does not verify code signatures.
     public static func inspect(url: URL) throws -> IPAMetadata {
-        let zip = try ZipArchive(url: url)
+        try inspect(archive: ZipArchive(url: url))
+    }
 
+    static func inspect(archive zip: ZipArchive) throws -> IPAMetadata {
         for e in zip.entries where isUnsafe(e.name) { throw IPAError.unsafePath(e.name) }
 
         var folders = Set<String>()

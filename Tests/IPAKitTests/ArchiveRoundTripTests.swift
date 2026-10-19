@@ -393,10 +393,12 @@ final class ArchiveRoundTripTests: XCTestCase {
         XCTAssertEqual(p.terminationStatus, 0, "the system unzip must accept stored entries")
     }
 
-    func testReuseWithAMissingOriginalFallsBackToCompressing() throws {
+    func testMissingOriginalIsAnExplicitErrorAndPreservesOutput() throws {
         let src = try makeTree()
         let out = dir.appendingPathComponent("out.ipa")
-        try IPAArchiver.archive(directory: src, to: out, reusing: dir.appendingPathComponent("nope.ipa"))
-        XCTAssertEqual(try IPAInspector.inspect(url: out).bundleIdentifier, "com.example.demo")
+        let previous = Data("previous good output".utf8)
+        try previous.write(to: out)
+        XCTAssertThrowsError(try IPAArchiver.archive(directory: src, to: out, reusing: dir.appendingPathComponent("nope.ipa")))
+        XCTAssertEqual(try Data(contentsOf: out), previous)
     }
 }
