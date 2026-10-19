@@ -306,7 +306,7 @@ struct SignView: View {
         let percent = Int(jobFraction * 100)
         let message = progressMessage
         return VStack(spacing: Wax.Space.m) {
-            WaxMelt(progress: jobFraction, height: 230)
+            WaxMelt(progress: jobFraction, height: 230, isVisible: router.tab == .sign)
             Text("\(percent)%")
                 .font(.system(size: 46, weight: .bold, design: .rounded).monospacedDigit())
                 .foregroundStyle(Wax.text)
