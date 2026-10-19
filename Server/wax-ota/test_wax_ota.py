@@ -363,5 +363,33 @@ class SessionTransactions(Base):
             self.assertEqual(self.req("DELETE", f"/u/{ID}")[0], 500)
         self.assertEqual(self.req("DELETE", f"/u/{ID}")[0], 200)
 
-if __name__ == "__main__":
-    unittest.main()
+
+
+class HashIdentity(Base):
+    def test_stat_metadata_is_not_accepted_as_content_identity(self):
+        self.req("PUT", f"/u/{ID}/app.ipa", b"other")
+        path = os.path.join(self.root, ID, "app.ipa"); info = os.stat(path)
+        with open(os.path.join(self.root, ID, ".sha256"), "w") as cache:
+            json.dump(dict(sha256=HASH, inode=info.st_ino, size=info.st_size, mtime_ns=info.st_mtime_ns),cache)
+        self.assertEqual(self.req("GET", f"/has/{HASH}")[0],404)
+
+    def test_hash_verification_owns_its_session_but_does_not_block_others(self):
+        from unittest.mock import patch
+        self.req("PUT", f"/u/{ID}/app.ipa", b"hello",headers={"X-Wax-SHA256":HASH})
+        entered,release=threading.Event(),threading.Event();original=wax_ota.verified_file_hash
+        def pause(path,limit):
+            entered.set()
+            if not release.wait(5): raise AssertionError("test did not release hash verification")
+            return original(path,limit)
+        answer=[]
+        with patch.object(wax_ota,'verified_file_hash',side_effect=pause):
+            request=threading.Thread(target=lambda:answer.append(self.req("GET",f"/has/{HASH}")[0]));request.start()
+            try:
+                self.assertTrue(entered.wait(3))
+                self.assertEqual(self.req("DELETE",f"/u/{ID}")[0],409)
+                self.assertEqual(self.req("PUT",f"/u/{ID}/app.ipa",b"replace")[0],409)
+                self.assertEqual(self.req("PUT",f"/u/{'Z'*22}/app.ipa",b"other")[0],201)
+            finally:release.set();request.join(5)
+        self.assertEqual(answer,[200])
+
+if __name__ == "__main__": unittest.main()

@@ -43,8 +43,8 @@ def gc(root, ttl, active=()):
             pass
 
 
-def find_by_hash(root, sha, active=()):
-    """Only a cache record bound to the current published inode may identify an IPA.
+def find_hash_candidate(root, sha, active=()):
+    """Find a cheap cache candidate; the caller must verify its actual SHA-256.
 
     A crash between the IPA and cache renames produces a cache miss, never a false hit.
     Old plain-text cache records are intentionally misses until that session is uploaded again.
@@ -63,6 +63,19 @@ def find_by_hash(root, sha, active=()):
         except (OSError, ValueError):
             pass
     return None
+
+
+def verified_file_hash(path, max_bytes):
+    """Cache metadata is a prefilter, never proof of byte identity. Bounded streaming read."""
+    digest = hashlib.sha256(); total = 0
+    try:
+        with open(path, "rb") as source:
+            while chunk := source.read(CHUNK):
+                total += len(chunk)
+                if total > max_bytes: return None
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError: return None
 
 
 def client_identity(peer, headers):
@@ -137,8 +150,15 @@ def make_server(addr, root, token, max_bytes, max_total, ttl):
             if not self._authed(): return
             p = self._parts()
             if len(p) == 2 and p[0] == "has" and SHA_RE.fullmatch(p[1]):
-                with quota_lock: found = find_by_hash(root, p[1], active)
-                return self._send(200, {"id": found}) if found else self._send(404, {"error": "not found"})
+                with quota_lock:
+                    found = find_hash_candidate(root, p[1], active) if len(active) < max_active else None
+                    if found: active.add(found)
+                verified = False
+                if found:
+                    try: verified = verified_file_hash(os.path.join(root, found, "app.ipa"), max_bytes) == p[1]
+                    finally:
+                        with quota_lock: active.remove(found)
+                return self._send(200, {"id": found}) if verified else self._send(404, {"error": "not found"})
             if p != ["health"]: return self._send(404, {"error": "not found"})
             self.send_response(204); self.send_header("Content-Length", "0"); self.send_header("Connection", "close")
             self.end_headers()
