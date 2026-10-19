@@ -204,8 +204,10 @@ public final class IPALibrary: @unchecked Sendable {
                 let oldDigest = try LibraryFileIO.hash(oldURL, read: { try self.checkpoint(.hashRead, oldURL) })
                 if oldDigest.sha256 == expected, oldDigest.size == actual.size {
                     try verifyRetained()
-                    var updated = stored; updated[i].sha256 = expected
-                    try persist(updated, deletions: deletions); stored = updated
+                    if stored[i].sha256 == nil {
+                        var updated = stored; updated[i].sha256 = expected
+                        try persist(updated, deletions: deletions); stored = updated
+                    }
                     return LibrarySaveResult(entry: stored[i], alreadySaved: true, warning: cleanup(id))
                 }
             }
@@ -240,13 +242,16 @@ public final class IPALibrary: @unchecked Sendable {
     public func recover() throws {
         try lock.withLock {
             try ready()
+            var issues: [String] = []
             for id in pendingIDs() {
                 do {
                     let pending = try readPending(id)
-                    if pending.phase == .committing { _ = try commit(id) }
-                    else if stored.contains(where: { $0.id == id }) { _ = cleanup(id) }
-                } catch { problem = error.localizedDescription }
+                    if pending.phase == .committing {
+                        if let warning = try commit(id).warning { issues.append(warning) }
+                    } else if stored.contains(where: { $0.id == id }), let warning = cleanup(id) { issues.append(warning) }
+                } catch { issues.append(error.localizedDescription) }
             }
+            problem = issues.isEmpty ? nil : issues.joined(separator: "\n")
             try cleanDeletions()
         }
     }
@@ -460,16 +465,16 @@ public final class IPALibrary: @unchecked Sendable {
         } catch { return LibraryError.cleanupPending(error.localizedDescription).localizedDescription }
     }
     private func cleanDeletions() throws {
-        var remaining: [LibraryEntry] = []
+        var remaining: [LibraryEntry] = [], failures: [String] = []
         for entry in deletions {
             if stored.contains(where: { $0.kind == entry.kind && folded($0.fileName) == folded(entry.fileName) }) { continue }
             do {
                 let url = rawURL(entry)
                 if FileManager.default.fileExists(atPath: url.path) { try checkFile(url, kind: entry.kind); try checkpoint(.beforeCleanup, url); try FileManager.default.removeItem(at: url) }
-            } catch { remaining.append(entry) }
+            } catch { remaining.append(entry); failures.append(error.localizedDescription) }
         }
         if remaining.count != deletions.count { try persist(stored, deletions: remaining); deletions = remaining }
-        if !remaining.isEmpty { throw LibraryError.cleanupPending("\(remaining.count) file(s) remain") }
+        if !remaining.isEmpty { throw LibraryError.cleanupPending("\(remaining.count) file(s) remain. " + (failures.first ?? "Retry cleanup.")) }
     }
     private func checkpoint(_ point: Checkpoint, _ url: URL) throws { try fault?(point, url) }
     private func pendingFolder(_ id: UUID) -> URL { pendingRoot.appendingPathComponent(id.uuidString, isDirectory: true) }

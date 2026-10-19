@@ -368,6 +368,7 @@ struct SignView: View {
         let failed = !r.checkFailures.isEmpty
         return VStack(spacing: 8) {
             resultHeader(failed)
+            if let errorText { WaxFeedbackCard(tone: .bad, text: errorText) }
             if !failed {
                 switch model.shelfSaveState {
                 case .saved(let saved):
@@ -386,7 +387,7 @@ struct SignView: View {
                 Button { openURL(link) } label: { Label("Install", systemImage: "arrow.down.app") }
                     .buttonStyle(WaxPrimaryButtonStyle())
             }
-            exportButton(r)
+            exportButton(r).disabled(model.shelfSaveState.isSaving)
             Button { model.clearResult(); ota.reset() } label: {
                 Label("Start over", systemImage: "arrow.counterclockwise")
                     .font(.subheadline.weight(.semibold)).foregroundStyle(Wax.sub)
