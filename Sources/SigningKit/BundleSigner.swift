@@ -72,6 +72,14 @@ public enum BundleSigner {
                             maxBundles: Int = 256) throws -> SigningPlan {
         guard maxBundles > 0, maxBundles <= 4096,
               Context.signableBundles(in: appDirectory).count <= maxBundles else { throw SigningError.bundle("preflight bundle count exceeds its limit") }
+        let canonicalRoot = appDirectory.resolvingSymlinksInPath().path
+        let paths = Set(Context.signableBundles(in: appDirectory).map { url -> String in
+            let path = url.resolvingSymlinksInPath().path
+            return path == canonicalRoot ? "." : String(path.dropFirst(canonicalRoot.count + 1))
+        })
+        guard Set(profiles.overrides.keys).isSubset(of: paths) else {
+            throw SigningError.bundle("preflight profile override names an unknown bundle path")
+        }
         var frozen = options
         frozen.requestedEntitlements = try freeze(options.requestedEntitlements)
         frozen.overrideEntitlements = try freeze(options.overrideEntitlements)

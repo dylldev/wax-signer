@@ -127,6 +127,26 @@ final class SigningPlanTests: XCTestCase {
         guard case .invalid = explicitFixture.bundles[0].profile.signatureStatus else { return XCTFail("must preserve invalid, never promote fixture trust") }
         try before.verifyTree()
     }
+    func testUnknownProfileOverrideIsRejectedRatherThanSilentlyIgnored() throws {
+        let credentials = try TestCredentials(), before = try snapshot()
+        let profile = try ProvisioningProfile.parse(FixtureData.profileWildcardAll)
+        let profiles = ProfileSet(pool: [profile], overrides: ["PlugIns/missing.appex": profile])
+        XCTAssertThrowsError(try BundleSigner.plan(appDirectory: app, certificateChainDER: credentials.signer.certificateChainDER,
+            certificateTeamID: credentials.loaded.teamID, profiles: profiles, profilePolicy: .allowInvalidForTesting)) {
+            XCTAssertTrue($0.localizedDescription.contains("unknown bundle path"))
+        }
+        try before.verifyTree()
+    }
+    func testCallerMutableEntitlementContainersCannotChangeTheFrozenPreview() throws {
+        let credentials = try TestCredentials(), mutable = NSMutableArray(array: ["before"])
+        var options = SigningOptions(); options.overrideEntitlements = ["fixture.values": mutable]
+        let preview = try plan(credentials, options: options)
+        mutable.add("after")
+        let requested = try XCTUnwrap(try PropertyListSerialization.propertyList(from: preview.bundles[0].requestedEntitlementsXML, format: nil) as? [String: Any])
+        XCTAssertEqual(requested["fixture.values"] as? [String], ["before"])
+        _ = try BundleSigner.sign(plan: preview, identity: credentials.signer)
+        XCTAssertTrue(SignatureVerifier.verifyBundle(at: app).passed)
+    }
     #if os(macOS)
     func testPlannedOutputPassesIndependentAppleCodesign() throws {
         let credentials = try TestCredentials(), preview = try plan(credentials)
