@@ -37,9 +37,18 @@ def read_member(archive, name, limit):
     return archive.read(item)
 
 
+def public_entries(archive):
+    # Explicit accidental-secret gate for the unsigned public Wax artifact, not a universal secret scanner.
+    for entry in archive.infolist():
+        name=PurePosixPath(entry.filename).name.lower()
+        if name.endswith(('.p12','.pfx','.mobileprovision','.pem','.key','.p8','.xcconfig')) or name=='.env' or name.startswith('.env.'):
+            raise ValueError('private configuration or credential file in release payload')
+
+
 def probe_evidence(ipa, source):
     """Check actual nested bytes and bind the source-built probe manifest to exported public sources."""
     with zipfile.ZipFile(ipa) as z:
+        public_entries(z)
         if len(z.namelist()) != len(set(z.namelist())): raise ValueError('duplicate release archive paths')
         app = [n.rsplit('/', 1)[0] for n in z.namelist() if n.startswith('Payload/') and n.count('/') == 2 and n.endswith('.app/Info.plist')]
         if len(app) != 1: raise ValueError('ambiguous release app')
@@ -50,6 +59,7 @@ def probe_evidence(ipa, source):
     if manifest.get('platforms')!=['iPhoneOS']: raise ValueError('release probe was not built for physical iOS')
     if manifest.get('ipaSHA256') != hashlib.sha256(probe).hexdigest(): raise ValueError('probe bytes disagree with build evidence')
     with zipfile.ZipFile(io.BytesIO(probe)) as nested:
+        public_entries(nested)
         entries=nested.infolist(); names=[entry.filename for entry in entries]
         if len(entries)>4096 or len(names)!=len(set(names)) or sum(entry.file_size for entry in entries)>32*1024*1024: raise ValueError('invalid probe archive geometry')
         for entry in entries:

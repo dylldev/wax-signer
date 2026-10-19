@@ -100,3 +100,12 @@ class ReleaseCandidateGate(unittest.TestCase):
             return result
         with self.assertRaises(ValueError):self.prepare(builder=simulator)
         self.assertFalse(self.out.exists())
+
+    def test_accidental_credential_or_private_configuration_file_blocks_candidate(self):
+        for name in ['accidental.P12','.env.production','embedded.mobileprovision','local.xcconfig']:
+            def secret(source,out,*args):
+                result=self.build(source,out,*args)
+                with zipfile.ZipFile(out/'Wax-1.0.ipa','a') as z:z.writestr('Payload/Wax.app/'+name,b'PUBLIC TEST SENTINEL: not a real credential')
+                return result
+            with self.assertRaises(ValueError):self.prepare(builder=secret)
+            self.assertFalse(self.out.exists())
