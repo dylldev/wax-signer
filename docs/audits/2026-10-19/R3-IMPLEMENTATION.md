@@ -7,6 +7,7 @@ Base: `8ad4b2eed8b062b0ddb419f33fa0f858ff0b0379`, the authorized R2 squash merge
 References are to the R2 merge base:
 
 - `Sources/InstallKit/IPALibrary.swift:55–85`: kind/bundle ID/version/size deduplication removes previous index references and then deletes the older IPA despite not establishing byte identity.
+- `Sources/InstallKit/IPALibrary.swift:50–51`: unchecked summation can trap for damaged legacy indexes containing multiple `Int.max` sizes. Accounting now saturates safely, with the same helper used by the UI; a regression retains both files and checks the sum.
 - `Sources/InstallKit/IPALibrary.swift:26–34`: unreadable/malformed indexes silently become empty arrays, and missing files lose their in-memory references. `remove`/`clear` swallow file-deletion failures after the index commit.
 - `App/LibraryModel.swift:26–45`: saves catch errors into nil; the unawaited `file` task exposes no completion outcome. Removal errors are suppressed.
 - `App/SourcesModel.swift:116–129`: a temporary download is deleted regardless of insertion outcome, and Filed/success/announcement occur even after a nil save.
@@ -79,9 +80,9 @@ Recovery is tested using deterministic checkpoints at transaction boundaries, no
 
 | File | Role / relevant lines |
 |---|---|
-| `Sources/InstallKit/IPALibrary.swift` | Optional backward-compatible entry fields (19), shared-root serialization (61), transaction APIs (111–221), deletion/tombstones (223–240), recovery/orphans (242–347), non-destructive repair (349), bounded versioned index (411) and cleanup (467). |
+| `Sources/InstallKit/IPALibrary.swift` | Optional backward-compatible entry fields (19), shared-root serialization (61), checked byte accounting (104), transaction APIs (117–227), deletion/tombstones (229–246), recovery/orphans (248–353), non-destructive repair (355), bounded versioned index (417) and cleanup (473). |
 | `Sources/InstallKit/LibraryFileIO.swift` | Streaming copy/source/staged verification (13), checked non-symlink reads and file-stability validation (32). |
-| `App/LibraryModel.swift` | Awaited save states and cached UI snapshots (15–51), coordinated imports (56–86), actual commit/error recovery paths (106), retry/export support and surfaced deletion failures (136–175). |
+| `App/LibraryModel.swift` | Awaited save states and cached UI snapshots (15–51), coordinated imports (56–89), actual commit/error recovery paths (109), retry/export support and surfaced deletion failures (139–178). |
 | `App/SourcesModel.swift` | Durable incoming download, separate Saving state, retained transaction reuse and commit-dependent Filed/announcement/routing (100–155). |
 | `App/SigningModel.swift` | Durable per-result reservation (304), report/save separation and retry (228–252), operation ownership/generation guards and confirmed completion (351–371). |
 | `App/ContentView.swift` | IPA-tab recovery/repair/retry/export, conditional import routing, awaited removal, build/hash/origin details. |
@@ -113,3 +114,9 @@ Mac CI uses the existing commands `swift test`, the Python/shell commands above,
 - Run `39273661324` executed 571 tests and found one duplicate recovery-list row for a published-but-unindexed IPA. Recovery now canonicalizes/deduplicates paths while retaining the transaction and file. The test remains enabled and the subsequent full integration run passed.
 
 No checks, existing regression suites or signature verification were disabled. Unknown artifacts remain preserved; completion of library saving never implies iPhone installation or launch.
+
+### Expanded full integration evidence
+
+[Run 39275358491](https://github.com/dylldev/wax-signer/actions/runs/39275358491), implementation commit `b2e521803d878170782cd0d6a18b77650432b647`, passed **573 package tests / 13 skips / zero failures**, all server/source/script checks, the unsigned iOS build and all simulator bundles. The simulator actually ran **12 `LibraryOutcomeTests` with zero failures**, plus the existing 166 signing tests (3 skips) and 74 app/credential tests (8 skips). Its 8 MiB save observation was **0.0413 seconds**. The later library URL/root-alias/size-boundary tests increase package coverage to 576 cases; their final-head result is linked from PR #3 and must be checked separately, not inferred from the earlier green run.
+
+Package's 13 historical skips concern eight Keychain cases requiring unavailable host entitlements, two optional real-profile inputs, one optional real IPA, one configured live OTA server and one optional real-IPA performance fixture. Simulator's 11 historical skips cover the corresponding Keychain/optional profile/performance cases. No app-model outcome test was skipped. The root-case-alias test is additionally conditional only on whether the actual filesystem supports that alias.
