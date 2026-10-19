@@ -183,6 +183,20 @@ final class OTASessionOutcomeTests: XCTestCase {
         XCTAssertEqual(model.state, .handedToiOS); XCTAssertTrue(model.owns(new)); try assertArtifact()
         model.release(new)
     }
+    func testLateCleanupNoteCannotReplaceEditedConfigurationAndFailedRecordIsKept() async throws {
+        let entered = expectation(description: "old destination cleanup"), gate = SessionGate()
+        let storage = BucketCleanupStore(file: root.appendingPathComponent("journal"))
+        let credentials = S3Credentials(accessKey: "fixture", secretKey: "fixture", region: "auto", endpoint: URL(string: "https://old.example")!)
+        let record = try BucketCleanupRecord(sessionID: "ABCDEFGHIJKLMNOPQRSTUV", scope: BucketCleanupScope(credentials: credentials, bucket: "old"))
+        try storage.put(record)
+        let model = OTAInstallModel(store: SessionSecrets(), bucketStore: SessionSecrets(), cleanupStore: storage, sweepOnStart: false,
+            cleanup: { _, _, _ in entered.fulfill(); await gate.wait(); throw CancellationError() })
+        let task = Task { await model.sweepBucket(credentials: credentials, bucket: "old") }
+        await fulfillment(of: [entered], timeout: 5)
+        model.bucketName = "new"; XCTAssertNil(model.bucketNote)
+        await gate.release(); await task.value
+        XCTAssertNil(model.bucketNote); XCTAssertEqual(try storage.records(), [record]); try assertArtifact()
+    }
     func testOnlyOneUploadAndOneCompletionAreAllowedPerSession() async throws {
         let model = model(), session = try model.reserve()
         _ = await upload(model, session)

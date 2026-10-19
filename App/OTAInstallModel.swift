@@ -14,7 +14,7 @@ final class OTAInstallModel: ObservableObject {
     }
 
     @Published var serverText: String = UserDefaults.standard.string(forKey: "otaServer") ?? "" {
-        didSet { UserDefaults.standard.set(serverText, forKey: "otaServer") }
+        didSet { UserDefaults.standard.set(serverText, forKey: "otaServer"); tokenCheck?.cancel(); tokenCheckID = UUID(); tokenNote = nil }
     }
     @Published private(set) var hasToken: Bool
     @Published private(set) var state: State = .idle
@@ -43,13 +43,13 @@ final class OTAInstallModel: ObservableObject {
         didSet { UserDefaults.standard.set(hostKind.rawValue, forKey: "installHost") }
     }
     @Published var bucketEndpoint = UserDefaults.standard.string(forKey: "s3Endpoint") ?? "" {
-        didSet { UserDefaults.standard.set(bucketEndpoint, forKey: "s3Endpoint") }
+        didSet { UserDefaults.standard.set(bucketEndpoint, forKey: "s3Endpoint"); invalidateBucketNotes() }
     }
     @Published var bucketName = UserDefaults.standard.string(forKey: "s3Bucket") ?? "" {
-        didSet { UserDefaults.standard.set(bucketName, forKey: "s3Bucket") }
+        didSet { UserDefaults.standard.set(bucketName, forKey: "s3Bucket"); invalidateBucketNotes() }
     }
     @Published var bucketRegion = UserDefaults.standard.string(forKey: "s3Region") ?? "auto" {
-        didSet { UserDefaults.standard.set(bucketRegion, forKey: "s3Region") }
+        didSet { UserDefaults.standard.set(bucketRegion, forKey: "s3Region"); invalidateBucketNotes() }
     }
     /// Where the certificate for the "This iPhone" host is published.
     @Published var certificateFeedText = UserDefaults.standard.string(forKey: "certificateFeed") ?? LoopbackConfig.defaultFeed {
@@ -100,6 +100,7 @@ final class OTAInstallModel: ObservableObject {
     private var tokenCheckID = UUID()
     private var bucketCheck: Task<Void, Never>?
     private var bucketCheckID = UUID()
+    private var bucketNoteOwner = UUID()
     private let bucketHost: (S3Credentials, String) throws -> S3Host
     private let cleanupStore: BucketCleanupStore
     private let cleanup: @Sendable (S3Credentials, String, String) async throws -> Void
@@ -207,11 +208,11 @@ final class OTAInstallModel: ObservableObject {
     func saveBucketKeys() {
         let a = accessKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines), k = secretKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !a.isEmpty, !k.isEmpty, let blob = try? JSONEncoder().encode(["a": a, "s": k]) else { return }
-        do { try bucketStore.save(blob); hasBucketKeys = true; accessKeyDraft = ""; secretKeyDraft = "" }
+        do { try bucketStore.save(blob); invalidateBucketNotes(); hasBucketKeys = true; accessKeyDraft = ""; secretKeyDraft = "" }
         catch { bucketNote = (error as? LocalizedError)?.errorDescription ?? "Could not store the keys." }
     }
 
-    func forgetBucketKeys() { bucketStore.delete(); hasBucketKeys = false }
+    func forgetBucketKeys() { invalidateBucketNotes(); bucketStore.delete(); hasBucketKeys = false }
 
     private func bucketCredentials() -> (S3Credentials, String)? {
         let text = bucketEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -226,14 +227,14 @@ final class OTAInstallModel: ObservableObject {
     func testBucket() {
         guard let (c, name) = bucketCredentials() else { bucketNote = "Fill in the endpoint, bucket, region and both keys first."; return }
         bucketCheck?.cancel()
-        let generation = UUID(); bucketCheckID = generation
+        let generation = UUID(); bucketCheckID = generation; bucketNoteOwner = generation
         let scope = try? BucketCleanupScope(credentials: c, bucket: name)
         bucketNote = "Checking the bucket…"
         bucketCheck = Task {
             let note: String
             do { try await S3Host(credentials: c, bucket: name).checkAccess(); note = "The bucket accepted the keys." }
             catch { note = "The bucket check failed. Check the endpoint, bucket, region and keys, then retry." }
-            guard !Task.isCancelled, bucketCheckID == generation, let (current, currentName) = bucketCredentials(),
+            guard !Task.isCancelled, bucketCheckID == generation, bucketNoteOwner == generation, let (current, currentName) = bucketCredentials(),
                   (try? BucketCleanupScope(credentials: current, bucket: currentName)) == scope,
                   current.secretKey == c.secretKey else { return }
             bucketNote = note
@@ -249,26 +250,34 @@ final class OTAInstallModel: ObservableObject {
     }
 
     func sweepBucket(credentials: S3Credentials, bucket: String, now: Date = Date()) async {
+        let noteOwner = UUID(); bucketNoteOwner = noteOwner
         do {
             let scope = try BucketCleanupScope(credentials: credentials, bucket: bucket)
             let store = cleanupStore
             let records = try await Task.detached { try store.records() }.value
-            bucketNote = "Checking expired bucket uploads…"
+            publishBucketNote("Checking expired bucket uploads…", owner: noteOwner)
             let unresolvedLegacy = defaults.dictionary(forKey: "s3Pending")?.count ?? 0
-            if unresolvedLegacy > 0 { bucketNote = "\(unresolvedLegacy) older cleanup records have no destination. They are preserved; use your bucket's expiry rule or remove the old objects in its console." }
+            if unresolvedLegacy > 0 { publishBucketNote("\(unresolvedLegacy) older cleanup records have no destination. They are preserved; use your bucket's expiry rule or remove the old objects in its console.", owner: noteOwner) }
             for record in records where record.scope == scope && (record.expiresAt == nil || record.expiresAt! <= now) {
                 guard activeBucketRecords.insert(record.id).inserted else { continue }
                 defer { activeBucketRecords.remove(record.id) }
                 do {
                     try await cleanup(credentials, bucket, record.sessionID)
                     try await Task.detached { try store.remove(record) }.value
-                } catch { bucketNote = "Bucket cleanup could not finish. Its record is kept; check access and retry on the next upload or launch." }
+                } catch { publishBucketNote("Bucket cleanup could not finish. Its record is kept; check access and retry on the next upload or launch.", owner: noteOwner) }
             }
-            if bucketNote == "Checking expired bucket uploads…" { bucketNote = "Expired bucket cleanup finished; unexpired links are kept." }
+            if bucketNoteOwner == noteOwner, bucketNote == "Checking expired bucket uploads…" { publishBucketNote("Expired bucket cleanup finished; unexpired links are kept.", owner: noteOwner) }
             if records.contains(where: { $0.scope != scope }) {
-                bucketNote = "Cleanup records for another bucket or access key are preserved. Restore that configuration to retry, or use the original bucket's expiry rule."
+                publishBucketNote("Cleanup records for another bucket or access key are preserved. Restore that configuration to retry, or use the original bucket's expiry rule.", owner: noteOwner)
             }
-        } catch { bucketNote = "Bucket cleanup records could not be read. They were preserved; new uploads must wait for storage recovery." }
+        } catch { publishBucketNote("Bucket cleanup records could not be read. They were preserved; new uploads must wait for storage recovery.", owner: noteOwner) }
+    }
+
+    private func invalidateBucketNotes() {
+        bucketCheck?.cancel(); bucketCheckID = UUID(); bucketNoteOwner = UUID(); bucketNote = nil
+    }
+    private func publishBucketNote(_ note: String, owner: UUID) {
+        if bucketNoteOwner == owner { bucketNote = note }
     }
 
     /// Admission and configuration capture happen synchronously, before signing/feed/network awaits.
@@ -277,7 +286,7 @@ final class OTAInstallModel: ObservableObject {
         let configuration: Configuration
         switch hostKind {
         case .phone:
-            guard LoopbackConfig.isUsableFeed(certificateFeedText), let feed = URL(string: certificateFeedText) else {
+            guard LoopbackConfig.isUsableFeed(certificateFeedText), let feed = URL(string: certificateFeedText.trimmingCharacters(in: .whitespacesAndNewlines)) else {
                 throw SessionError(message: "Set a valid HTTPS certificate feed in Install settings, or choose My server or Bucket.")
             }
             configuration = .phone(feed)
