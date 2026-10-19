@@ -49,7 +49,7 @@ final class IPALibraryTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: lib.url(for: e).path))
     }
 
-    func testEntriesSurviveReloadAndMissingFilesAreDropped() throws {
+    func testEntriesSurviveReloadAndMissingFilesAreHidden() throws {
         let lib = IPALibrary(root: root)
         let keep = try lib.add(file: try file("a.ipa", bytes: 10), kind: .unsigned, name: "A", version: "1", bundleID: "com.a")
         let gone = try lib.add(file: try file("b.ipa", bytes: 11), kind: .unsigned, name: "B", version: "1", bundleID: "com.b")

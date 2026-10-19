@@ -51,7 +51,7 @@ final class LibraryModel: ObservableObject {
         else if let issue = snapshot.3 { message = issue }
     }
     func url(for entry: LibraryEntry) -> URL { locations[entry.id] ?? storage.root.appendingPathComponent("unavailable-\(entry.id).ipa") }
-    func bytes(_ kind: LibraryEntry.Kind) -> Int { (kind == .signed ? signed : unsigned).reduce(0) { $0 + $1.size } }
+    func bytes(_ kind: LibraryEntry.Kind) -> Int { IPALibrary.totalBytes(of: kind == .signed ? signed : unsigned) }
 
     /// Picked files are copied under coordinated/security-scoped access; that access ends before UI work resumes.
     func preparePicked(_ file: URL) async throws -> (LibraryPending, IPAMetadata) {

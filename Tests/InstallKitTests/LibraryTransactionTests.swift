@@ -293,4 +293,16 @@ final class LibraryTransactionTests: XCTestCase {
         XCTAssertEqual(IPALibrary(root: root).entries(.unsigned).count, 1)
     }
 
+    func testDamagedLargeSizeMetadataCannotTrapShelfAccounting() throws {
+        try legacy([(UUID(),"a.ipa","original"),(UUID(),"b.ipa","original")])
+        let index = root.appendingPathComponent("index.json")
+        var records = try JSONSerialization.jsonObject(with: Data(contentsOf: index)) as! [[String: Any]]
+        for i in records.indices { records[i]["size"] = Int.max }
+        try JSONSerialization.data(withJSONObject: records).write(to: index)
+        let lib = IPALibrary(root: root)
+        XCTAssertEqual(lib.entries(.unsigned).count, 2)
+        XCTAssertEqual(lib.totalBytes(.unsigned), Int.max)
+        XCTAssertEqual(IPALibrary.totalBytes(of: lib.entries(.unsigned)), Int.max)
+    }
+
 }

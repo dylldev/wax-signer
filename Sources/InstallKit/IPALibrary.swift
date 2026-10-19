@@ -101,7 +101,13 @@ public final class IPALibrary: @unchecked Sendable {
             return stored.filter { $0.kind == kind && (try? checkFile(rawURL($0), kind: kind)) != nil }.sorted { $0.added > $1.added }
         }
     }
-    public func totalBytes(_ kind: LibraryEntry.Kind) -> Int { entries(kind).reduce(0) { $0 + $1.size } }
+    public static func totalBytes(of entries: [LibraryEntry]) -> Int {
+        entries.reduce(0) { total, entry in
+            let (sum, overflow) = total.addingReportingOverflow(max(0, entry.size))
+            return overflow ? Int.max : sum
+        }
+    }
+    public func totalBytes(_ kind: LibraryEntry.Kind) -> Int { Self.totalBytes(of: entries(kind)) }
 
     /// Caller-owned originals are never moved or deleted. Only committed copies are eligible for deduplication.
     @discardableResult public func add(file: URL, kind: LibraryEntry.Kind, name: String, version: String, bundleID: String,

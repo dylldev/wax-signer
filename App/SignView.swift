@@ -378,7 +378,7 @@ struct SignView: View {
                     ProgressView("Saving to the IPA shelf…")
                 case .failed(let failure):
                     WaxFeedbackCard(tone: .bad, text: "Signing succeeded, but shelf saving failed. " + failure.localizedDescription)
-                    Button("Retry Save") { Task { await model.retrySignedSave() } }.buttonStyle(WaxSecondaryButtonStyle())
+                    Button("Retry Save") { announced = false; Task { await model.retrySignedSave() } }.buttonStyle(WaxSecondaryButtonStyle())
                 case .idle:
                     Text("The signed file is retained. It has not been saved on the shelf.").font(.footnote).foregroundStyle(Wax.sub)
                 }
