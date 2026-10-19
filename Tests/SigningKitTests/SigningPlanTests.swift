@@ -112,13 +112,16 @@ final class SigningPlanTests: XCTestCase {
         var options = SigningOptions(); options.overrideEntitlements = ["oversized": String(repeating: "x", count: 300_000)]
         XCTAssertThrowsError(try plan(credentials, options: options)); try before.verifyTree()
     }
-    func testMalformedCMSIsRejectedByDefaultWithoutClaimingUnknownTrustIsInvalid() throws {
-        let credentials = try TestCredentials(), before = try snapshot()
+    private func unsignedProfileBytes() throws -> Data {
         let cms = try CMSSignedData.parse(FixtureData.profileWildcardAll)
         let content = try XCTUnwrap(cms.encapsulatedContent)
-        let unsigned = DER.sequence([DER.oid("1.2.840.113549.1.7.2"), DER.tlv(0xa0, DER.sequence([
+        return DER.sequence([DER.oid("1.2.840.113549.1.7.2"), DER.tlv(0xa0, DER.sequence([
             DER.integer(1), DER.setOf([]), DER.sequence([DER.oid("1.2.840.113549.1.7.1"), DER.tlv(0xa0, DER.octetString(content))]), DER.setOf([])
         ]))])
+    }
+    func testMalformedCMSIsRejectedByDefaultWithoutClaimingUnknownTrustIsInvalid() throws {
+        let credentials = try TestCredentials(), before = try snapshot()
+        let unsigned = try unsignedProfileBytes()
         let profiles = try ProfileSet(single: .parse(unsigned))
         XCTAssertThrowsError(try BundleSigner.plan(appDirectory: app, certificateChainDER: credentials.signer.certificateChainDER,
             certificateTeamID: credentials.loaded.teamID, profiles: profiles)) { XCTAssertTrue($0.localizedDescription.contains("CMS signature invalid")) }
@@ -146,6 +149,16 @@ final class SigningPlanTests: XCTestCase {
         XCTAssertEqual(requested["fixture.values"] as? [String], ["before"])
         _ = try BundleSigner.sign(plan: preview, identity: credentials.signer)
         XCTAssertTrue(SignatureVerifier.verifyBundle(at: app).passed)
+    }
+    func testDuplicateProfileUUIDCannotReuseTrustFromDifferentCMSBytes() throws {
+        let credentials = try TestCredentials(), before = try snapshot()
+        let valid = try ProvisioningProfile.parse(FixtureData.profileWildcardAll), invalid = try ProvisioningProfile.parse(unsignedProfileBytes())
+        XCTAssertEqual(valid.info.id, invalid.info.id)
+        if case .invalid = ProfileTrust.evaluate(valid.rawData) { return XCTFail("the signed synthetic control must be intact") }
+        let profiles = ProfileSet(pool: [valid], overrides: ["PlugIns/TestExt.appex": invalid])
+        XCTAssertThrowsError(try BundleSigner.plan(appDirectory: app, certificateChainDER: credentials.signer.certificateChainDER,
+            certificateTeamID: credentials.loaded.teamID, profiles: profiles)) { XCTAssertTrue($0.localizedDescription.contains("CMS signature invalid")) }
+        try before.verifyTree()
     }
     #if os(macOS)
     func testPlannedOutputPassesIndependentAppleCodesign() throws {

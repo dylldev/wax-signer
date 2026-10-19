@@ -197,7 +197,7 @@ public enum BundleSigner {
         var newIdentifiers: [String: String] = [:]
         /// Profile, identifier and requested entitlements per signable bundle, keyed by directory path.
         var planned: [String: Planned] = [:]
-        var trustCache: [UUID: ProfileSignatureStatus] = [:]
+        var trustCache: [Data: ProfileSignatureStatus] = [:]
 
         init(identity: CodeSigningIdentity, profiles: ProfileSet, options: SigningOptions, rootURL: URL,
              leafSHA1: String, certificateTeamID: String?) {
@@ -359,9 +359,10 @@ public enum BundleSigner {
                 var selection = ProfileSelection(
                     bundlePath: relative(info.url), bundleIdentifier: finalID, profileName: chosen.profile.info.name,
                     profileID: chosen.profile.info.id, rejected: chosen.rejected)
-                let id = chosen.profile.info.id
-                let status = trustCache[id] ?? ProfileTrust.evaluate(chosen.profile.rawData)
-                trustCache[id] = status
+                // Imported UUIDs are metadata, not the identity of the signed CMS bytes.
+                let bytes = chosen.profile.rawData
+                let status = trustCache[bytes] ?? ProfileTrust.evaluate(bytes)
+                trustCache[bytes] = status
                 selection.signatureStatus = status
                 result.profileSelections.append(selection)
             }
