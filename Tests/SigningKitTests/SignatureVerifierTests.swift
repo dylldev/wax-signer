@@ -91,3 +91,68 @@ final class SignatureVerifierTests: XCTestCase {
     }
     #endif
 }
+
+/// Exercises the complete verifier on hostile bytes without importing a signing identity.
+final class SignatureVerifierMalformedTests: XCTestCase {
+    private func verify(_ build: (MachO) -> Data) throws -> VerificationReport {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("Hostile")
+        let original = try MachO(Data(contentsOf: Fixtures.appDirectory.appendingPathComponent("SigningTestApp")))
+        var probe = original; try probe.prepareForSignature(size: 0)
+        let size = build(probe).count
+        var image = original; try image.prepareForSignature(size: size)
+        let signature = build(image)
+        XCTAssertEqual(size, signature.count)
+        try image.attach(signature: signature); try image.data.write(to: url)
+        var report = VerificationReport()
+        SignatureVerifier.verifyExecutable(url, label: "malformed", infoPlist: nil, codeResources: nil, into: &report)
+        XCTAssertFalse(report.passed, "hostile signature must produce a failed report")
+        XCTAssertEqual(try Data(contentsOf: url), image.data, "verification must never mutate input")
+        return report
+    }
+
+    private func cd(_ image: MachO) -> Data {
+        CodeDirectory(identifier: "test", teamIdentifier: nil, codeLimit: image.signedLength,
+                      execSegmentBase: image.textFileOffset, execSegmentLimit: image.textFileSize,
+                      execSegmentFlags: 1, specialHashes: [:]).build(image: image.data)
+    }
+
+    private func patch(_ bytes: inout Data, _ field: Int, _ value: UInt32) {
+        bytes.replaceSubrange(field..<(field + 4), with: Blob.be32(value))
+    }
+
+    func testInvalidCodeDirectoryTablesProduceFailedReports() throws {
+        for (field, value): (Int, UInt32) in [(16, .max), (16, 0), (24, .max), (24, 7), (28, .max), (32, .max)] {
+            let report = try verify { image in
+                var directory = self.cd(image); self.patch(&directory, field, value)
+                return Blob.superBlob(magic: Blob.embeddedSignature, entries: [(0, directory)])
+            }
+            XCTAssertTrue(report.failures.contains { $0.name.contains("CodeDirectory geometry") }, "\(report.failures)")
+        }
+    }
+
+    func testMalformedContainerIndicesAndBlobLengthsProduceFailedReports() throws {
+        for (field, value): (Int, UInt32) in [(4, 0), (4, 12), (8, .max), (16, .max), (24, .max), (24, 0)] {
+            let report = try verify { image in
+                var blob = Blob.superBlob(magic: Blob.embeddedSignature, entries: [(0, self.cd(image))])
+                self.patch(&blob, field, value)
+                return blob
+            }
+            XCTAssertTrue(report.failures.contains { $0.name.contains("blob index") }, "\(report.failures)")
+        }
+    }
+
+    func testTruncatedAndInconsistentCMSProduceFailedReports() throws {
+        let bodies = [Data(), Data([0x30, 0]), Data([0x30, 0x84, 0xff, 0xff, 0xff, 0xff]),
+                      Data([0x30, 0x80, 0x30, 0x80]), Data(repeating: 0xff, count: 32)]
+        for body in bodies {
+            let report = try verify { image in
+                Blob.superBlob(magic: Blob.embeddedSignature, entries: [
+                    (0, self.cd(image)), (0x10000, Blob.wrap(Blob.cmsWrapper, body))])
+            }
+            XCTAssertTrue(report.failures.contains { $0.name.contains("CMS signature present and parseable") }, "\(report.failures)")
+        }
+    }
+}

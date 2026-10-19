@@ -21,27 +21,42 @@ enum FatMachO {
     /// Returns the arm64 slice (cpusubtype 0), else arm64e (2); a thin file is returned unchanged.
     static func thin(_ data: Data) throws -> Data {
         if isUnsupportedFat(data) { throw SigningError.machO("this universal binary uses a format Wax cannot read, so it was not signed") }
-        guard isFat(data) else { return data }
-        func u32(_ o: Int) -> UInt32? {
-            guard o >= 0, o + 4 <= data.count else { return nil }
-            return (0..<4).reduce(UInt32(0)) { $0 << 8 | UInt32(data[data.startIndex + o + $1]) }
+        guard isFat(data) else { _ = try MachO(data); return data }
+        guard data.count >= 8 else { throw SigningError.machO("universal binary header is cut short") }
+        let count = CheckedBytes.be32(data, 4)
+        guard count > 0, count <= 64, count <= (data.count - 8) / 20 else {
+            throw SigningError.machO("universal binary architecture table is incomplete")
         }
-        guard let count = u32(4), count > 0, count <= 64 else { throw SigningError.machO("universal binary header is not valid") }
-        var best: (rank: Int, offset: Int, size: Int)?
-        for i in 0..<Int(count) {
+        let tableEnd = 8 + count * 20
+        var best: (rank: Int, cpu: UInt32, subtype: UInt32, range: Range<Int>)?
+        var ranges: [Range<Int>] = []
+        var architectures: Set<UInt64> = []
+        for i in 0..<count {
             let base = 8 + 20 * i
-            guard let cpu = u32(base), let sub = u32(base + 4), let off = u32(base + 8), let size = u32(base + 12) else {
-                throw SigningError.machO("universal binary header is cut short")
+            let cpu = UInt32(CheckedBytes.be32(data, base)), sub = UInt32(CheckedBytes.be32(data, base + 4))
+            let off = CheckedBytes.be32(data, base + 8), size = CheckedBytes.be32(data, base + 12)
+            let alignment = CheckedBytes.be32(data, base + 16)
+            guard off >= tableEnd, size > 0, CheckedBytes.contains(off, size, in: data.count),
+                  alignment <= 31, UInt64(off) % (UInt64(1) << alignment) == 0 else {
+                throw SigningError.machO("universal binary slice has invalid bounds or alignment")
             }
-            guard cpu == cpuTypeARM64 else { continue }
-            let rank = (sub & 0x00FF_FFFF) == 0 ? 0 : ((sub & 0x00FF_FFFF) == 2 ? 1 : 2)
-            if best == nil || rank < best!.rank { best = (rank, Int(off), Int(size)) }
+            let range = off..<(off + size)
+            guard !ranges.contains(where: { $0.overlaps(range) }),
+                  architectures.insert(UInt64(cpu) << 32 | UInt64(sub)).inserted else {
+                throw SigningError.machO("universal binary has overlapping slices or duplicate architectures")
+            }
+            ranges.append(range)
+            guard cpu == cpuTypeARM64, [UInt32(0), 2].contains(sub & 0x00FF_FFFF) else { continue }
+            let rank = sub & 0x00FF_FFFF == 0 ? 0 : 1
+            if best == nil || rank < best!.rank { best = (rank, cpu, sub, range) }
         }
-        guard let pick = best else { throw SigningError.machO("this universal binary has no arm64 slice, so it cannot run on an iPhone") }
-        guard pick.offset >= 0, pick.size > 0, pick.offset + pick.size <= data.count else {
-            throw SigningError.machO("universal binary slice lies outside the file")
+        guard let pick = best else { throw SigningError.machO("this universal binary has no supported arm64 slice") }
+        let slice = Data(data[(data.startIndex + pick.range.lowerBound)..<(data.startIndex + pick.range.upperBound)])
+        _ = try MachO(slice)
+        guard slice.u32(4) == pick.cpu, slice.u32(8) == pick.subtype else {
+            throw SigningError.machO("universal architecture metadata does not match its Mach-O slice")
         }
-        return Data(data[(data.startIndex + pick.offset)..<(data.startIndex + pick.offset + pick.size)])
+        return slice
     }
 
     /// Replaces every universal binary under `root` with its arm64 slice. Returns one note per file changed.
@@ -49,28 +64,29 @@ enum FatMachO {
         let fm = FileManager.default
         guard let walker = fm.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else { return [] }
         let base = root.resolvingSymlinksInPath().path
-        // First look at every file, rewrite nothing: a binary Wax must refuse should stop the signing before any file changed.
+        let staging = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: staging) }
+        var validated: [(source: URL, staged: URL, attributes: [FileAttributeKey: Any])] = []
         for case let url as URL in walker {
-            let v = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-            guard v?.isRegularFile == true, v?.isSymbolicLink != true, let handle = try? FileHandle(forReadingFrom: url) else { continue }
-            let head = (try? handle.read(upToCount: 4)) ?? Data()
-            try? handle.close()
-            if isUnsupportedFat(head) {
-                throw SigningError.machO("\(url.lastPathComponent) is a universal binary in a format Wax cannot read, so the app was not signed")
-            }
-        }
-        guard let rewrite = fm.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else { return [] }
-        var notes: [String] = []
-        for case let url as URL in rewrite {
-            let v = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-            guard v?.isRegularFile == true, v?.isSymbolicLink != true else { continue }
-            guard let handle = try? FileHandle(forReadingFrom: url) else { continue }
-            let head = (try? handle.read(upToCount: 4)) ?? Data()
-            try? handle.close()
+            let v = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard v.isRegularFile == true, v.isSymbolicLink != true else { continue }
+            let handle = try FileHandle(forReadingFrom: url)
+            let head: Data
+            do { head = try handle.read(upToCount: 4) ?? Data(); try handle.close() }
+            catch { try? handle.close(); throw error }
+            if isUnsupportedFat(head) { throw SigningError.machO("unsupported universal binary: \(url.lastPathComponent)") }
             guard isFat(head) else { continue }
-            let attrs = try fm.attributesOfItem(atPath: url.path)
-            try thin(Data(contentsOf: url)).write(to: url, options: .atomic)
-            if let mode = attrs[.posixPermissions] { try fm.setAttributes([.posixPermissions: mode], ofItemAtPath: url.path) }
+            let output = try thin(Data(contentsOf: url, options: .mappedIfSafe))
+            let staged = staging.appendingPathComponent(String(validated.count))
+            try output.write(to: staged)
+            validated.append((url, staged, try fm.attributesOfItem(atPath: url.path)))
+        }
+        var notes: [String] = []
+        for item in validated {
+            let url = item.source
+            try Data(contentsOf: item.staged, options: .mappedIfSafe).write(to: url, options: .atomic)
+            if let mode = item.attributes[.posixPermissions] { try fm.setAttributes([.posixPermissions: mode], ofItemAtPath: url.path) }
             let full = url.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent(url.lastPathComponent).path
             notes.append("Removed unused architectures from \(full.hasPrefix(base + "/") ? String(full.dropFirst(base.count + 1)) : url.lastPathComponent)")
         }

@@ -154,5 +154,40 @@ final class DebExtractorTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: work.appendingPathComponent("safe/escaped.dylib").path))
         for f in files { XCTAssertEqual(f.deletingLastPathComponent().path, out.path) }
     }
+    func testMalformedArAndTarNeverCreateOutput() throws {
+        let deb = work.appendingPathComponent("damaged.deb")
+        let output = work.appendingPathComponent("untouched")
+        for tar in [Data(), Data(count: 512), Data(repeating: 1, count: 1024)] {
+            try writeAr([("data.tar", tar)], to: deb)
+            XCTAssertThrowsError(try DebExtractor.dylibs(inDeb: deb, to: output)) {
+                XCTAssertTrue($0 is SigningError)
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
+        }
+        // The negative BSD length previously reached a reversed Swift range.
+        let header = "#1/-1".padding(toLength: 48, withPad: " ", startingAt: 0)
+            + "0".padding(toLength: 10, withPad: " ", startingAt: 0) + "`\n"
+        try (Data("!<arch>\n".utf8) + Data(header.utf8)).write(to: deb)
+        XCTAssertThrowsError(try DebExtractor.dylibs(inDeb: deb, to: output))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
+    }
+
+    func testGzipCorruptionAndTrailingCompressedBytesAreRejected() throws {
+        let src = work.appendingPathComponent("crc.bin")
+        try Data("hello".utf8).write(to: src)
+        XCTAssertEqual(try run("/usr/bin/gzip", ["-k", "-f", src.path], in: work), 0)
+        let good = try Data(contentsOf: work.appendingPathComponent("crc.bin.gz"))
+        XCTAssertEqual(try DebExtractor.decompress(good, name: "data.tar.gz"), Data("hello".utf8))
+        for index in [good.count - 8, good.count - 4] {
+            var bad = good; bad[index] ^= 1
+            XCTAssertThrowsError(try DebExtractor.decompress(bad, name: "data.tar.gz"))
+        }
+        for suffix in [Data([0xAA]), Data([0]), Data([0xFF]), Data([3, 0]), Data(repeating: 0, count: 128)] {
+            var trailing = good; trailing.insert(contentsOf: suffix, at: trailing.count - 8)
+            XCTAssertThrowsError(try DebExtractor.decompress(trailing, name: "data.tar.gz"))
+        }
+        XCTAssertThrowsError(try DebExtractor.decompress(good + good, name: "data.tar.gz"), "concatenated members must not be silently truncated")
+    }
+
 }
 #endif

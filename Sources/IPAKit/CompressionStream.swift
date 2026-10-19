@@ -32,7 +32,8 @@ public final class CompressionStream {
         return compression_stream_process(&raw, finalize ? Int32(COMPRESSION_STREAM_FINALIZE.rawValue) : 0)
     }
 
-    /// Input bytes the stream has not consumed yet.
+    /// Input bytes the backend has not consumed yet. Internal read-ahead can consume bytes past a codec's
+    /// logical end, so zero does not establish an exact single-stream boundary (notably for DEFLATE).
     public var pendingInput: Int { raw.src_size }
     /// Free space left in the destination buffer.
     public var pendingOutput: Int { raw.dst_size }
