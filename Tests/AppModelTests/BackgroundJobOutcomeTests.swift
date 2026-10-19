@@ -101,4 +101,10 @@ final class BackgroundJobOutcomeTests: XCTestCase {
         XCTAssertEqual(state.ended, [UIBackgroundTaskIdentifier(rawValue: 1)])
         model.end(id, success: true); XCTAssertEqual(state.ended.count, 1)
     }
+    func testRepeatedAdoptionOfOwnedHandleDoesNotCompleteItPrematurely() {
+        let (model, _) = model(), task = FakeContinuedJob(), id = model.begin(title: "A")
+        model.adopt(task); model.adopt(task); XCTAssertTrue(task.completions.isEmpty)
+        model.end(id, success: true); XCTAssertEqual(task.completions, [true])
+    }
+
 }

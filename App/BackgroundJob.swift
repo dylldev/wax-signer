@@ -76,6 +76,7 @@ final class BackgroundJob {
     }
     /// A queued task can arrive after its foreground work ended. It must still complete exactly once.
     func adopt(_ handle: ContinuedJobHandle) {
+        if continued === handle { return }
         guard !jobs.isEmpty, continued == nil else { handle.complete(success: false); return }
         continued = handle
         handle.expiration = { [weak self, weak handle] in
