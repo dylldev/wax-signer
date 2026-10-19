@@ -46,6 +46,16 @@ enum InstallTransport {
             try await withCheckedThrowingContinuation { receiver.start(request, file: file, session: session, continuation: $0) }
         }, onCancel: { receiver.cancel(CancellationError()) })
     }
+    /// Header policy is independent of URLSession's buffering of custom-protocol responses.
+    static func validateResponse(_ response: URLResponse, budget: Budget) throws -> HTTPURLResponse {
+        guard let response = response as? HTTPURLResponse else { throw Failure.missingResponse }
+        guard allowed(response.url) else { throw Failure.unsafeURL }
+        if response.expectedContentLength > Int64(budget.maxBytes) { throw Failure.tooLarge }
+        if let header = response.value(forHTTPHeaderField: "Content-Length")?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !header.isEmpty, header.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }),
+           UInt64(header).map({ $0 > UInt64(budget.maxBytes) }) ?? true { throw Failure.tooLarge }
+        return response
+    }
     static func looksLikeManifest(_ data: Data) -> Bool {
         String(decoding: data.prefix(2048), as: UTF8.self).contains("<plist")
     }
@@ -104,15 +114,8 @@ enum InstallTransport {
                         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
             let error: Error? = lock.withLock {
                 if let stopped { return stopped }
-                guard let response = response as? HTTPURLResponse else { return Failure.missingResponse }
-                guard InstallTransport.allowed(response.url) else { return Failure.unsafeURL }
-                self.response = response
-                // Darwin custom protocols can report unknown expectedContentLength despite a raw length header.
-                // Both are advisory early checks; actual decoded chunks remain authoritative.
-                if response.expectedContentLength > Int64(budget.maxBytes) { return Failure.tooLarge }
-                if let header = response.value(forHTTPHeaderField: "Content-Length")?.trimmingCharacters(in: .whitespacesAndNewlines),
-                   !header.isEmpty, header.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }),
-                   UInt64(header).map({ $0 > UInt64(budget.maxBytes) }) ?? true { return Failure.tooLarge }
+                do { self.response = try InstallTransport.validateResponse(response, budget: budget) }
+                catch { return error }
                 return nil
             }
             if let error { cancel(error); completionHandler(.cancel) } else { completionHandler(.allow) }

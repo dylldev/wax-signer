@@ -43,12 +43,20 @@ final class InstallResponseBudgetTests: XCTestCase {
             catch { guard case InstallTransport.Failure.tooLarge = error else { return XCTFail("wrong error: \(error)") } }
         }
     }
-    func testDeclaredOversizeIsRefusedBeforeTheBodyCompletes() async throws {
-        // Deliver one byte to flush Darwin URLProtocol header delivery, but never complete the body.
-        // One byte is below the cap: only the declared-length check can reject this as too large.
-        ResponseBudgetProtocol.begin = { p in p.headers(["Content-Length": "9000"]); p.chunk(Data([1])) }
+    func testDeclaredOversizeIsRejectedWithoutAnyDecodedBody() async throws {
+        // Darwin URLProtocol buffers unfinished short synthetic responses. Complete an empty body so the
+        // response is delivered, then require the length error (actual body bytes cannot trip the cap).
+        ResponseBudgetProtocol.begin = { p in p.headers(["Content-Length": "9000"]); p.finish() }
         do { _ = try await send(); XCTFail() }
         catch { guard case InstallTransport.Failure.tooLarge = error else { return XCTFail("wrong error: \(error)") } }
+    }
+    func testHeaderPolicyRejectsBeforeReadingAnyBodyIncludingLengthOverflow() throws {
+        for length in ["9000", "184467440737095516160"] {
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: ["Content-Length": length])!
+            XCTAssertThrowsError(try InstallTransport.validateResponse(response, budget: .init(maxBytes: 8))) {
+                guard case InstallTransport.Failure.tooLarge = $0 else { return XCTFail("wrong error: \($0)") }
+            }
+        }
     }
     func testDeadlineStopsCompletelySilentResponse() async throws {
         let stopped = expectation(description: "network task stopped")
