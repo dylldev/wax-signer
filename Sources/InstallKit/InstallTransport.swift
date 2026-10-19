@@ -63,6 +63,7 @@ enum InstallTransport {
         private var body = Data()
         private var redirects = 0
         private var authenticated = false
+        private var refusesRedirects = false
         private var originalOrigin: String?
         init(budget: Budget, progress: @escaping @Sendable (Double) -> Void) { self.budget = budget; self.progress = progress }
         func start(_ request: URLRequest, file: URL?, session: URLSession,
@@ -75,6 +76,7 @@ enum InstallTransport {
                 if let stopped { return stopped }
                 self.continuation = continuation; self.network = network; self.task = task
                 authenticated = request.value(forHTTPHeaderField: "Authorization") != nil
+                refusesRedirects = request.httpMethod == "DELETE"
                 originalOrigin = InstallTransport.origin(request.url)
                 let timer = DispatchSource.makeTimerSource()
                 timer.schedule(deadline: .now() + budget.deadline)
@@ -88,6 +90,8 @@ enum InstallTransport {
         func cancel(_ error: Error) { finish(error, canceled: true) }
         func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                         newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+            // Destructive cleanup never changes destination, even for same-origin redirects.
+            if lock.withLock({ refusesRedirects }) { completionHandler(nil); return }
             let accept = lock.withLock {
                 redirects += 1
                 return stopped == nil && redirects <= 5 && InstallTransport.allowed(request.url)
