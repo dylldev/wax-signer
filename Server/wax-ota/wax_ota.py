@@ -11,7 +11,7 @@ Accepts an IPA and a manifest from the Wax app and stores them under an unguessa
 
 Never logs tokens or ids. Listens on loopback only; put it behind Caddy.
 """
-import hashlib, hmac, json, os, re, shutil, sys, threading, time
+import hashlib, hmac, json, os, re, shutil, sys, threading, time, tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{22,64}$")
@@ -32,27 +32,35 @@ def dir_size(root):
     return total
 
 
-def gc(root, ttl):
+def gc(root, ttl, active=()):
     wall = time.time()
     for name in os.listdir(root):
         p = os.path.join(root, name)
         try:
-            if os.path.isdir(p) and wall - os.path.getmtime(p) > ttl:
+            if name not in active and not os.path.islink(p) and os.path.isdir(p) and wall - os.path.getmtime(p) > ttl:
                 shutil.rmtree(p, ignore_errors=True)
         except OSError:
             pass
 
 
-def find_by_hash(root, sha):
-    """Id of a stored IPA whose verified hash is `sha`, or None."""
+def find_by_hash(root, sha, active=()):
+    """Only a cache record bound to the current published inode may identify an IPA.
+
+    A crash between the IPA and cache renames produces a cache miss, never a false hit.
+    Old plain-text cache records are intentionally misses until that session is uploaded again.
+    """
     for name in os.listdir(root):
         d = os.path.join(root, name)
         try:
-            if ID_RE.match(name) and os.path.isfile(os.path.join(d, "app.ipa")):
-                with open(os.path.join(d, ".sha256")) as f:
-                    if f.read() == sha:
-                        return name
-        except OSError:
+            if name in active or not ID_RE.fullmatch(name) or os.path.islink(d): continue
+            path = os.path.join(d, "app.ipa")
+            if os.path.islink(path): continue
+            stat = os.stat(path)
+            with open(os.path.join(d, ".sha256")) as f:
+                record = json.loads(f.read(1024))
+            if record == {"sha256": sha, "inode": stat.st_ino, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}:
+                return name
+        except (OSError, ValueError):
             pass
     return None
 
@@ -75,12 +83,18 @@ def make_server(addr, root, token, max_bytes, max_total, ttl):
     guard_lock = threading.Lock()
     fails = {}      # address -> wrong tokens since the last good one
     locked = {}     # address -> when the lock ends
+    active = set()   # session IDs owned by a PUT or DELETE; guarded by quota_lock
+    max_active = 16   # bounded body readers; overload is explicit, not an unbounded wait
     reserved = [0]   # bytes promised to uploads still in flight
     os.makedirs(root, exist_ok=True)
 
     class H(BaseHTTPRequestHandler):
         server_version = "wax-ota"
         def log_message(self, *a): pass                     # no access log: paths contain the secret id
+
+        def setup(self):
+            super().setup()
+            self.connection.settimeout(30)   # bounded idle header read before body admission
 
         def _send(self, code, obj=None):
             body = json.dumps(obj or {"ok": code < 400}).encode()
@@ -122,8 +136,8 @@ def make_server(addr, root, token, max_bytes, max_total, ttl):
             # Lets Wax check its token (and that this service is behind the proxy) before it signs anything.
             if not self._authed(): return
             p = self._parts()
-            if len(p) == 2 and p[0] == "has" and SHA_RE.match(p[1]):
-                found = find_by_hash(root, p[1])
+            if len(p) == 2 and p[0] == "has" and SHA_RE.fullmatch(p[1]):
+                with quota_lock: found = find_by_hash(root, p[1], active)
                 return self._send(200, {"id": found}) if found else self._send(404, {"error": "not found"})
             if p != ["health"]: return self._send(404, {"error": "not found"})
             self.send_response(204); self.send_header("Content-Length", "0"); self.send_header("Connection", "close")
@@ -132,64 +146,107 @@ def make_server(addr, root, token, max_bytes, max_total, ttl):
         def do_PUT(self):
             if not self._authed(): return
             p = self._parts()
-            if len(p) != 3 or p[0] != "u" or not ID_RE.match(p[1]) or p[2] not in NAMES:
+            if len(p) != 3 or p[0] != "u" or not ID_RE.fullmatch(p[1]) or p[2] not in NAMES:
                 return self._send(400, {"error": "bad path"})
+            if self.headers.get("Transfer-Encoding") or len(self.headers.get_all("Content-Length", [])) != 1:
+                return self._send(400, {"error": "one Content-Length and no Transfer-Encoding required"})
             try: n = int(self.headers.get("Content-Length", ""))
             except ValueError: return self._send(411, {"error": "length required"})
             if n < 0 or n > max_bytes: return self._send(413, {"error": "too large"})
             want = self.headers.get("X-Wax-SHA256", "").lower() if p[2] == "app.ipa" else ""
-            if want and not SHA_RE.match(want): return self._send(400, {"error": "bad hash"})
-            self.connection.settimeout(60)   # idle cap per read
-            reservation = [n]
-            with quota_lock:                 # lock covers only the accounting, never the body read
-                gc(root, ttl)
-                if dir_size(root) + reserved[0] + n > max_total: return self._send(507, {"error": "server full"})
-                reserved[0] += n
-            try: return self._store(p, n, want, reservation)
+            if want and not SHA_RE.fullmatch(want): return self._send(400, {"error": "bad hash"})
+            reservation = [0]
+            with quota_lock:
+                if p[1] in active: return self._send(409, {"error": "session busy; retry after its current request completes"})
+                if len(active) >= max_active: return self._send(503, {"error": "upload capacity busy; retry later"})
+                gc(root, ttl, active | {p[1]})
+                amount = n + (512 if want else 0)   # cache metadata plus the complete staged body
+                if dir_size(root) + reserved[0] + amount > max_total: return self._send(507, {"error": "server full"})
+                active.add(p[1]); reservation[0] = amount; reserved[0] += amount
+            try: result = self._store(p, n, want, reservation)
             finally:
-                with quota_lock: reserved[0] -= reservation[0]
+                with quota_lock:
+                    reserved[0] -= reservation[0]; active.remove(p[1])
+            return self._send(*result)
 
         def _store(self, p, n, want, reservation):
-            deadline = time.monotonic() + 600 + n / 50_000   # total cap: a trickling client cannot hold quota forever
-            d = os.path.join(root, p[1]); os.makedirs(d, exist_ok=True); os.chmod(d, 0o755)
-            tmp = os.path.join(d, "." + p[2] + ".part")
-            got = 0
-            digest = hashlib.sha256()
-            touched = time.monotonic()
+            deadline = time.monotonic() + 600 + n / 50_000
+            d = os.path.join(root, p[1])
+            tmp = cache_tmp = None
+            published = False
             try:
-                with open(tmp, "wb") as f:
+                if os.path.islink(d): return 400, {"error": "unsafe session path"}
+                os.makedirs(d, exist_ok=True); os.chmod(d, 0o755)
+                target = os.path.join(d, p[2])
+                if os.path.islink(target): return 400, {"error": "unsafe artifact path"}
+                fd, tmp = tempfile.mkstemp(prefix="." + p[2] + ".", suffix=".part", dir=d)
+                got = 0; digest = hashlib.sha256()
+                with os.fdopen(fd, "wb") as f:
                     while got < n:
-                        b = self.rfile.read(min(CHUNK, n - got))
-                        if not b or time.monotonic() > deadline: break
-                        f.write(b); digest.update(b); got += len(b)
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0: break
+                        self.connection.settimeout(min(60, remaining))
+                        b = self.rfile.read1(min(CHUNK, n - got))
+                        if not b: break
+                        f.write(b); f.flush(); digest.update(b); got += len(b)
                         with quota_lock:
                             reservation[0] -= len(b); reserved[0] -= len(b)
-                        if time.monotonic() - touched > 30:   # a slow upload is alive: keep gc() from sweeping its folder
-                            os.utime(d); touched = time.monotonic()
-                if got != n:
-                    os.unlink(tmp); return self._send(400, {"error": "short body"})
-                if want and digest.hexdigest() != want:
-                    os.unlink(tmp); return self._send(400, {"error": "hash mismatch"})
-                if p[2] == "app.ipa":
-                    try: os.unlink(os.path.join(d, ".sha256"))   # a replaced IPA must not keep its old hash
-                    except OSError: pass
-                os.chmod(tmp, 0o644); os.replace(tmp, os.path.join(d, p[2]))
+                    f.flush(); os.fsync(f.fileno())
+                if got != n: return 400, {"error": "short body; upload again"}
+                if want and digest.hexdigest() != want: return 400, {"error": "hash mismatch; upload again"}
+                os.chmod(tmp, 0o644)
                 if want:
-                    with open(os.path.join(d, ".sha256"), "w") as h: h.write(want)
+                    stat = os.stat(tmp)
+                    record = {"sha256": want, "inode": stat.st_ino, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+                    fd, cache_tmp = tempfile.mkstemp(prefix=".sha256.", suffix=".part", dir=d)
+                    with os.fdopen(fd, "w") as cache:
+                        json.dump(record, cache); cache.flush(); os.fsync(cache.fileno())
+                # Only this rename publishes IPA bytes. Earlier failures leave the old artifact/cache intact.
+                # Hash lookup and GC share this lock, and active sessions cannot be deleted or overlapped.
+                with quota_lock:
+                    os.replace(tmp, target); tmp = None; published = True
+                    if p[2] == "app.ipa":
+                        try:
+                            if cache_tmp:
+                                os.replace(cache_tmp, os.path.join(d, ".sha256")); cache_tmp = None
+                            else: os.unlink(os.path.join(d, ".sha256"))
+                        except OSError:
+                            # The IPA commit already succeeded. A missing/stale inode-bound cache is safe:
+                            # report a real upload success rather than a false failure after replacement.
+                            return 201, {"ok": True, "warning": "uploaded; hash cache unavailable"}
+                    os.utime(d)
+                return 201, None
             except OSError:
-                try: os.unlink(tmp)
-                except OSError: pass
-                return self._send(500, {"error": "write failed"})
-            self._send(201)
+                return (201 if published else 500), {"ok": published, "warning" if published else "error": "post-publication cleanup failed" if published else "write failed; previous artifact kept"}
+            finally:
+                for owned in (tmp, cache_tmp):
+                    if owned:
+                        try: os.unlink(owned)
+                        except OSError: pass  # hidden, quota-counted orphan; GC retries after TTL
 
         def do_DELETE(self):
             if not self._authed(): return
             p = self._parts()
-            if len(p) != 2 or p[0] != "u" or not ID_RE.match(p[1]): return self._send(400, {"error": "bad path"})
-            shutil.rmtree(os.path.join(root, p[1]), ignore_errors=True)
-            self._send(200)
+            if len(p) != 2 or p[0] != "u" or not ID_RE.fullmatch(p[1]): return self._send(400, {"error": "bad path"})
+            with quota_lock:
+                if p[1] in active: return self._send(409, {"error": "session busy; retry delete later"})
+                active.add(p[1])
+            try:
+                path = os.path.join(root, p[1])
+                if os.path.islink(path): result = 400, {"error": "unsafe session path"}
+                else:
+                    try: shutil.rmtree(path)
+                    except FileNotFoundError: pass
+                    result = 200, None
+            except OSError: result = 500, {"error": "delete failed; retry cleanup"}
+            finally:
+                with quota_lock: active.remove(p[1])
+            return self._send(*result)
 
     srv = ThreadingHTTPServer(addr, H)
+    def collect():
+        with quota_lock: gc(root, ttl, active)
+    srv.collect = collect
     srv.daemon_threads = True
     return srv
 
@@ -220,7 +277,7 @@ def main():
     srv = make_server(("127.0.0.1", cfg["port"]), cfg["root"], cfg["token"], cfg["max_bytes"], cfg["max_total"], cfg["ttl"])
     def sweeper():
         while True:
-            time.sleep(60); gc(cfg["root"], cfg["ttl"])
+            time.sleep(60); srv.collect()
     threading.Thread(target=sweeper, daemon=True).start()
     srv.serve_forever()
 
