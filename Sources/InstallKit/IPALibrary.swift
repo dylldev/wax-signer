@@ -271,7 +271,7 @@ public final class IPALibrary: @unchecked Sendable {
                 let folder = root.appendingPathComponent(kind.rawValue)
                 guard (try? plainDirectory(folder)) != nil else { continue }
                 for file in (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [] {
-                    guard file.pathExtension.lowercased() == "ipa", !referenced.contains(pathKey(file)), (try? plainFile(file)) != nil else { continue }
+                    guard file.pathExtension.lowercased() == "ipa", !referenced.contains(pathKey(file)), !result.contains(where: { pathKey($0.url) == pathKey(file) }), (try? plainFile(file)) != nil else { continue }
                     result.append(LibraryRecoveryItem(id: file.path, url: file, name: file.lastPathComponent, pendingID: nil))
                 }
             }
@@ -288,6 +288,29 @@ public final class IPALibrary: @unchecked Sendable {
             return result
         }
     }
+    /// Explicit recovery of a canonical orphan requires only an index commit: keep its filename and avoid another IPA copy.
+    public func adoptOrphan(_ file: URL, name: String, version: String, bundleID: String, build: String?) throws -> LibrarySaveResult? {
+        try lock.withLock {
+            let kind = [LibraryEntry.Kind.unsigned, .signed].first {
+                file.deletingLastPathComponent().resolvingSymlinksInPath().path == root.appendingPathComponent($0.rawValue).resolvingSymlinksInPath().path
+            }
+            guard let kind else { return nil }
+            try ready(); try checkFile(file, kind: kind)
+            let digest = try LibraryFileIO.hash(file)
+            for entry in stored where entry.kind == kind && entry.size == digest.size {
+                if let sha = entry.sha256, sha != digest.sha256 { continue }
+                let existing = rawURL(entry)
+                guard (try? checkFile(existing, kind: kind)) != nil else { continue }
+                if try LibraryFileIO.hash(existing) == digest { return LibrarySaveResult(entry: entry, alreadySaved: true, warning: nil) }
+            }
+            let proposed = UUID(uuidString: file.deletingPathExtension().lastPathComponent) ?? UUID()
+            let entry = LibraryEntry(id: stored.contains(where: { $0.id == proposed }) ? UUID() : proposed, kind: kind, name: name, version: version,
+                bundleID: bundleID, size: digest.size, added: Date(), fileName: file.lastPathComponent, sha256: digest.sha256, build: build, provenance: .recoveredUnknown)
+            let updated = stored + [entry]; try persist(updated, deletions: deletions); stored = updated
+            return LibrarySaveResult(entry: entry, alreadySaved: false, warning: nil)
+        }
+    }
+
     public func pendingRecord(_ id: UUID) throws -> LibraryPending { try lock.withLock { try readPending(id) } }
 
     /// Cleanup only a known completed producer copy under incoming/<UUID>. Never a caller's arbitrary URL.

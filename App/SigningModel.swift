@@ -84,7 +84,7 @@ final class SigningModel: ObservableObject {
     private var signedPendingID: UUID?
     private var resultGeneration = UUID()
 
-    init(credentials: CredentialsModel, library: LibraryModel = .shared) { self.credentials = credentials; self.library = library }
+    init(credentials: CredentialsModel, library: LibraryModel? = nil) { self.credentials = credentials; self.library = library ?? .shared }
 
     /// Weights signing against uploading by how long each took on earlier runs (or sensible defaults).
     func jobProgress(uploadFraction: Double, exportOnly: Bool) -> JobProgress {

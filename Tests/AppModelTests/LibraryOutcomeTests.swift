@@ -137,4 +137,31 @@ final class LibraryOutcomeTests: XCTestCase {
         XCTAssertEqual(first.entry.id, duplicate.entry.id); XCTAssertTrue(duplicate.alreadySaved)
         XCTAssertTrue(library.saveState.confirmedSaved)
     }
+    func testDeleteAndClearIndexFailuresAreSurfacedWithoutDroppingVisibleFiles() async throws {
+        let saved = try await library.importPicked(pickedCopy())
+        let index = root.appendingPathComponent("index.json"), before = try Data(contentsOf: index)
+        try FileManager.default.removeItem(at: index); try FileManager.default.createDirectory(at: index, withIntermediateDirectories: false)
+        await library.remove(saved.entry)
+        XCTAssertNotNil(library.message); XCTAssertEqual(library.unsigned.count, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: library.url(for: saved.entry).path))
+        await library.clear(.unsigned)
+        XCTAssertEqual(library.unsigned.count, 1)
+        XCTAssertTrue(announcements.contains { !$0.hasPrefix("Added") && !$0.hasPrefix("Already saved") })
+        try FileManager.default.removeItem(at: index); try before.write(to: index)
+    }
+
+    func testSignatureMarkerDoesNotClassifyADownloadAsWaxSigned() async throws {
+        let tree = base.appendingPathComponent("publisher-tree")
+        try IPAExtractor.extract(ipa: fixture, to: tree)
+        let input = try IPAInspector.inspect(url: fixture)
+        let resources = tree.appendingPathComponent("Payload/" + input.appFolder + "/_CodeSignature")
+        try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
+        try Data("synthetic signature marker, not a valid signature".utf8).write(to: resources.appendingPathComponent("CodeResources"))
+        let marked = base.appendingPathComponent("marked.ipa"); try IPAArchiver.archive(directory: tree, to: marked)
+        let info = try IPAInspector.inspect(url: marked); XCTAssertTrue(info.hasCodeSignature)
+        let saved = try await library.fileNow(marked, info: info, provenance: .sourceDownload)
+        XCTAssertEqual(saved.entry.kind, .unsigned); XCTAssertEqual(saved.entry.provenance, .sourceDownload)
+        XCTAssertTrue(library.signed.isEmpty)
+    }
+
 }

@@ -251,4 +251,15 @@ final class LibraryTransactionTests: XCTestCase {
         XCTAssertNil(lib.recoveryItems()[0].pendingID); try assertSource(file)
     }
 
+    func testOrphanAdoptionPreservesFilenameWithoutAnotherIPA() throws {
+        let folder = root.appendingPathComponent("unsigned"); try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = folder.appendingPathComponent("legacy-orphan.ipa"); try Data("original".utf8).write(to: file)
+        let lib = IPALibrary(root: root), saved = try XCTUnwrap(lib.adoptOrphan(file, name: "Recovered", version: "1", bundleID: "com.demo", build: "1"))
+        XCTAssertEqual(saved.entry.provenance, .recoveredUnknown)
+        XCTAssertEqual(lib.url(for: saved.entry).lastPathComponent, file.lastPathComponent)
+        XCTAssertTrue(lib.recoveryItems().isEmpty)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path), ["legacy-orphan.ipa"])
+        XCTAssertEqual(try lib.adoptOrphan(file, name: "Recovered", version: "1", bundleID: "com.demo", build: "1")?.entry.id, saved.entry.id)
+    }
+
 }

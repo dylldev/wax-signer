@@ -113,7 +113,11 @@ final class LibraryModel: ObservableObject {
             await refresh(recover: false)
             return result
         } catch {
-            let artifact = (try? await Task.detached { try storage.pendingURL(id) }.value) ?? storage.root
+            let artifact = await Task.detached {
+                if let kept = try? storage.pendingURL(id) { return kept }
+                if let recovered = storage.recoveryItems().first(where: { $0.pendingID == id || $0.url.lastPathComponent == "\(id.uuidString).ipa" }) { return recovered.url }
+                return storage.root.appendingPathComponent("pending/\(id.uuidString)/artifact.ipa")
+            }.value
             let failure = ShelfSaveFailure(reason: error.localizedDescription, artifact: artifact, pendingID: id)
             saveState = .failed(failure); message = failure.localizedDescription
             await refresh(recover: false); throw failure
@@ -121,9 +125,25 @@ final class LibraryModel: ObservableObject {
     }
     @discardableResult func retry(_ item: LibraryRecoveryItem) async throws -> LibrarySaveResult {
         if let id = item.pendingID { return try await finishPending(id) }
+        saveState = .saving; operations += 1; busy = true
+        defer { operations -= 1; busy = operations > 0 }
         let file = item.url
-        let info = try await Task.detached { try IPAInspector.inspect(url: file) }.value
-        return try await fileNow(file, info: info, provenance: .recoveredUnknown)
+        let storage = storage
+        do {
+            let info = try await Task.detached { try IPAInspector.inspect(url: file) }.value
+            if let adopted = try await Task.detached(operation: {
+                try storage.adoptOrphan(file, name: info.displayName, version: info.version, bundleID: info.bundleIdentifier, build: info.build)
+            }).value {
+                saveState = .saved(adopted); await refresh(recover: false); return adopted
+            }
+            let saved = try await fileNow(file, info: info, provenance: .recoveredUnknown)
+            do { try await Task.detached { try storage.removeIncoming(file) }.value }
+            catch { message = "Saved, but the retained original needs cleanup: " + error.localizedDescription }
+            return saved
+        } catch {
+            let failure = (error as? ShelfSaveFailure) ?? ShelfSaveFailure(reason: error.localizedDescription, artifact: file, pendingID: nil)
+            saveState = .failed(failure); message = failure.localizedDescription; throw failure
+        }
     }
     func remove(_ entry: LibraryEntry) async {
         let storage = storage

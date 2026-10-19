@@ -101,6 +101,7 @@ struct SettingsView: View {
                     }
 
                     WaxSectionLabel(text: "Storage")
+                    if let message = library.message { WaxFeedbackCard(tone: .bad, text: message) }
                     WaxPanel {
                         storageRow("Unsigned", kind: .unsigned, count: library.unsigned.count)
                         WaxDivider()

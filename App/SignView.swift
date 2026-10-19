@@ -105,7 +105,8 @@ struct SignView: View {
         .onChange(of: model.ipaInfo != nil) { _, ready in if ready { announceRead() } }
         .onChange(of: model.shelfSaveState.confirmedSaved) { _, saved in if saved { announceOutcome(success: true, message: "Signed and saved. Wax checked the file.") } }
         .onChange(of: model.shelfSaveState.isSaving) { _, saving in
-            if !saving, case .failed = model.shelfSaveState { announceOutcome(success: false, message: "Signing succeeded. Shelf saving failed. Retry Save or export the retained IPA.") }
+            if saving { announced = false }
+            else if case .failed = model.shelfSaveState { announceOutcome(success: false, message: "Signing succeeded. Shelf saving failed. Retry Save or export the retained IPA.") }
         }
         .onChange(of: model.errorText) { _, text in if let text { announceOutcome(success: false, message: text) } }
         .onChange(of: inbox.pendingLink) { _, _ in openPendingInstall() }
