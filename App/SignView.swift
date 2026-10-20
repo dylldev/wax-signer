@@ -312,6 +312,10 @@ struct SignView: View {
             ForEach(Array(preview.changes.enumerated()), id: \.offset) { _, line in
                 Text(line).font(.footnote).foregroundStyle(Wax.sub)
             }
+            ForEach(preview.identifierChanges.keys.sorted(), id: \.self) { original in
+                Text(original + " → " + (preview.identifierChanges[original] ?? original))
+                    .font(.footnote.monospaced()).textSelection(.enabled)
+            }
             DisclosureGroup("Code to sign (\(preview.code.count))") {
                 ForEach(Array(preview.code.enumerated()), id: \.offset) { _, code in
                     Text("\(code.path) · \(code.kind) → \(code.identifier)")

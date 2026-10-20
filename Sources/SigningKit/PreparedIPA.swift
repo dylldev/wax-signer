@@ -78,6 +78,7 @@ public final class PreparedIPA: @unchecked Sendable {
                                options: SigningOptions = SigningOptions(), edits: AppEdits = AppEdits(), workDirectory: URL,
                                limits: Limits = Limits(), profilePolicy: SigningPlan.ProfilePolicy = .requireValidCMS,
                                progress: ((SigningProgress) -> Void)? = nil) throws -> PreparedIPA {
+        guard ipa.isFileURL, workDirectory.isFileURL else { throw SigningError.io("IPA preparation requires local file URLs") }
         let owner = options.cancellation ?? SigningCancellation()
         try owner.claim()
         let budget = try PreparationBudget(limits: limits, cancellation: owner)
@@ -171,6 +172,7 @@ public final class PreparedIPA: @unchecked Sendable {
         }
         defer { lock.withLock { state = .finished }; try? FileManager.default.removeItem(at: work) }
         // Completed artifacts must not be placed inside the disposable preparation lease.
+        guard output.isFileURL else { throw SigningError.io("signed output must be a local file URL") }
         let dest = output.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent(output.lastPathComponent).path
         let root = work.resolvingSymlinksInPath().path
         guard dest != root, !dest.hasPrefix(root + "/"), output.standardizedFileURL != sourceURL.standardizedFileURL else {

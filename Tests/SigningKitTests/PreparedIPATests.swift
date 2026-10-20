@@ -265,6 +265,29 @@ final class PreparedIPATests: XCTestCase {
             XCTAssertFalse(FileManager.default.fileExists(atPath: lease.work.path))
         }
     }
+    func testConcurrentConfirmationCannotDeleteOrExecuteAnotherOwnersScratch() throws {
+        let lease = try prepare(), entered = expectation(description: "execution owns scratch"), finished = expectation(description: "execution settled")
+        let resume = DispatchSemaphore(value: 0), identity = credentials.signer
+        DispatchQueue.global().async {
+            do {
+                _ = try lease.execute(identity: identity, output: self.output, progress: { p in
+                    if p.message == "Signing confirmed plan…" {
+                        entered.fulfill()
+                        XCTAssertEqual(resume.wait(timeout: .now() + 5), .success)
+                    }
+                })
+                XCTFail("discard must request cancellation")
+            } catch { XCTAssertTrue(error is CancellationError) }
+            finished.fulfill()
+        }
+        wait(for: [entered], timeout: 5)
+        XCTAssertThrowsError(try lease.execute(identity: credentials.signer, output: output)) { XCTAssertEqual($0 as? PreparedIPA.Failure, .consumed) }
+        lease.discard()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: lease.work.path), "discard cannot remove executing scratch")
+        resume.signal(); wait(for: [finished], timeout: 5)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lease.work.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
+    }
     #if os(macOS)
     func testPreparedRepackedOutputPassesIndependentAppleCodesign() throws {
         let lease = try prepare(); let start = DispatchTime.now().uptimeNanoseconds
