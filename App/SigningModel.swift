@@ -35,7 +35,7 @@ final class SigningModel: ObservableObject {
         didSet { UserDefaults.standard.set(keepBundleID, forKey: "keepBundleID"); if keepBundleID != oldValue { clearResult() } }
     }
     /// Extra changes made to the app before signing. The switches start from the saved defaults.
-    @Published var edits: AppEdits = SigningModel.loadDefaultEdits()
+    @Published var edits: AppEdits = SigningModel.loadDefaultEdits() { didSet { if edits != oldValue { clearResult() } } }
     private static let editsKey = "signing.defaultEdits"
     private static func loadDefaultEdits() -> AppEdits {
         UserDefaults.standard.data(forKey: editsKey).flatMap { try? JSONDecoder().decode(AppEdits.self, from: $0) } ?? AppEdits()
@@ -46,13 +46,16 @@ final class SigningModel: ObservableObject {
     func resetEditsToDefaults() { edits = Self.loadDefaultEdits() }
 
     /// The profile to sign the app with, or nil for "automatic" (Wax picks the best fit).
-    @Published var profileChoice: UUID?
+    @Published var profileChoice: UUID? { didSet { if profileChoice != oldValue { clearResult() } } }
+    @Published var bundleProfiles: [String: UUID] = [:] { didSet { if bundleProfiles != oldValue { clearResult() } } }
+    @Published var strictEntitlements = false { didSet { if strictEntitlements != oldValue { clearResult() } } }
     /// A chosen entitlements file (a property list) that replaces the app's own; per app, never kept.
     @Published private(set) var customEntitlements: [String: Any]?
     @Published private(set) var customEntitlementsName: String?
 
     /// Reads a chosen entitlements file. Throws a plain message when it is not a property list of entitlements.
     func setEntitlements(from url: URL?) throws {
+        clearResult()
         guard let url else { customEntitlements = nil; customEntitlementsName = nil; return }
         defer { discardPickerCopy(url) }
         let data = try Data(contentsOf: url)
@@ -95,7 +98,23 @@ final class SigningModel: ObservableObject {
         return JobProgress(signSeconds: e.sign, uploadSeconds: exportOnly ? 0 : e.upload)
     }
 
-    func clearResult() { resultGeneration = UUID(); report = nil; errorText = nil; readyLink = nil; signedPendingID = nil; shelfSaveState = .idle }
+    @Published private(set) var preview: PreparedIPA.Preview?
+    @Published private(set) var previewInstalls = false
+    private var prepared: PreparedIPA?
+    private var credentialSnapshot: [UUID: Data] = [:]
+    private var preparationTask: Task<Void, Never>?
+    private var previewExpiration: Task<Void, Never>?
+    private var activeCancellation: SigningCancellation?
+
+    func cancelPreparation() {
+        preparationTask?.cancel(); preparationTask = nil
+        previewExpiration?.cancel(); previewExpiration = nil
+        activeCancellation?.cancel()
+        let lease = prepared; prepared = nil; preview = nil
+        // Disposal may enumerate a large tree; never do that on the main actor.
+        if let lease { Task.detached { lease.discard() } }
+    }
+    func clearResult() { cancelPreparation(); resultGeneration = UUID(); report = nil; errorText = nil; readyLink = nil; signedPendingID = nil; shelfSaveState = .idle }
 
     enum BundleIDMode: String, CaseIterable { case keep, rename }
 
@@ -143,7 +162,7 @@ final class SigningModel: ObservableObject {
         catch { errorText = error.localizedDescription; return }
         installing = true; installSession = session
         defer { ota.release(session); if installSession === session { installSession = nil } }
-        let cancellation = SigningCancellation()
+        let cancellation = prepared?.cancellation ?? SigningCancellation()
         ota.onRelease(of: session) { cancellation.cancel() }
         let needsSigning = certificateID != nil
         let job = BackgroundJob.shared
@@ -223,13 +242,14 @@ final class SigningModel: ObservableObject {
     /// Chooses an IPA already on the shelf.
     func use(_ entry: LibraryEntry) { picked(ipa: library.url(for: entry), fromLibrary: entry) }
 
-    func picked(ipa url: URL, fromLibrary: LibraryEntry? = nil) {
+    @discardableResult
+    func picked(ipa url: URL, fromLibrary: LibraryEntry? = nil) -> Task<Void, Never> {
         clearResult(); ipaInfo = nil
-        let generation = resultGeneration; busyOwner = generation
         edits = edits.defaultsOnly()
-        profileChoice = nil; customEntitlements = nil; customEntitlementsName = nil
+        profileChoice = nil; bundleProfiles = [:]; customEntitlements = nil; customEntitlementsName = nil
+        let generation = resultGeneration; busyOwner = generation
         ipaName = url.lastPathComponent; busyMessage = "Reading “\(url.lastPathComponent)”…"
-        Task {
+        return Task {
             do {
                 if fromLibrary != nil {
                     let info = try await Task.detached { try IPAInspector.inspect(url: url) }.value
@@ -286,25 +306,103 @@ final class SigningModel: ObservableObject {
 
     // MARK: Signing
 
+    /// Stage the actual edited tree before presenting decisions. Private signing material is not retained in the preview.
+    @discardableResult
+    func prepareForSigning(installAfter: Bool = false) -> Task<Void, Never>? {
+        guard canSign, let ipaURL, let certificateID, let store = credentials.store,
+              let cert = credentials.certificates.first(where: { $0.id == certificateID }) else { return nil }
+        clearResult()
+        let generation = resultGeneration
+        busyOwner = generation; runningSign = true; busyMessage = "Preparing the IPA…"; signFraction = 0
+        let token = SigningCancellation(); activeCancellation = token
+        let appEdits = edits, chosen = profileChoice, pins = bundleProfiles
+        let override = customEntitlements, rewrite = rewriteBundleID, keep = keepBundleID, strict = strictEntitlements
+        let background = BackgroundJob.shared.begin(title: ipaInfo?.displayName ?? "Wax", onExpiration: { token.cancel() })
+        let task = Task.detached(priority: .userInitiated) {
+            await withTaskCancellationHandler(operation: {
+                do {
+                    try token.check()
+                    let identity = try SecurityFrameworkIdentity(identity: store.identity(for: certificateID))
+                    let raw = try Self.profileSnapshot(store)
+                    let profiles = try Self.profileSet(raw: raw, main: chosen, pins: pins)
+                    var options = SigningOptions(); options.cancellation = token
+                    options.rewriteBundleIdentifier = rewrite; options.keepBundleIdentifier = keep
+                    options.overrideEntitlements = override; options.entitlementPolicy = strict ? .reject : .dropAndWarn
+                    let lease = try PreparedIPA.prepare(ipa: ipaURL, certificateChainDER: identity.certificateChainDER,
+                        certificateTeamID: cert.teamID, profiles: profiles, options: options, edits: appEdits,
+                        workDirectory: FileManager.default.temporaryDirectory) { progress in
+                        Task { @MainActor in
+                            guard self.resultGeneration == generation, self.runningSign, self.preview == nil else { return }
+                            self.busyMessage = progress.message; self.signFraction = progress.fraction
+                            BackgroundJob.shared.update(background, fraction: progress.fraction, subtitle: progress.message)
+                        }
+                    }
+                    await self.acceptPreparation(lease, credentials: raw, generation: generation, installAfter: installAfter)
+                } catch {
+                    await MainActor.run {
+                        if self.resultGeneration == generation {
+                            self.errorText = error is CancellationError ? "Preparation canceled. Original and signed IPAs are kept." : error.localizedDescription
+                        }
+                    }
+                }
+                await MainActor.run {
+                    BackgroundJob.shared.end(background, success: false) // a preview is not a completed signed/save outcome
+                    if self.busyOwner == generation { self.runningSign = false; self.busyMessage = nil }
+                }
+            }, onCancel: { token.cancel() })
+        }
+        preparationTask = task; return task
+    }
+
+    func acceptPreparation(_ lease: PreparedIPA, credentials: [UUID: Data], generation: UUID, installAfter: Bool) {
+        guard resultGeneration == generation, (try? lease.cancellation.check()) != nil else {
+            Task.detached { lease.discard() }; return
+        }
+        prepared = lease; preview = lease.preview; previewInstalls = installAfter; credentialSnapshot = credentials
+        previewExpiration = Task { [weak self, weak lease] in
+            let delay = max(0, lease?.preview.expiresAt.timeIntervalSinceNow ?? 0)
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self, let lease, self.prepared === lease else { return }
+            self.clearResult(); self.errorText = "This preview expired and its scratch files were released. Prepare the IPA again."
+        }
+    }
+
+    nonisolated static func profileSnapshot(_ store: CredentialStore) throws -> [UUID: Data] {
+        try Dictionary(uniqueKeysWithValues: store.profiles().map { ($0.id, try store.profileData(for: $0.id)) })
+    }
+    nonisolated static func profileSet(raw: [UUID: Data], main: UUID?, pins: [String: UUID]) throws -> ProfileSet {
+        // Corrupt or unreadable profiles are explicit failures, not silently different candidate sets.
+        let all = try raw.mapValues { try ProvisioningProfile.parse($0) }
+        var overrides: [String: ProvisioningProfile] = [:]
+        var selected = pins
+        if let main { selected["."] = main }
+        for (path, id) in selected {
+            guard let profile = all[id] else { throw SigningError.bundle("Selected profile for \(path) is unavailable. Prepare again after choosing a profile.") }
+            overrides[path] = profile
+        }
+        return ProfileSet(pool: all.keys.sorted { $0.uuidString < $1.uuidString }.map { all[$0]! }, overrides: overrides)
+    }
+
     @discardableResult
     /// `storeBigFiles` writes changed big files uncompressed: right for an install that stays on this phone, wrong for
     /// anything uploaded or exported.
     func sign(standalone: Bool = true, storeBigFiles: Bool = false, backgroundID: UUID? = nil, cancellation: SigningCancellation? = nil) -> Task<Void, Never>? {
-        guard busyMessage == nil, !runningSign, !shelfSaveState.isSaving, let ipaURL, let info = ipaInfo, let certificateID, let store = credentials.store,
-              let cert = credentials.certificates.first(where: { $0.id == certificateID }) else { return nil }
-        clearResult()
+        guard busyMessage == nil, !runningSign, !shelfSaveState.isSaving, let info = ipaInfo, let certificateID, let store = credentials.store,
+              credentials.certificates.contains(where: { $0.id == certificateID }) else { return nil }
+        guard let lease = prepared else { errorText = "Prepare and confirm a signing preview first."; return nil }
+        let rawProfiles = credentialSnapshot
+        prepared = nil; preview = nil; previewExpiration?.cancel(); previewExpiration = nil
         let generation = resultGeneration
         busyOwner = generation; runningSign = true
-        busyMessage = "Preparing…"
+        busyMessage = "Signing confirmed plan…"
         let title = info.displayName.isEmpty ? "Wax" : info.displayName
         if standalone { BackgroundJob.shared.askForNotificationPermission() }
-        let cancellation = cancellation ?? SigningCancellation()
+        // OTA/background cancellation must address the exact owner created during preparation.
+        let cancellation = lease.cancellation
+        activeCancellation = cancellation
         let ownedBackgroundID = standalone ? BackgroundJob.shared.begin(title: title, onExpiration: { cancellation.cancel() }) : backgroundID
         let weights = jobProgress(uploadFraction: 0, exportOnly: standalone)
         let rewrite = rewriteBundleID
-        let appEdits = edits
-        let chosenProfile = profileChoice
-        let entitlementsOverride = customEntitlements
         let keep = keepBundleID
         let model = self
         let shelf = library.storage
@@ -319,46 +417,30 @@ final class SigningModel: ObservableObject {
                 try cancellation.check()
                 let identity = try SecurityFrameworkIdentity(identity: store.identity(for: certificateID))
 
-                // Every imported, still-valid profile is a candidate; the engine picks per bundle and says why.
-                var pool: [ProvisioningProfile] = []
-                var skipped: [String] = []
-                for info in store.profiles() {
-                    try cancellation.check()
-                    do { pool.append(try ProvisioningProfile.parse(try store.profileData(for: info.id))) }
-                    catch { skipped.append("\(info.name): \((error as? LocalizedError)?.errorDescription ?? "unreadable")") }
+                guard try Self.profileSnapshot(store) == rawProfiles else {
+                    throw SigningError.bundle("Provisioning profiles changed after preview. Prepare again.")
                 }
-
-                var options = SigningOptions()
-                options.cancellation = cancellation
-                options.rewriteBundleIdentifier = rewrite
-        options.keepBundleIdentifier = keep
-        options.overrideEntitlements = entitlementsOverride
-
                 try cancellation.check()
                 let pending = try shelf.reserve(kind: .signed, name: title, provenance: .waxSigned)
                 let output = try shelf.pendingURL(pending.id)
 
-                let outcome = try IPASigner.sign(
-                    ipa: ipaURL, identity: identity, certificateTeamID: cert.teamID,
-                    profiles: try ProfileSet(pool: pool, overrides: Self.overrides(chosen: chosenProfile, store: store)),
-                    options: options, edits: appEdits, output: output,
-                    workDirectory: FileManager.default.temporaryDirectory,
-                    compressChangedFiles: !storeBigFiles      // only an install that stays on this phone skips compressing; uploads and exports stay small
+                let outcome = try lease.execute(identity: identity, output: output,
+                    compressChangedFiles: !storeBigFiles
                 ) { p in
                     // The engine reports often; only pass on a visible change.
                     guard throttle.shouldPublish(p) else { return }
                     Task { @MainActor in
-                        guard model.report == nil, model.resultGeneration == generation else { return }
+                        guard model.runningSign, model.report == nil, model.resultGeneration == generation else { return }
                         model.busyMessage = p.message; model.signFraction = p.fraction
                         if let ownedBackgroundID { BackgroundJob.shared.update(ownedBackgroundID, fraction: weights.overall(sign: p.fraction, upload: 0), subtitle: p.message) }
                     }
                 }
 
                 let size = (try? FileManager.default.attributesOfItem(atPath: outcome.output.path)[.size] as? Int) ?? 0
-                var profileLines = outcome.signing.profileSelections.map { sel -> String in
+                let profileLines = outcome.signing.profileSelections.map { sel -> String in
                     "\(sel.bundlePath == "." ? "App" : sel.bundlePath) → “\(sel.profileName)” · \(Self.describe(sel.signatureStatus))"
                 }
-                profileLines += skipped.map { "Skipped \($0)" }
+
                 var archive = [
                     "Input: \(outcome.inputArchive.displayName) \(outcome.inputArchive.version) (\(outcome.inputArchive.build)), \(outcome.inputArchive.entryCount) files",
                     "Output: \(outcome.outputArchive.entryCount) files, signature files present: \(outcome.outputArchive.hasCodeSignature ? "yes" : "no")",
@@ -394,6 +476,7 @@ final class SigningModel: ObservableObject {
                     }
                 }
             } catch {
+                lease.discard()
                 let text = error is CancellationError ? "Signing canceled. The original and earlier signed IPAs are kept. Retry when ready."
                     : ((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
                 ImportLogs.shared.log("sign: failed \(ImportLog.describe(error))")

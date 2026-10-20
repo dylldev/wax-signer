@@ -1,6 +1,7 @@
 import CredentialKit
 import InstallKit
 import IPAKit
+import SigningKit
 import SwiftUI
 import UIKit
 
@@ -73,7 +74,9 @@ struct SignView: View {
                             Button("Cancel installation", role: .destructive) { model.cancelInstallation(ota: ota) }
                                 .accessibilityHint("Keeps signed and saved IPA files. Signing already in progress may finish safely before stopping.")
                         }
-                        if let r = model.report {
+                        if let preview = model.preview {
+                            previewCard(preview)
+                        } else if let r = model.report {
                             resultCard(r)
                         } else if let stage {
                             progressCard(stage)
@@ -107,6 +110,9 @@ struct SignView: View {
         }
         .onChange(of: phase) { _, new in if new == .done { stamp() } else { stamped = false } }
         .onChange(of: model.busyMessage) { _, busy in if busy != nil { announced = false } }   // a new run earns its own feedback
+        .onChange(of: model.preview != nil) { _, ready in
+            if ready { UIAccessibility.post(notification: .announcement, argument: "Signing preview ready. Review the changes before confirming.") }
+        }
         .onChange(of: model.ipaInfo != nil) { _, ready in if ready { announceRead() } }
         .onChange(of: model.shelfSaveState.confirmedSaved) { _, saved in if saved { announceOutcome(success: true, message: "Signed and saved. Wax checked the file.") } }
         .onChange(of: model.shelfSaveState.isSaving) { _, saving in
@@ -266,12 +272,12 @@ struct SignView: View {
     private var idleActions: some View {
         VStack(spacing: 8) {
             Button { runPrimary() } label: {
-                Label(primary.title, systemImage: primaryIcon)
+                Label(primary.isSigning ? "Prepare signing preview" : primary.title, systemImage: primaryIcon)
             }
             .buttonStyle(WaxPrimaryButtonStyle())
             .disabled(model.installing || ota.activeSession != nil)
             .padding(.top, 4)
-            Text(primary.reason)
+            Text(primary.isSigning ? "Review the exact changes before signing. Nothing is installed during preview." : primary.reason)
                 .font(.footnote).foregroundStyle(Wax.sub).multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)
             if primary == .install && testResult == .failed {
@@ -285,9 +291,86 @@ struct SignView: View {
                     .frame(maxWidth: .infinity)
             }
             if model.canSign {
-                Button("Sign only and export") { exportRun = true; model.sign() }.buttonStyle(WaxSecondaryButtonStyle())
+                Button("Preview signing for export") { exportRun = true; model.prepareForSigning() }.buttonStyle(WaxSecondaryButtonStyle())
             }
         }
+    }
+
+    private func previewCard(_ preview: PreparedIPA.Preview) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Review signing").font(.title2.bold()).foregroundStyle(Wax.text)
+            WaxPanel {
+                previewLine("App", preview.original.name, preview.proposed.name)
+                WaxDivider()
+                previewLine("Bundle ID", preview.original.identifier, preview.proposed.identifier)
+                WaxDivider()
+                previewLine("Version / build", "\(preview.original.version) (\(preview.original.build))", "\(preview.proposed.version) (\(preview.proposed.build))")
+            }
+            Text("The IPA was unpacked and edited once. Confirm signs this retained tree using the decisions below. Changes to settings or credentials require a new preview.")
+                .font(.footnote).foregroundStyle(Wax.sub)
+            Text("Expires \(preview.expiresAt.formatted(date: .omitted, time: .shortened))").font(.footnote).foregroundStyle(Wax.sub)
+            ForEach(Array(preview.changes.enumerated()), id: \.offset) { _, line in
+                Text(line).font(.footnote).foregroundStyle(Wax.sub)
+            }
+            DisclosureGroup("Code to sign (\(preview.code.count))") {
+                ForEach(Array(preview.code.enumerated()), id: \.offset) { _, code in
+                    Text("\(code.path) · \(code.kind) → \(code.identifier)")
+                        .font(.footnote.monospaced()).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Text("Existing signatures and resource seals will be replaced. Universal executables are reduced to the supported arm64 slice.")
+                    .font(.footnote).foregroundStyle(Wax.warn)
+            }
+            ForEach(Array(preview.bundles.enumerated()), id: \.offset) { _, bundle in
+                DisclosureGroup(bundle.path == "." ? "App profile and capabilities" : bundle.path) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("\(bundle.originalIdentifier) → \(bundle.identifier)").font(.footnote.monospaced())
+                        Text("Profile: \(bundle.profile.profileName)").font(.subheadline.weight(.semibold))
+                        Text(SigningModel.describe(bundle.profile.signatureStatus)).font(.footnote).foregroundStyle(Wax.warn)
+                        Text("Team ID and App ID prefix can differ. Review application-identifier, team-identifier and keychain-access-groups below; changed prefixes may prevent access to earlier keychain data.")
+                            .font(.footnote).foregroundStyle(Wax.sub)
+                        ForEach(Array(bundle.entitlements.enumerated()), id: \.offset) { _, entitlement in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\(entitlement.key) · \(entitlement.disposition.rawValue)").font(.footnote.weight(.semibold))
+                                Text("Requested: " + entitlementValue(entitlement.requestedValueXML)).font(.caption.monospaced())
+                                Text("Will sign: " + entitlementValue(entitlement.signedValueXML)).font(.caption.monospaced())
+                            }.textSelection(.enabled)
+                        }
+                        ForEach(Array(bundle.profile.rejected.enumerated()), id: \.offset) { _, rejection in
+                            Text("Not selected: \(rejection.profile) · \(rejection.reason)").font(.footnote).foregroundStyle(Wax.sub)
+                        }
+                        Picker("Override profile (requires a new preview)", selection: Binding<UUID?>(
+                            get: { bundle.path == "." ? model.profileChoice : model.bundleProfiles[bundle.path] },
+                            set: { id in
+                                if bundle.path == "." { model.profileChoice = id }
+                                else { model.bundleProfiles[bundle.path] = id }
+                            })) {
+                            Text("Automatic").tag(UUID?.none)
+                            ForEach(credentials.profiles) { profile in Text(profile.name).tag(UUID?.some(profile.id)) }
+                        }.tint(Wax.link)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            WaxFeedbackCard(tone: .bad, text: "This is a local signing plan. Even an intact CMS or a chain identified as Apple does not establish revocation status, provisioning eligibility, installation approval or successful launch. iOS makes those decisions.")
+            Button(model.previewInstalls ? "Confirm, sign and install" : "Confirm and sign") {
+                if model.previewInstalls { Task { await model.signAndInstall(ota: ota) { openURL($0) } } }
+                else { model.sign() }
+            }.buttonStyle(WaxPrimaryButtonStyle()).disabled(model.installing || ota.activeSession != nil)
+            Button("Cancel preview", role: .destructive) { model.clearResult() }.buttonStyle(WaxSecondaryButtonStyle())
+        }.foregroundStyle(Wax.text)
+    }
+
+    private func previewLine(_ title: String, _ original: String, _ proposed: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.subheadline.weight(.semibold))
+            Text(original == proposed ? proposed : original + " → " + proposed)
+                .font(.footnote).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
+    }
+    private func entitlementValue(_ xml: Data?) -> String {
+        guard let xml, let value = (try? PropertyListSerialization.propertyList(from: xml, format: nil)) as? [String: Any],
+              let item = value["value"] else { return "Absent" }
+        return String(describing: item)
     }
 
     private var primaryIcon: String {
@@ -304,7 +387,10 @@ struct SignView: View {
         case .needApp: picking = true
         case .needIdentity(let canImport): if canImport { router.openCredentials() } else { chooseIdentity = true }
         case .needServer: router.tab = .settings
-        case .install: exportRun = false; Task { await model.signAndInstall(ota: ota) { openURL($0) } }
+        case .install:
+            exportRun = false
+            if model.certificateID != nil { model.prepareForSigning(installAfter: true) }
+            else { Task { await model.signAndInstall(ota: ota) { openURL($0) } } }
         }
     }
 
@@ -324,6 +410,8 @@ struct SignView: View {
                 .font(.system(size: 46, weight: .bold, design: .rounded).monospacedDigit())
                 .foregroundStyle(Wax.text)
                 .contentTransition(.numericText())
+            Button("Cancel", role: .destructive) { model.clearResult() }
+                .accessibilityHint("Stops before publication and keeps previously completed IPAs")
             stageStrip(current)
             Text(message)
                 .font(.subheadline).foregroundStyle(Wax.sub)
