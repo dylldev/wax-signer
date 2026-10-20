@@ -33,9 +33,12 @@ final class SourcesModel: ObservableObject {
     func progress(_ app: SourceApp, source: UUID?) -> Double? { downloads[key(app, source)] }
     func isSaving(_ app: SourceApp, source: UUID?) -> Bool { savingDownloads.contains(key(app, source)) }
     func retainedFile(_ app: SourceApp, source: UUID?) -> URL? { retainedDownloads[key(app, source)] }
+    func savedEntry(_ app: SourceApp, source: UUID?, library: LibraryModel) -> LibraryEntry? {
+        guard let id = filed[key(app, source)] else { return nil }
+        return (library.unsigned + library.signed).first { $0.id == id }
+    }
     func isFiled(_ app: SourceApp, source: UUID?, library: LibraryModel) -> Bool {
-        guard let id = filed[key(app, source)] else { return false }
-        return (library.unsigned + library.signed).contains { $0.id == id }
+        savedEntry(app, source: source, library: library) != nil
     }
     private let downloadOverride: ((SourceApp, URL) async throws -> URL)?
     private let announce: (String) -> Void

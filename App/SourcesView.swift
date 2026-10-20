@@ -177,6 +177,7 @@ struct SourceAppsView: View {
     @EnvironmentObject private var router: Router
     @AppStorage("signAfterDownload") private var signAfterDownload = false
     @State private var query = ""
+    @State private var selectedApp: SourceApp?
 
     private var source: SavedSource? { model.sources.first { $0.id == sourceID } }
     private var matches: [SourceApp] {
@@ -202,6 +203,7 @@ struct SourceAppsView: View {
         }
         .scrollIndicators(.hidden)
         .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search apps")
+        .sheet(item: $selectedApp) { app in details(app) }
         .background(Wax.bg.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Wax.bg, for: .navigationBar)
@@ -229,28 +231,77 @@ struct SourceAppsView: View {
 
     private func appRow(_ app: SourceApp) -> some View {
         HStack(spacing: 12) {
-            AsyncImage(url: app.iconURL) { image in image.resizable().scaledToFill() } placeholder: {
-                Image(systemName: "shippingbox").foregroundStyle(Wax.link)
+            Button { selectedApp = app } label: {
+                HStack(spacing: 12) {
+                    AsyncImage(url: app.iconURL) { image in image.resizable().scaledToFill() } placeholder: {
+                        Image(systemName: "shippingbox").foregroundStyle(Wax.link)
+                    }
+                    .frame(width: 40, height: 40)
+                    .background(Wax.chip, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(app.name).font(.callout.weight(.semibold)).foregroundStyle(Wax.text).lineLimit(2)
+                        Text([app.version.isEmpty ? nil : app.version, app.size.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) }]
+                                .compactMap { $0 }.joined(separator: " · "))
+                            .font(.footnote).foregroundStyle(Wax.sub).lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityElement(children: .combine)
+                }
+                .frame(maxWidth: .infinity, minHeight: Wax.touch, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .frame(width: 40, height: 40)
-            .background(Wax.chip, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-            .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-            .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(app.name).font(.callout.weight(.semibold)).foregroundStyle(Wax.text).lineLimit(2)
-                Text([app.version.isEmpty ? nil : app.version, app.size.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) }]
-                        .compactMap { $0 }.joined(separator: " · "))
-                    .font(.footnote).foregroundStyle(Wax.sub).lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .combine)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Details for " + app.name)
+            .accessibilityHint("Shows source-reported information and any saved IPA metadata")
             getButton(app)
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
         .frame(minHeight: Wax.rowHeight)
         .background(Wax.card, in: RoundedRectangle(cornerRadius: Wax.radius, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Wax.radius, style: .continuous).stroke(Wax.line, lineWidth: 1))
+    }
+
+    private func details(_ app: SourceApp) -> some View {
+        let info = SourceAppDetails(app: app, saved: model.savedEntry(app, source: sourceID, library: library))
+        return NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Source-reported information").font(.headline).foregroundStyle(Wax.text)
+                    Text("These are claims from the source, not an identity, integrity or installation check. Downloaded IPAs are inspected before saving.")
+                        .font(.footnote).foregroundStyle(Wax.sub)
+                    fields(info.advertised)
+                    if !info.saved.isEmpty {
+                        Text("Previous committed download").font(.headline).foregroundStyle(Wax.text)
+                        Text("This entry is associated with an actual successful shelf commit. It does not establish that a remote download link still serves those bytes.")
+                            .font(.footnote).foregroundStyle(Wax.sub)
+                        fields(info.saved)
+                    }
+                    ForEach(info.differences, id: \.self) { text in WaxFeedbackCard(tone: .bad, text: text) }
+                    if let message = model.message { WaxFeedbackCard(tone: .bad, text: message) }
+                    getButton(app).frame(maxWidth: .infinity, alignment: .center)
+                }.padding(Wax.inset)
+            }
+            .background(Wax.bg.ignoresSafeArea())
+            .navigationTitle("App details")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { selectedApp = nil } } }
+        }
+        .presentationDetents([.large])
+    }
+    private func fields(_ values: [SourceAppDetails.Field]) -> some View {
+        WaxPanel {
+            ForEach(values) { field in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(field.title).font(.subheadline.weight(.semibold)).foregroundStyle(Wax.text)
+                    Text(field.value).font(.footnote).foregroundStyle(Wax.sub).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
+                if field.id != values.last?.id { WaxDivider() }
+            }
+        }
     }
 
     @ViewBuilder private func getButton(_ app: SourceApp) -> some View {
