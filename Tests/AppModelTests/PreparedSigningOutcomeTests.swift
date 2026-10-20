@@ -135,8 +135,14 @@ final class PreparedSigningOutcomeTests: XCTestCase {
     }
     func testProductionAppAndProbeBothRefuseInvalidCMSWithoutWeakeningUnknownTrust() async throws {
         var invalid = FixtureData.profileWildcardAll
-        invalid[invalid.count - 1] ^= 1
-        guard case .invalid = ProfileTrust.evaluate(invalid) else { return XCTFail("tampered CMS control must be invalid") }
+        let originalCMS = try CMSSignedData.parse(invalid)
+        let signature = try XCTUnwrap(originalCMS.signers.first?.signature)
+        let signatureRange = try XCTUnwrap(invalid.range(of: signature))
+        XCTAssertEqual(signatureRange, invalid.range(of: signature, options: .backwards), "the signature mutation must have one exact target")
+        invalid[signatureRange.lowerBound] ^= 1
+        let tamperedCMS = try CMSSignedData.parse(invalid)
+        XCTAssertEqual(tamperedCMS.encapsulatedContent, originalCMS.encapsulatedContent, "preserve BER framing and profile fields")
+        guard case .invalid = ProfileTrust.evaluate(invalid) else { return XCTFail("tampered CMS signature must be invalid") }
         _ = try store.importProfile(invalid)
         try await select()
         await model.prepareForSigning()?.value

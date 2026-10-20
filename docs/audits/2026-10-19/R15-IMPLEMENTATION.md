@@ -92,3 +92,6 @@ The small committed fixture's execute+self-check+pack+R2-gate samples in superse
 | VoiceOver, large Dynamic Type, Reduce Motion | Review and confirmation are discoverable; long capability values and error recovery remain reachable. |
 
 Pin classification does not install trust roots or bypass any iOS provisioning decision. No release, deployment, distribution update, production credential modification, physical installation or launch was performed.
+
+
+Run 39506848402 passed the full package suite, unsigned iOS build and 239 Signing Simulator tests. Its model suite found one fixture mistake: flipping the final byte of a BER CMS altered an end marker and caused `profileNotCMS` during import rather than testing cryptographic rejection. The fixture now locates the parsed SignerInfo signature bytes, asserts the target is unique, mutates a signature byte and reparses to assert the embedded profile content/framing stayed unchanged. This strengthens the intended invalid-signature production-policy regression; no production check or skip changed. The earlier custody-corrected run 39505985755 passed its then-current complete workflow, but neither that nor any earlier head substitutes for final-head CI.
