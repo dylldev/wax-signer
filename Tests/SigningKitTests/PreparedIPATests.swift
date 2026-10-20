@@ -58,6 +58,7 @@ final class PreparedIPATests: XCTestCase {
         defer { lease.discard() }
         XCTAssertEqual(try Data(contentsOf: input), original)
         XCTAssertEqual(lease.preview.code.map(\.kind).sorted(), ["app", "appex", "framework"])
+        XCTAssertEqual(Set(lease.preview.code.map(\.path)), [".", "Frameworks/TestKit.framework", "PlugIns/TestExt.appex"])
         XCTAssertTrue(lease.preview.bundles.allSatisfy {
             if case .signatureValidButUntrusted = $0.profile.signatureStatus { return true }; return false
         })

@@ -85,7 +85,7 @@ public final class PreparedIPA: @unchecked Sendable {
         try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
         var template = Array(workDirectory.appendingPathComponent("prepared-XXXXXX").path.utf8CString)
         guard mkdtemp(&template) != nil else { throw SigningError.io("cannot create exclusive preparation scratch") }
-        let work = URL(fileURLWithPath: String(cString: template), isDirectory: true)
+        let work = URL(fileURLWithPath: String(cString: template), isDirectory: true).resolvingSymlinksInPath()
         var retained = false
         defer { if !retained { try? FileManager.default.removeItem(at: work) } }
         try budget.check()
@@ -122,11 +122,17 @@ public final class PreparedIPA: @unchecked Sendable {
             name: plist["CFBundleDisplayName"] as? String ?? plist["CFBundleName"] as? String ?? input.displayName,
             version: plist["CFBundleShortVersionString"] as? String ?? "", build: plist["CFBundleVersion"] as? String ?? "")
         var code: [Code] = []
+        let codeRoot = app.resolvingSymlinksInPath().path
+        func codePath(_ url: URL) throws -> String {
+            let path = url.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent(url.lastPathComponent).path
+            guard path == codeRoot || path.hasPrefix(codeRoot + "/") else { throw IPAError.unsafePath(url.lastPathComponent) }
+            return path == codeRoot ? "." : String(path.dropFirst(codeRoot.count + 1))
+        }
         func walk(_ bundle: URL, kind: String, depth: Int) throws {
             guard depth < 16, code.count < 4096 else { throw Failure.scratchLimit }
             try budget.check()
             guard (try FileManager.default.attributesOfItem(atPath: bundle.path)[.type]) as? FileAttributeType == .typeDirectory else { throw SigningError.bundle("code container must be a plain directory") }
-            let path = bundle == app ? "." : String(bundle.path.dropFirst(app.path.count + 1))
+            let path = try codePath(bundle)
             let info = try readInfo(bundle)
             let id = plan.bundles.first { $0.path == path }?.identifier ?? info["CFBundleIdentifier"] as? String ?? ""
             code.append(Code(path: path, identifier: id, kind: kind))
@@ -136,7 +142,7 @@ public final class PreparedIPA: @unchecked Sendable {
                 for item in try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil).sorted(by: { $0.path < $1.path }) {
                     if ["app", "appex", "framework"].contains(item.pathExtension) { try walk(item, kind: item.pathExtension, depth: depth + 1) }
                     else if item.pathExtension == "dylib" {
-                        code.append(Code(path: String(item.path.dropFirst(app.path.count + 1)), identifier: item.lastPathComponent, kind: "dylib"))
+                        code.append(Code(path: try codePath(item), identifier: item.lastPathComponent, kind: "dylib"))
                     }
                 }
             }
