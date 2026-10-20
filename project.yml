@@ -157,6 +157,8 @@ targets:
         product: CredentialKit
       - package: IPAKit
         product: SourcesKit
+      - package: IPAKit
+        product: SigningKit
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES

@@ -29,6 +29,8 @@ public enum IPASigner {
                             options: SigningOptions = SigningOptions(), edits: AppEdits = AppEdits(), output: URL, workDirectory: URL,
                             compressChangedFiles: Bool = true, progress: ((SigningProgress) -> Void)? = nil) throws -> IPASigningOutcome {
         let fm = FileManager.default
+        let cancellation = options.cancellation ?? SigningCancellation()
+        try cancellation.claim()
         guard let leaf = identity.certificateChainDER.first else { throw SigningError.keyOperation("no certificate") }
 
         // Weights follow measured time (320 MB app): unpack and pack dominate, signing itself is small.
@@ -45,19 +47,23 @@ public enum IPASigner {
 
         stage("Unpacking…", 0.02, 0.40)
         let tree = work.appendingPathComponent("tree", isDirectory: true)
-        let inventory = try source.extract(to: tree, byteProgress: { stage("Unpacking…", 0.02, 0.40, $0) })
+        let inventory = try source.extract(to: tree, byteProgress: { stage("Unpacking…", 0.02, 0.40, $0) },
+                                           checkCancellation: { try cancellation.check() })
         let payload = tree.appendingPathComponent("Payload")
         let app = payload.appendingPathComponent(input.appFolder)
 
+        try cancellation.check()
         let edited = try AppEditor.applyDetailed(edits, to: app)
         let editNotes = edited.notes
         var signOptions = options
         signOptions.priorRenames = edited.renames
+        signOptions.cancellation = cancellation
         stage("Signing…", 0.40, 0.52)
         let result = try BundleSigner.sign(appDirectory: app, identity: identity, certificateTeamID: certificateTeamID,
                                            profiles: profiles, options: signOptions)
 
         stage("Checking the signature…", 0.52, 0.62)
+        try cancellation.check()
         let expected = try IPAArchiveManifest.capture(directory: tree)
         let report = SignatureVerifier.verifyBundle(at: app, expectedSignerSHA1: X509Fingerprint.sha1(leaf))
         guard report.passed else {
@@ -65,10 +71,16 @@ public enum IPASigner {
         }
 
         stage("Packing…", 0.62, 1.0)
+        try cancellation.check()
         var inspected: IPAMetadata?
         try IPAArchiver.archive(directory: tree, to: output, reusing: ipa, compressChangedFiles: compressChangedFiles,
                                 byteProgress: { stage("Packing…", 0.62, 1.0, $0) }, reusingExtraction: inventory,
-                                verifiedManifest: expected, validateArchive: { inspected = try IPAInspector.inspect(url: $0) })
+                                verifiedManifest: expected, validateArchive: {
+                                    inspected = try IPAInspector.inspect(url: $0)
+                                    // Last safe cancellation point. R2's byte/tree verification and atomic promotion
+                                    // then finish as one publication phase; a completed output is returned, never discarded.
+                                    try cancellation.beginPublication()
+                                })
         guard let after = inspected else { throw IPAError.integrity("packaged archive was not inspected") }
         return IPASigningOutcome(output: output, inputArchive: input, outputArchive: after, signing: result, selfCheck: report, editNotes: editNotes)
     }

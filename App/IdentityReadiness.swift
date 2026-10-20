@@ -72,13 +72,14 @@ final class IdentityTester: ObservableObject {
         guard let probe = Bundle.main.url(forResource: "WaxProbe", withExtension: "ipa"), let store = credentials.store else {
             if !isRunning { state = .problem("The test app is missing from this copy of Wax.") }; return
         }
+        let cancellation = SigningCancellation()
         await run(identityID: cert.id, fingerprint: cert.sha1Fingerprint, ota: ota, sign: {
             // This worker is retained until completion. Cancellation never deletes a partially committed R2 output.
             let worker = Task.detached { () throws -> URL in
                 try Task.checkCancellation()
                 let profiles = store.profiles().compactMap { try? ProvisioningProfile.parse(try store.profileData(for: $0.id)) }
                 let identity = try SecurityFrameworkIdentity(identity: store.identity(for: cert.id))
-                var options = SigningOptions(); options.keepBundleIdentifier = true
+                var options = SigningOptions(); options.keepBundleIdentifier = true; options.cancellation = cancellation
                 let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                     .appendingPathComponent("Install/Probes/\(UUID().uuidString)", isDirectory: true)
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -89,14 +90,15 @@ final class IdentityTester: ObservableObject {
                                       options: options, output: out, workDirectory: dir)
                 return out
             }
-            return try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
-        }, detected: { UIApplication.shared.canOpenURL(self.probeScheme) }, open: open)
+            return try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel(); cancellation.cancel() })
+        }, detected: { UIApplication.shared.canOpenURL(self.probeScheme) }, cancelSigning: { cancellation.cancel() }, open: open)
     }
 
     /// Deterministic lifecycle seam: production still signs with IPASigner and checks the system's probe scheme.
     func run(identityID: UUID, fingerprint: String, ota: OTAInstallModel,
              sign: @escaping @Sendable () async throws -> URL,
              detected: @escaping () -> Bool,
+             cancelSigning: @escaping () -> Void = {},
              record: @escaping (InstallTestResult, String) -> Void = { InstallTestStore().set($0, for: $1) },
              pause: @escaping () async throws -> Void = { try await Task.sleep(for: .seconds(2)) },
              seconds: Int = 90, open: @escaping (URL) -> Void) async {
@@ -104,6 +106,7 @@ final class IdentityTester: ObservableObject {
         let session: OTAInstallModel.Session
         do { session = try ota.reserve() }
         catch { state = .problem(error.localizedDescription); return }
+        ota.onRelease(of: session, perform: cancelSigning)
         guard !detected() else {
             ota.release(session)
             state = .problem("Wax Probe is already on this phone. Delete it from the home screen, then test again."); return
