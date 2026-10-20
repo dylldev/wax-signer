@@ -11,3 +11,8 @@ Six deterministic app-model tests cover displayed fields, URL secret redaction, 
 This is a partial original R16 milestone. Bounded remote artwork, optional suppression, localization, broader accessibility and other source browsing improvements remain unfinished. Existing AsyncImage behavior is not changed or represented as resource-safe by this patch.
 
 Verification: changed Swift files will receive syntax checking locally; full package/build/Simulator verification must pass on the exact PR head in macOS CI. No physical installation/launch or visual-device test is claimed. Costs are a small display projection only when opening details and an in-memory saved-entry lookup; no file hashing/inspection or network I/O runs in the view.
+
+
+PR: [#30](https://github.com/dylldev/wax-signer/pull/30). Initial source head `748fe39688dd32c83274eb1fb00e8f6516f0e77c`, [CI 39507380067](https://github.com/dylldev/wax-signer/actions/runs/39507380067) running at this checkpoint; later heads must receive their own CI. Final exact-head results are recorded in the PR after execution, not inferred from source-level inspection.
+
+Non-destructive integration assessment against R15 head `c6a7bcb85452a503537a1afcee19aebcfa93defa`: no production/test/config paths overlap. `git merge-tree --write-tree` reports only the two current headers of `MASTER-ROADMAP-EXECUTION.md` conflicting. Preserve both R15 and R16 milestone/evidence records in an ordinary forward resolution. Recommended eventual review/merge order: #29, then #30 retargeted/refreshed on actual merged main with combined app-model and signing regressions plus full macOS CI. Neither feature PR is authorized for automatic merge. No branch/index/worktree or main was modified by the merge-tree assessment.

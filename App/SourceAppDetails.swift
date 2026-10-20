@@ -20,7 +20,7 @@ struct SourceAppDetails {
             Field(title: "Bundle ID", value: Self.text(app.bundleID, fallback: "Not provided")),
             Field(title: "Version", value: Self.text(app.version, fallback: "Not provided")),
             Field(title: "Advertised size", value: app.size.flatMap { $0 >= 0 ? Self.bytes($0) : nil } ?? "Not provided"),
-            Field(title: "Download host", value: app.downloadURL.host ?? "Not provided"),
+            Field(title: "Download host", value: Self.text(app.downloadURL.host ?? "", fallback: "Not provided")),
         ]
         guard let entry else { saved = []; differences = []; return }
         saved = [Field(title: "Inspected name", value: Self.text(entry.name)),
@@ -28,7 +28,7 @@ struct SourceAppDetails {
                  Field(title: "Inspected version", value: Self.text(entry.version)),
                  Field(title: "Inspected build", value: Self.text(entry.build ?? "", fallback: "Not recorded")),
                  Field(title: "Saved IPA size", value: Self.bytes(entry.size)),
-                 Field(title: "Saved IPA SHA-256", value: entry.sha256 ?? "Not yet recorded (legacy entry)")]
+                 Field(title: "Saved IPA SHA-256", value: Self.text(entry.sha256 ?? "", fallback: "Not yet recorded (legacy entry)"))]
         var changed: [String] = []
         if app.bundleID != entry.bundleID { changed.append("The saved IPA's bundle ID differs from the source claim.") }
         if !app.version.isEmpty, app.version != entry.version { changed.append("The saved IPA's version differs from the source claim.") }
