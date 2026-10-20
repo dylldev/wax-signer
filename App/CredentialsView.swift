@@ -257,6 +257,8 @@ struct CredentialsView: View {
             WaxDivider()
             WaxKV(key: "Team", value: profile.teamName.map { "\($0) (\(profile.teamID))" } ?? profile.teamID)
             WaxDivider()
+            WaxKV(key: "App ID prefix", value: profile.applicationIdentifierPrefix)
+            WaxDivider()
             WaxKV(key: "Type (inferred)", value: kind(profile))
             WaxDivider()
             WaxKV(key: "Devices", value: devices(profile))
