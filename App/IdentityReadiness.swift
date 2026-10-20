@@ -77,24 +77,35 @@ final class IdentityTester: ObservableObject {
             // This worker is retained until completion. Cancellation never deletes a partially committed R2 output.
             let worker = Task.detached { () throws -> URL in
                 try Task.checkCancellation()
-                let profiles = store.profiles().compactMap { try? ProvisioningProfile.parse(try store.profileData(for: $0.id)) }
-                let identity = try SecurityFrameworkIdentity(identity: store.identity(for: cert.id))
-                var options = SigningOptions(); options.keepBundleIdentifier = true; options.cancellation = cancellation
                 let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                     .appendingPathComponent("Install/Probes/\(UUID().uuidString)", isDirectory: true)
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
                 var directory = dir; var values = URLResourceValues(); values.isExcludedFromBackup = true
                 try directory.setResourceValues(values)
                 let out = dir.appendingPathComponent("probe-signed.ipa")
-                _ = try IPASigner.sign(ipa: probe, identity: identity, certificateTeamID: cert.teamID, profiles: ProfileSet(pool: profiles),
-                                      options: options, output: out, workDirectory: dir)
+                try Self.signProbe(probe, store: store, certificateID: cert.id, certificateTeamID: cert.teamID,
+                                   output: out, workDirectory: dir, cancellation: cancellation)
                 return out
             }
             return try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel(); cancellation.cancel() })
         }, detected: { UIApplication.shared.canOpenURL(self.probeScheme) }, cancelSigning: { cancellation.cancel() }, open: open)
     }
 
-    /// Deterministic lifecycle seam: production still signs with IPASigner and checks the system's probe scheme.
+    /// Explicit Test consent signs the fixed source-built probe without a user-edit preview. It still uses
+    /// the same production CMS policy and frozen transaction as normal signing, with the R8 owner token.
+    nonisolated static func signProbe(_ probe: URL, store: CredentialStore, certificateID: UUID, certificateTeamID: String?,
+                                     output: URL, workDirectory: URL, cancellation: SigningCancellation) throws {
+        try cancellation.check()
+        let profiles = try store.profiles().map { try ProvisioningProfile.parse(store.profileData(for: $0.id)) }
+        let identity = try SecurityFrameworkIdentity(identity: store.identity(for: certificateID))
+        var options = SigningOptions(); options.keepBundleIdentifier = true; options.cancellation = cancellation
+        let prepared = try PreparedIPA.prepare(ipa: probe, certificateChainDER: identity.certificateChainDER,
+            certificateTeamID: certificateTeamID, profiles: ProfileSet(pool: profiles), options: options, workDirectory: workDirectory)
+        defer { prepared.discard() }
+        _ = try prepared.execute(identity: identity, output: output)
+    }
+
+    /// Deterministic lifecycle seam: production signs a frozen probe and checks the system's probe scheme.
     func run(identityID: UUID, fingerprint: String, ota: OTAInstallModel,
              sign: @escaping @Sendable () async throws -> URL,
              detected: @escaping () -> Bool,

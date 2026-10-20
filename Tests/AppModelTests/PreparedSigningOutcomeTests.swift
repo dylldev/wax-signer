@@ -133,6 +133,25 @@ final class PreparedSigningOutcomeTests: XCTestCase {
         XCTAssertThrowsError(try model.setEntitlements(from: file)) { XCTAssertTrue($0.localizedDescription.contains("256 KiB")) }
         XCTAssertNil(model.customEntitlements); XCTAssertNil(model.preview)
     }
+    func testProductionAppAndProbeBothRefuseInvalidCMSWithoutWeakeningUnknownTrust() async throws {
+        var invalid = FixtureData.profileWildcardAll
+        invalid[invalid.count - 1] ^= 1
+        guard case .invalid = ProfileTrust.evaluate(invalid) else { return XCTFail("tampered CMS control must be invalid") }
+        _ = try store.importProfile(invalid)
+        try await select()
+        await model.prepareForSigning()?.value
+        XCTAssertNil(model.preview); XCTAssertTrue(model.errorText?.contains("CMS signature invalid") == true)
+        let output = root.appendingPathComponent("probe.ipa"), cert = try XCTUnwrap(store.certificates().first)
+        let source = fixture, credentialStore = store!, work = root!
+        do {
+            try await Task.detached {
+                try IdentityTester.signProbe(source, store: credentialStore, certificateID: cert.id, certificateTeamID: cert.teamID,
+                    output: output, workDirectory: work, cancellation: SigningCancellation())
+            }.value
+            XCTFail("invalid profile must not create a probe")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("CMS signature invalid")) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
+    }
     func testUnknownProfilePinFailsPreparationAndKeepsUnsignedArtifact() async throws {
         try await select(); model.bundleProfiles["missing.appex"] = profile
         await model.prepareForSigning()?.value
