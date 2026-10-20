@@ -26,7 +26,7 @@ private final class AppleContinuedJob: ContinuedJobHandle {
 }
 
 /// Each operation owns a token and grace task. One continued task covers the aggregate until all jobs end.
-/// iOS may refuse/expire resources; this does not make synchronous signing magically cancellable.
+/// Expiration reaches only the owning operations; workers still stop at their safe cancellation boundaries.
 @MainActor
 final class BackgroundJob {
     static let shared = BackgroundJob()
@@ -35,6 +35,7 @@ final class BackgroundJob {
         var endGrace: @MainActor (UIBackgroundTaskIdentifier) -> Void
         var requestContinued: @MainActor (String) -> Void
         var cancelContinued: @MainActor () -> Void
+        var isInBackground: @MainActor () -> Bool = { UIApplication.shared.applicationState != .active }
         static var live: System {
             System(beginGrace: { title, expired in
                 UIApplication.shared.beginBackgroundTask(withName: title) { Task { @MainActor in expired() } }
@@ -56,6 +57,9 @@ final class BackgroundJob {
         var halfwayNotified = false
         var grace: UIBackgroundTaskIdentifier = .invalid
         var graceExpired = false
+        var expirationRequested = false
+        var expirationDelivered = false
+        var onExpiration: (@MainActor () -> Void)?
     }
     private let system: System
     private let halfway: ((String) -> Void)?
@@ -77,29 +81,55 @@ final class BackgroundJob {
     /// A queued task can arrive after its foreground work ended. It must still complete exactly once.
     func adopt(_ handle: ContinuedJobHandle) {
         if continued === handle { return }
-        guard !jobs.isEmpty, continued == nil else { handle.complete(success: false); return }
+        guard jobs.values.contains(where: { !$0.expirationRequested }), continued == nil else { handle.complete(success: false); return }
         continued = handle
         handle.expiration = { [weak self, weak handle] in
             guard let self, let handle, self.continued === handle else { return }
             self.continued = nil; handle.expiration = nil; handle.complete(success: false)
+            // Snapshot IDs before callbacks: a callback may end its job or admit a replacement.
+            let owned = Array(self.jobs.keys)
+            for id in owned { self.endGrace(id); self.requestExpiration(id) }
             ImportLogs.shared.log("background: aggregate expired")
         }
         refresh(subtitle: "Working…")
     }
-    @discardableResult func begin(title: String) -> UUID {
+    @discardableResult func begin(title: String, onExpiration: (@MainActor () -> Void)? = nil) -> UUID {
         let id = UUID(), first = jobs.isEmpty
+        let needsContinued = continued == nil && !jobs.values.contains(where: { !$0.expirationRequested })
         if first { completedCount = 0; groupSucceeded = true }
-        jobs[id] = Job(title: title)
-        let grace = system.beginGrace(title) { [weak self] in self?.endGrace(id) }
-        if jobs[id]?.graceExpired == true {
+        jobs[id] = Job(title: title, onExpiration: onExpiration)
+        let grace = system.beginGrace(title) { [weak self] in self?.graceExpired(id) }
+        if jobs[id] == nil || jobs[id]?.graceExpired == true {
             if grace != .invalid { system.endGrace(grace) }
         } else { jobs[id]?.grace = grace }
-        if first { system.requestContinued(title) }
+        if needsContinued, jobs[id]?.expirationRequested == false { system.requestContinued(title) }
         refresh(subtitle: "Starting…")
         return id
     }
+    /// A task handle may only exist after admission. A synchronous expiration cannot be lost in that gap.
+    func onExpiration(of id: UUID, perform: @escaping @MainActor () -> Void) {
+        guard let job = jobs[id], !job.expirationDelivered else { return }
+        if job.expirationRequested { jobs[id]?.expirationDelivered = true; perform() }
+        else { jobs[id]?.onExpiration = perform }
+    }
+    private func requestExpiration(_ id: UUID) {
+        guard var job = jobs[id], !job.expirationRequested else { return }
+        job.expirationRequested = true
+        let callback = job.onExpiration; job.onExpiration = nil
+        job.expirationDelivered = callback != nil
+        jobs[id] = job
+        groupSucceeded = false
+        callback?()
+    }
+    private func graceExpired(_ id: UUID) {
+        endGrace(id)
+        // The continued task is a separate grant; ordinary grace expiry must not cancel it.
+        // Foreground work also needs no background grant. A continued-task expiration is explicit
+        // cancellation (including the system's Cancel action), so it does not use this exception.
+        if continued == nil && system.isInBackground() { requestExpiration(id) }
+    }
     func update(_ id: UUID, fraction: Double, subtitle: String) {
-        guard fraction.isFinite, var job = jobs[id] else { return }
+        guard fraction.isFinite, var job = jobs[id], !job.expirationRequested else { return }
         job.fraction = max(job.fraction, min(1, max(0, fraction)))
         let notify = job.fraction >= 0.5 && !job.halfwayNotified
         if notify { job.halfwayNotified = true }

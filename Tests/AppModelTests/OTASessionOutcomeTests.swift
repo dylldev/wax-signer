@@ -1,6 +1,7 @@
 import SigningKit
 import CredentialKit
 import Combine
+import UIKit
 import InstallKit
 import XCTest
 @testable import LocalIPASigner
@@ -237,6 +238,39 @@ final class OTASessionOutcomeTests: XCTestCase {
         await fulfillment(of: [entered], timeout: 5); tester.cancel()
         XCTAssertThrowsError(try token.check()); await gate.release(); await task.value
         XCTAssertNil(ota.activeSession); XCTAssertFalse(tester.isRunning); try assertArtifact()
+    }
+    private func expiringBackground() -> (BackgroundJob, () -> Void) {
+        var expiration: (@MainActor () -> Void)?
+        let system = BackgroundJob.System(beginGrace: { _, expired in expiration = expired; return UIBackgroundTaskIdentifier(rawValue: 1) },
+            endGrace: { _ in }, requestContinued: { _ in }, cancelContinued: {}, isInBackground: { true })
+        return (BackgroundJob(system: system), { expiration?() })
+    }
+    func testBackgroundExpiryDuringProbeSigningCancelsTokenAndPreservesReplacementOwner() async throws {
+        let ota = model(), tester = IdentityTester(), token = SigningCancellation(), gate = SessionGate()
+        let entered = expectation(description: "signing"), signed = artifact, (background, expire) = expiringBackground()
+        let task = Task { await tester.run(identityID: UUID(), fingerprint: "fixture", ota: ota,
+            sign: { entered.fulfill(); await gate.wait(); try token.check(); return signed }, detected: { false },
+            cancelSigning: { token.cancel() }, background: background,
+            record: { _, _ in XCTFail("expired operation cannot record") }, open: { _ in XCTFail("expired operation cannot open") }) }
+        await fulfillment(of: [entered], timeout: 5); expire()
+        XCTAssertThrowsError(try token.check()); XCTAssertNil(ota.activeSession); XCTAssertFalse(tester.isRunning)
+        let replacement = try ota.reserve(); expire()
+        XCTAssertTrue(ota.owns(replacement)); await gate.release(); await task.value
+        XCTAssertEqual(background.activeCount, 0); XCTAssertTrue(ota.owns(replacement)); try assertArtifact(); ota.release(replacement)
+    }
+    func testBackgroundExpiryDuringDelayedReadinessStopsLateHostAndKeepsFinishedSignedProbe() async throws {
+        let gate = SessionGate(), entered = expectation(description: "host readiness")
+        var stops = 0
+        let ota = model(server: { _, _ in entered.fulfill(); await gate.wait(); return .init(publisher: ImmediatePublisher(), stop: { stops += 1 }) })
+        let tester = IdentityTester(), signed = artifact, (background, expire) = expiringBackground()
+        let task = Task { await tester.run(identityID: UUID(), fingerprint: "fixture", ota: ota,
+            sign: { signed }, detected: { false }, background: background,
+            record: { _, _ in XCTFail("expired probe cannot record") }, open: { _ in XCTFail("expired probe cannot open") }) }
+        await fulfillment(of: [entered], timeout: 5); expire()
+        let replacement = try ota.reserve()
+        await gate.release(); await task.value
+        XCTAssertEqual(stops, 1); XCTAssertEqual(tester.retainedArtifacts, [signed]); XCTAssertEqual(background.activeCount, 0)
+        XCTAssertTrue(ota.owns(replacement)); try assertArtifact(); ota.release(replacement)
     }
     func testOnlyOneUploadAndOneCompletionAreAllowedPerSession() async throws {
         let model = model(), session = try model.reserve()

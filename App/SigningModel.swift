@@ -148,7 +148,10 @@ final class SigningModel: ObservableObject {
         let needsSigning = certificateID != nil
         let job = BackgroundJob.shared
         job.askForNotificationPermission()
-        let backgroundID = job.begin(title: ipaInfo?.displayName ?? "Wax")
+        let backgroundID = job.begin(title: ipaInfo?.displayName ?? "Wax", onExpiration: {
+            cancellation.cancel()
+            ota.cancel(session)
+        })
         var succeeded = false
         defer { job.end(backgroundID, success: succeeded); installing = false }
         readyLink = nil
@@ -295,14 +298,14 @@ final class SigningModel: ObservableObject {
         busyMessage = "Preparing…"
         let title = info.displayName.isEmpty ? "Wax" : info.displayName
         if standalone { BackgroundJob.shared.askForNotificationPermission() }
-        let ownedBackgroundID = standalone ? BackgroundJob.shared.begin(title: title) : backgroundID
+        let cancellation = cancellation ?? SigningCancellation()
+        let ownedBackgroundID = standalone ? BackgroundJob.shared.begin(title: title, onExpiration: { cancellation.cancel() }) : backgroundID
         let weights = jobProgress(uploadFraction: 0, exportOnly: standalone)
         let rewrite = rewriteBundleID
         let appEdits = edits
         let chosenProfile = profileChoice
         let entitlementsOverride = customEntitlements
         let keep = keepBundleID
-        let cancellation = cancellation ?? SigningCancellation()
         let model = self
         let shelf = library.storage
         ImportLogs.shared.log("sign: start id=\(ipaInfo?.bundleIdentifier ?? "?") rewrite=\(rewrite)")
@@ -313,13 +316,14 @@ final class SigningModel: ObservableObject {
         return Task.detached(priority: .userInitiated) {
           await withTaskCancellationHandler(operation: {
             do {
-                try Task.checkCancellation()
+                try cancellation.check()
                 let identity = try SecurityFrameworkIdentity(identity: store.identity(for: certificateID))
 
                 // Every imported, still-valid profile is a candidate; the engine picks per bundle and says why.
                 var pool: [ProvisioningProfile] = []
                 var skipped: [String] = []
                 for info in store.profiles() {
+                    try cancellation.check()
                     do { pool.append(try ProvisioningProfile.parse(try store.profileData(for: info.id))) }
                     catch { skipped.append("\(info.name): \((error as? LocalizedError)?.errorDescription ?? "unreadable")") }
                 }
@@ -330,7 +334,7 @@ final class SigningModel: ObservableObject {
         options.keepBundleIdentifier = keep
         options.overrideEntitlements = entitlementsOverride
 
-                try Task.checkCancellation()
+                try cancellation.check()
                 let pending = try shelf.reserve(kind: .signed, name: title, provenance: .waxSigned)
                 let output = try shelf.pendingURL(pending.id)
 
