@@ -40,7 +40,7 @@ public enum ProfileTrust {
 
         var trust: SecTrust?
         guard SecTrustCreateWithCertificates(certs as CFArray, SecPolicyCreateBasicX509(), &trust) == errSecSuccess,
-              let trust else { return .invalid(reason: "could not build a trust object") }
+              let trust else { return .signatureValidButUntrusted(reason: "CMS signature valid; chain evaluation unavailable", chain: []) }
         SecTrustSetVerifyDate(trust, ((usingSigningTime ? cms.signers[0].signingTime : nil) ?? date) as CFDate)
 
         var error: CFError?

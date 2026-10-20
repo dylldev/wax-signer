@@ -152,6 +152,13 @@ final class PreparedSigningOutcomeTests: XCTestCase {
         } catch { XCTAssertTrue(error.localizedDescription.contains("CMS signature invalid")) }
         XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
     }
+    func testConfirmationCannotSubstituteANewCancellationOwner() async throws {
+        try await select(); try await prepare()
+        XCTAssertNil(model.sign(cancellation: SigningCancellation()))
+        XCTAssertNotNil(model.preview); XCTAssertNil(model.report)
+        await model.sign()?.value
+        XCTAssertNil(model.errorText); XCTAssertTrue(model.shelfSaveState.confirmedSaved)
+    }
     func testUnknownProfilePinFailsPreparationAndKeepsUnsignedArtifact() async throws {
         try await select(); model.bundleProfiles["missing.appex"] = profile
         await model.prepareForSigning()?.value

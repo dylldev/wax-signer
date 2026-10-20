@@ -405,6 +405,11 @@ final class SigningModel: ObservableObject {
         guard busyMessage == nil, !runningSign, !shelfSaveState.isSaving, let info = ipaInfo, let certificateID, let store = credentials.store,
               credentials.certificates.contains(where: { $0.id == certificateID }) else { return nil }
         guard let lease = prepared else { errorText = "Prepare and confirm a signing preview first."; return nil }
+        guard cancellation == nil || cancellation === lease.cancellation else {
+            errorText = "The signing operation owner changed. Use the preview's original operation or prepare again."
+            return nil
+        }
+        errorText = nil
         let rawProfiles = credentialSnapshot
         prepared = nil; preview = nil; previewExpiration?.cancel(); previewExpiration = nil
         let generation = resultGeneration
