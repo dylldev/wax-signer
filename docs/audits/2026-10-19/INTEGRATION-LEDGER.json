@@ -1,200 +1,631 @@
 {
   "baseline": "8ad4b2eed8b062b0ddb419f33fa0f858ff0b0379",
   "original_open_count": 24,
+  "integrated_main_before_regression_pr": "48b6e2a56959ca1fb176abd5bd0ce07127190832",
+  "combined_candidate": {
+    "head": "ef427d4dde578d36d244ade0233005feea915aae",
+    "ci_run": 39349296379,
+    "result": "success",
+    "package_tests": 695,
+    "package_skips": 13,
+    "simulator_tests": 366,
+    "simulator_skips": 11,
+    "failures": 0
+  },
   "prs": [
     {
       "number": 3,
-      "original_head": "2a045f98c18ae2d09fc881c192c13b3828f9f610",
       "original_branch": "codex/r3-durable-library",
+      "original_head": "2a045f98c18ae2d09fc881c192c13b3828f9f610",
       "original_base": "main",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "2a045f98c18ae2d09fc881c192c13b3828f9f610",
+      "disposition": "merged",
+      "merge_sha": "8da5dc70be11b50e48f5eeb1a92bd6adcccbe20c",
+      "method": "merge",
+      "forward_integrations": []
     },
     {
       "number": 4,
-      "original_head": "45342312868f6e31af28f1b7402edcdc55631b2e",
       "original_branch": "codex/r4-distribution-correctness",
+      "original_head": "45342312868f6e31af28f1b7402edcdc55631b2e",
       "original_base": "main",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "45342312868f6e31af28f1b7402edcdc55631b2e",
+      "disposition": "merged",
+      "merge_sha": "8709429707cd44c64a90d72df063f77d8f58daa3",
+      "method": "merge",
+      "forward_integrations": []
     },
     {
       "number": 5,
-      "original_head": "3e30326629fa1db3536b0e03dd994122b502fa47",
       "original_branch": "codex/r5-ota-upload-reliability",
+      "original_head": "3e30326629fa1db3536b0e03dd994122b502fa47",
       "original_base": "main",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "3e30326629fa1db3536b0e03dd994122b502fa47",
+      "disposition": "merged",
+      "merge_sha": "cce1e28dceab64efc9c8d58590498f7a03ee53b2",
+      "method": "squash",
+      "forward_integrations": []
     },
     {
       "number": 6,
-      "original_head": "049d56ded87f3f0f3493aebea2e03d78962d0bec",
       "original_branch": "codex/master-roadmap-execution",
+      "original_head": "049d56ded87f3f0f3493aebea2e03d78962d0bec",
       "original_base": "main",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "dea2b8e9fe9ee5ed7967085b309bc28c0e79d53f",
+      "disposition": "merged",
+      "merge_sha": "a5069ebbd5e502227a0221d8604319033f5b90a4",
+      "method": "squash",
+      "forward_integrations": [
+        {
+          "old": "049d56ded87f3f0f3493aebea2e03d78962d0bec",
+          "new": "dea2b8e9fe9ee5ed7967085b309bc28c0e79d53f",
+          "main": "8773c9970e9ba3691542db3a7c557d6ccf4f680f",
+          "reason": "forward main plus current authorized integration checkpoint, documentation delta only"
+        }
+      ]
     },
     {
       "number": 7,
-      "original_head": "3ef32fec540cc7af3ea979ce9cb2b17a42786d8a",
       "original_branch": "codex/r6-app-id-prefix",
+      "original_head": "3ef32fec540cc7af3ea979ce9cb2b17a42786d8a",
       "original_base": "main",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "3ef32fec540cc7af3ea979ce9cb2b17a42786d8a",
+      "disposition": "merged",
+      "merge_sha": "485aedb31675dc1b09d11fc1fee9f65e3e614f75",
+      "method": "merge",
+      "forward_integrations": []
     },
     {
       "number": 8,
-      "original_head": "be5c53c6a63c0f8d5dd2a86e41f1f0b90a74d249",
       "original_branch": "codex/r14-source-cache-transactions",
+      "original_head": "be5c53c6a63c0f8d5dd2a86e41f1f0b90a74d249",
       "original_base": "main",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "be5c53c6a63c0f8d5dd2a86e41f1f0b90a74d249",
+      "disposition": "merged",
+      "merge_sha": "207eaa40dc99bab2d3f242e3620e3b4da7b37b27",
+      "method": "squash",
+      "forward_integrations": []
     },
     {
       "number": 9,
-      "original_head": "6d4ccf0e8bfeee2d4bc22b06cccc4e1c9d2cd6ef",
       "original_branch": "codex/r13-performance-evidence",
+      "original_head": "6d4ccf0e8bfeee2d4bc22b06cccc4e1c9d2cd6ef",
       "original_base": "main",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "6d4ccf0e8bfeee2d4bc22b06cccc4e1c9d2cd6ef",
+      "disposition": "merged",
+      "merge_sha": "e6b56ad6af1b061151892c0ec2fd4ae62d3c49bf",
+      "method": "squash",
+      "forward_integrations": []
     },
     {
       "number": 10,
-      "original_head": "023a29b67390575f1815b99c8526ccbbd5822880",
       "original_branch": "codex/r7-download-budgets",
+      "original_head": "023a29b67390575f1815b99c8526ccbbd5822880",
       "original_base": "main",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "023a29b67390575f1815b99c8526ccbbd5822880",
+      "disposition": "merged",
+      "merge_sha": "bd16bcd155a42b0ca53841994abc2490599dcb38",
+      "method": "squash",
+      "forward_integrations": []
     },
     {
       "number": 11,
-      "original_head": "afb1ce598c4de957c9edaecc555cecdd77570a65",
       "original_branch": "codex/r12-probe-conformance",
+      "original_head": "afb1ce598c4de957c9edaecc555cecdd77570a65",
       "original_base": "main",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "afb1ce598c4de957c9edaecc555cecdd77570a65",
+      "disposition": "merged",
+      "merge_sha": "ff3e9d6ace4291afcb05d6b337afaa72200f95bb",
+      "method": "squash",
+      "forward_integrations": []
     },
     {
       "number": 12,
-      "original_head": "e60774128ce0d7b48c679af4583d5afb9356bb85",
       "original_branch": "codex/r9-responsive-import",
+      "original_head": "e60774128ce0d7b48c679af4583d5afb9356bb85",
       "original_base": "codex/r3-durable-library",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "e60774128ce0d7b48c679af4583d5afb9356bb85",
+      "disposition": "merged",
+      "merge_sha": "a50e1632e5c22293f527e75f11ec4e837646c430",
+      "method": "squash",
+      "forward_integrations": []
     },
     {
       "number": 13,
-      "original_head": "0a044e02d753c93d65b1200700a206532e50183c",
       "original_branch": "codex/r8-loopback-session-ownership",
+      "original_head": "0a044e02d753c93d65b1200700a206532e50183c",
       "original_base": "main",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "0a044e02d753c93d65b1200700a206532e50183c",
+      "disposition": "merged",
+      "merge_sha": "c0304d548411933b799bb1cb4524c337f9cc0eec",
+      "method": "merge",
+      "forward_integrations": []
     },
     {
       "number": 14,
-      "original_head": "0760cf52adb02a47cfb5ae0dcb853a20a27f147a",
       "original_branch": "codex/r14-bucket-cleanup-ledger",
+      "original_head": "0760cf52adb02a47cfb5ae0dcb853a20a27f147a",
       "original_base": "codex/r3-durable-library",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "0760cf52adb02a47cfb5ae0dcb853a20a27f147a",
+      "disposition": "merged",
+      "merge_sha": "d40c4a824a0053780cb232fdf8a37ce45ef8204f",
+      "method": "merge",
+      "forward_integrations": []
     },
     {
       "number": 15,
-      "original_head": "73d3020f92781a3978e7ba7a857537fb48a04f91",
       "original_branch": "codex/r10-install-observation-language",
+      "original_head": "73d3020f92781a3978e7ba7a857537fb48a04f91",
       "original_base": "main",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "0ccac854a6a40d14ecc7aafc7ede594898deb37e",
+      "disposition": "merged",
+      "merge_sha": "8773c9970e9ba3691542db3a7c557d6ccf4f680f",
+      "method": "squash",
+      "forward_integrations": [
+        {
+          "old": "73d3020f92781a3978e7ba7a857537fb48a04f91",
+          "new": "0ccac854a6a40d14ecc7aafc7ede594898deb37e",
+          "main": "ccd994f16daafd692fe93bf1191b018a67d9e8c4",
+          "conflict_snapshot": "422c35a",
+          "resolved_files": [
+            "Tests/InstallKitTests/LoopbackHostTests.swift"
+          ]
+        }
+      ]
     },
     {
       "number": 16,
-      "original_head": "035c0ddc3e6c91667747644e9ff07ec07d074b99",
       "original_branch": "codex/r16-pause-hidden-animation",
+      "original_head": "035c0ddc3e6c91667747644e9ff07ec07d074b99",
       "original_base": "main",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "035c0ddc3e6c91667747644e9ff07ec07d074b99",
+      "disposition": "merged",
+      "merge_sha": "201f6411b95318db0280aa13cc81b8c2619f46a7",
+      "method": "squash",
+      "forward_integrations": []
     },
     {
       "number": 17,
-      "original_head": "731e5fc46d30e0c1520c7b561bce6687dc691932",
       "original_branch": "codex/r8-background-job-ownership",
+      "original_head": "731e5fc46d30e0c1520c7b561bce6687dc691932",
       "original_base": "codex/r3-durable-library",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "731e5fc46d30e0c1520c7b561bce6687dc691932",
+      "disposition": "merged",
+      "merge_sha": "ccd994f16daafd692fe93bf1191b018a67d9e8c4",
+      "method": "merge",
+      "forward_integrations": []
     },
     {
       "number": 18,
-      "original_head": "524ef773ab58784440347165bdde65fc106cefb0",
       "original_branch": "codex/r11-release-candidate-gate",
+      "original_head": "524ef773ab58784440347165bdde65fc106cefb0",
       "original_base": "codex/r4-distribution-correctness",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "524ef773ab58784440347165bdde65fc106cefb0",
+      "disposition": "merged",
+      "merge_sha": "b4d507923de6da4de20f15017df139931d486d3d",
+      "method": "squash",
+      "forward_integrations": []
     },
     {
       "number": 19,
-      "original_head": "b7edd93e975cbdb48a90169f2aa6f159363d8634",
       "original_branch": "codex/r8-ota-session-ownership",
+      "original_head": "b7edd93e975cbdb48a90169f2aa6f159363d8634",
       "original_base": "codex/r8-session-prerequisites",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "4eebf6b00d8ef900c99b6754ee20993d34363ef4",
+      "disposition": "merged",
+      "merge_sha": "65486c34a6afce61e55fdbe3f2a4d44787cea07f",
+      "method": "merge",
+      "forward_integrations": [
+        {
+          "old": "b7edd93e975cbdb48a90169f2aa6f159363d8634",
+          "new": "4eebf6b00d8ef900c99b6754ee20993d34363ef4",
+          "main": "8773c9970e9ba3691542db3a7c557d6ccf4f680f",
+          "conflict_snapshot": "293b736",
+          "resolved_files": [
+            "App/IdentityReadiness.swift"
+          ]
+        }
+      ]
     },
     {
       "number": 20,
-      "original_head": "de21fa573a27f19293a112c9db5d8465266c5230",
       "original_branch": "codex/r7-install-response-budgets",
+      "original_head": "de21fa573a27f19293a112c9db5d8465266c5230",
       "original_base": "codex/r14-bucket-cleanup-ledger",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "de21fa573a27f19293a112c9db5d8465266c5230",
+      "disposition": "merged",
+      "merge_sha": "2f9612fdcb1ffbab387e0ca82bff33257968c772",
+      "method": "squash",
+      "forward_integrations": []
     },
     {
       "number": 21,
-      "original_head": "c8248a8f0385a460a59864e1c31e3224984bcee5",
       "original_branch": "codex/r15-read-only-signing-plan",
+      "original_head": "c8248a8f0385a460a59864e1c31e3224984bcee5",
       "original_base": "codex/r6-app-id-prefix",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "46d50a05cb584da7a760381de9b16ce954d0cb35",
+      "disposition": "merged",
+      "merge_sha": "48b6e2a56959ca1fb176abd5bd0ce07127190832",
+      "method": "merge",
+      "forward_integrations": [
+        {
+          "old": "c8248a8f0385a460a59864e1c31e3224984bcee5",
+          "new": "46d50a05cb584da7a760381de9b16ce954d0cb35",
+          "main": "867ca2d9cc2f9d2385abd890f2f3724289d90c80",
+          "conflict_snapshot": "b6caf50",
+          "resolved_files": [
+            "Sources/SigningKit/BundleSigner.swift"
+          ]
+        }
+      ]
     },
     {
       "number": 22,
-      "original_head": "698b741c0d679a78b3b0fc29c20a6ad9df43ec0f",
       "original_branch": "codex/r7-icon-input-budgets",
+      "original_head": "698b741c0d679a78b3b0fc29c20a6ad9df43ec0f",
       "original_base": "main",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "698b741c0d679a78b3b0fc29c20a6ad9df43ec0f",
+      "disposition": "merged",
+      "merge_sha": "de7acde45465b374dadcc3600528c4ac69f16aa2",
+      "method": "squash",
+      "forward_integrations": []
     },
     {
       "number": 23,
-      "original_head": "1d6f207f0cdb08ab0424d990fd2daebf074a064d",
       "original_branch": "codex/r7-extraction-budgets",
+      "original_head": "1d6f207f0cdb08ab0424d990fd2daebf074a064d",
       "original_base": "main",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "1d6f207f0cdb08ab0424d990fd2daebf074a064d",
+      "disposition": "merged",
+      "merge_sha": "05a4c6961b9dd92f580615c635bde49c791dcf4b",
+      "method": "merge",
+      "forward_integrations": []
     },
     {
       "number": 24,
-      "original_head": "11150a48c393f7ab20b4b6add6c6540a65db2531",
       "original_branch": "codex/r8-signing-cancellation",
+      "original_head": "11150a48c393f7ab20b4b6add6c6540a65db2531",
       "original_base": "codex/r8-signing-cancellation-base",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "11150a48c393f7ab20b4b6add6c6540a65db2531",
+      "disposition": "merged",
+      "merge_sha": "a4087fdda6c2f3b3655d93b8382ae30aa79b96bb",
+      "method": "merge",
+      "forward_integrations": []
     },
     {
       "number": 25,
-      "original_head": "a33156f230cece7d07db0704c127c73992213f50",
       "original_branch": "codex/r8-background-expiration",
+      "original_head": "a33156f230cece7d07db0704c127c73992213f50",
       "original_base": "codex/r8-signing-cancellation",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "a33156f230cece7d07db0704c127c73992213f50",
+      "disposition": "merged",
+      "merge_sha": "867ca2d9cc2f9d2385abd890f2f3724289d90c80",
+      "method": "squash",
+      "forward_integrations": []
     },
     {
       "number": 26,
-      "original_head": "a3774382c5b1465493d65efe08c243104fa27db6",
       "original_branch": "codex/r7-source-object-budgets",
+      "original_head": "a3774382c5b1465493d65efe08c243104fa27db6",
       "original_base": "main",
-      "disposition": "candidate verification pending",
-      "merge_sha": null
+      "verified_merge_head": "a3774382c5b1465493d65efe08c243104fa27db6",
+      "disposition": "merged",
+      "merge_sha": "b5cba2f02aada53b76d0b059996aa773d2df615d",
+      "method": "squash",
+      "forward_integrations": []
     }
   ],
-  "integration_ci": null,
-  "final_main": null
+  "merge_order": [
+    {
+      "number": 3,
+      "head": "2a045f98c18ae2d09fc881c192c13b3828f9f610",
+      "merge_sha": "8da5dc70be11b50e48f5eeb1a92bd6adcccbe20c",
+      "method": "merge",
+      "previous_main": "8ad4b2eed8b062b0ddb419f33fa0f858ff0b0379",
+      "time": "2026-10-20T00:54:12.762607+00:00"
+    },
+    {
+      "number": 4,
+      "head": "45342312868f6e31af28f1b7402edcdc55631b2e",
+      "merge_sha": "8709429707cd44c64a90d72df063f77d8f58daa3",
+      "method": "merge",
+      "previous_main": "8da5dc70be11b50e48f5eeb1a92bd6adcccbe20c",
+      "time": "2026-10-20T00:54:56.684431+00:00"
+    },
+    {
+      "number": 5,
+      "head": "3e30326629fa1db3536b0e03dd994122b502fa47",
+      "merge_sha": "cce1e28dceab64efc9c8d58590498f7a03ee53b2",
+      "method": "squash",
+      "previous_main": "8709429707cd44c64a90d72df063f77d8f58daa3",
+      "time": "2026-10-20T00:55:43.703614+00:00"
+    },
+    {
+      "number": 7,
+      "head": "3ef32fec540cc7af3ea979ce9cb2b17a42786d8a",
+      "merge_sha": "485aedb31675dc1b09d11fc1fee9f65e3e614f75",
+      "method": "merge",
+      "previous_main": "cce1e28dceab64efc9c8d58590498f7a03ee53b2",
+      "time": "2026-10-20T00:55:52.507695+00:00"
+    },
+    {
+      "number": 8,
+      "head": "be5c53c6a63c0f8d5dd2a86e41f1f0b90a74d249",
+      "merge_sha": "207eaa40dc99bab2d3f242e3620e3b4da7b37b27",
+      "method": "squash",
+      "previous_main": "485aedb31675dc1b09d11fc1fee9f65e3e614f75",
+      "time": "2026-10-20T00:56:01.636712+00:00"
+    },
+    {
+      "number": 9,
+      "head": "6d4ccf0e8bfeee2d4bc22b06cccc4e1c9d2cd6ef",
+      "merge_sha": "e6b56ad6af1b061151892c0ec2fd4ae62d3c49bf",
+      "method": "squash",
+      "previous_main": "207eaa40dc99bab2d3f242e3620e3b4da7b37b27",
+      "time": "2026-10-20T00:56:10.794811+00:00"
+    },
+    {
+      "number": 10,
+      "head": "023a29b67390575f1815b99c8526ccbbd5822880",
+      "merge_sha": "bd16bcd155a42b0ca53841994abc2490599dcb38",
+      "method": "squash",
+      "previous_main": "e6b56ad6af1b061151892c0ec2fd4ae62d3c49bf",
+      "time": "2026-10-20T00:56:19.628405+00:00"
+    },
+    {
+      "number": 26,
+      "head": "a3774382c5b1465493d65efe08c243104fa27db6",
+      "merge_sha": "b5cba2f02aada53b76d0b059996aa773d2df615d",
+      "method": "squash",
+      "previous_main": "bd16bcd155a42b0ca53841994abc2490599dcb38",
+      "time": "2026-10-20T00:56:28.840327+00:00"
+    },
+    {
+      "number": 12,
+      "head": "e60774128ce0d7b48c679af4583d5afb9356bb85",
+      "merge_sha": "a50e1632e5c22293f527e75f11ec4e837646c430",
+      "method": "squash",
+      "previous_main": "b5cba2f02aada53b76d0b059996aa773d2df615d",
+      "time": "2026-10-20T00:58:06.050295+00:00"
+    },
+    {
+      "number": 13,
+      "head": "0a044e02d753c93d65b1200700a206532e50183c",
+      "merge_sha": "c0304d548411933b799bb1cb4524c337f9cc0eec",
+      "method": "merge",
+      "previous_main": "a50e1632e5c22293f527e75f11ec4e837646c430",
+      "time": "2026-10-20T00:58:14.840281+00:00"
+    },
+    {
+      "number": 14,
+      "head": "0760cf52adb02a47cfb5ae0dcb853a20a27f147a",
+      "merge_sha": "d40c4a824a0053780cb232fdf8a37ce45ef8204f",
+      "method": "merge",
+      "previous_main": "c0304d548411933b799bb1cb4524c337f9cc0eec",
+      "time": "2026-10-20T00:58:24.185115+00:00"
+    },
+    {
+      "number": 17,
+      "head": "731e5fc46d30e0c1520c7b561bce6687dc691932",
+      "merge_sha": "ccd994f16daafd692fe93bf1191b018a67d9e8c4",
+      "method": "merge",
+      "previous_main": "d40c4a824a0053780cb232fdf8a37ce45ef8204f",
+      "time": "2026-10-20T00:58:32.961595+00:00"
+    },
+    {
+      "number": 11,
+      "head": "afb1ce598c4de957c9edaecc555cecdd77570a65",
+      "merge_sha": "ff3e9d6ace4291afcb05d6b337afaa72200f95bb",
+      "method": "squash",
+      "previous_main": "ccd994f16daafd692fe93bf1191b018a67d9e8c4",
+      "time": "2026-10-20T00:59:22.181668+00:00"
+    },
+    {
+      "number": 20,
+      "head": "de21fa573a27f19293a112c9db5d8465266c5230",
+      "merge_sha": "2f9612fdcb1ffbab387e0ca82bff33257968c772",
+      "method": "squash",
+      "previous_main": "ff3e9d6ace4291afcb05d6b337afaa72200f95bb",
+      "time": "2026-10-20T00:59:31.598712+00:00"
+    },
+    {
+      "number": 23,
+      "head": "1d6f207f0cdb08ab0424d990fd2daebf074a064d",
+      "merge_sha": "05a4c6961b9dd92f580615c635bde49c791dcf4b",
+      "method": "merge",
+      "previous_main": "2f9612fdcb1ffbab387e0ca82bff33257968c772",
+      "time": "2026-10-20T00:59:40.124645+00:00"
+    },
+    {
+      "number": 22,
+      "head": "698b741c0d679a78b3b0fc29c20a6ad9df43ec0f",
+      "merge_sha": "de7acde45465b374dadcc3600528c4ac69f16aa2",
+      "method": "squash",
+      "previous_main": "05a4c6961b9dd92f580615c635bde49c791dcf4b",
+      "time": "2026-10-20T00:59:50.171970+00:00"
+    },
+    {
+      "number": 16,
+      "head": "035c0ddc3e6c91667747644e9ff07ec07d074b99",
+      "merge_sha": "201f6411b95318db0280aa13cc81b8c2619f46a7",
+      "method": "squash",
+      "previous_main": "de7acde45465b374dadcc3600528c4ac69f16aa2",
+      "time": "2026-10-20T00:59:58.518422+00:00"
+    },
+    {
+      "number": 18,
+      "head": "524ef773ab58784440347165bdde65fc106cefb0",
+      "merge_sha": "b4d507923de6da4de20f15017df139931d486d3d",
+      "method": "squash",
+      "previous_main": "201f6411b95318db0280aa13cc81b8c2619f46a7",
+      "time": "2026-10-20T01:00:07.517839+00:00"
+    },
+    {
+      "number": 15,
+      "head": "0ccac854a6a40d14ecc7aafc7ede594898deb37e",
+      "merge_sha": "8773c9970e9ba3691542db3a7c557d6ccf4f680f",
+      "method": "squash",
+      "previous_main": "b4d507923de6da4de20f15017df139931d486d3d",
+      "time": "2026-10-20T01:11:26.674381+00:00"
+    },
+    {
+      "number": 19,
+      "head": "4eebf6b00d8ef900c99b6754ee20993d34363ef4",
+      "merge_sha": "65486c34a6afce61e55fdbe3f2a4d44787cea07f",
+      "method": "merge",
+      "previous_main": "8773c9970e9ba3691542db3a7c557d6ccf4f680f",
+      "time": "2026-10-20T01:24:08.030397+00:00"
+    },
+    {
+      "number": 24,
+      "head": "11150a48c393f7ab20b4b6add6c6540a65db2531",
+      "merge_sha": "a4087fdda6c2f3b3655d93b8382ae30aa79b96bb",
+      "method": "merge",
+      "previous_main": "65486c34a6afce61e55fdbe3f2a4d44787cea07f",
+      "time": "2026-10-20T01:24:18.615806+00:00"
+    },
+    {
+      "number": 25,
+      "head": "a33156f230cece7d07db0704c127c73992213f50",
+      "merge_sha": "867ca2d9cc2f9d2385abd890f2f3724289d90c80",
+      "method": "squash",
+      "previous_main": "a4087fdda6c2f3b3655d93b8382ae30aa79b96bb",
+      "time": "2026-10-20T01:24:30.906601+00:00"
+    },
+    {
+      "number": 6,
+      "head": "dea2b8e9fe9ee5ed7967085b309bc28c0e79d53f",
+      "merge_sha": "a5069ebbd5e502227a0221d8604319033f5b90a4",
+      "method": "squash",
+      "previous_main": "867ca2d9cc2f9d2385abd890f2f3724289d90c80",
+      "time": "2026-10-20T01:26:48.523006+00:00"
+    },
+    {
+      "number": 21,
+      "head": "46d50a05cb584da7a760381de9b16ce954d0cb35",
+      "merge_sha": "48b6e2a56959ca1fb176abd5bd0ce07127190832",
+      "method": "merge",
+      "previous_main": "a5069ebbd5e502227a0221d8604319033f5b90a4",
+      "time": "2026-10-20T20:11:14.067082+00:00"
+    }
+  ],
+  "ci_evidence": {
+    "39352035793": {
+      "run": 39352035793,
+      "url": "https://github.com/dylldev/wax-signer/actions/runs/39352035793",
+      "head": "8773c9970e9ba3691542db3a7c557d6ccf4f680f",
+      "conclusion": "success",
+      "package": {
+        "tests": 667,
+        "skipped": 13,
+        "failed": 0
+      },
+      "simulator": {
+        "tests": 310,
+        "skipped": 11,
+        "failed": 0
+      },
+      "python": {
+        "server": 55,
+        "source_release": 26,
+        "probe": 6
+      },
+      "unsigned_iOS_build": "success",
+      "shell_suites": "success",
+      "logs": "/tmp/wax-main-r10-39352035793.zip"
+    },
+    "39352047580": {
+      "run": 39352047580,
+      "url": "https://github.com/dylldev/wax-signer/actions/runs/39352047580",
+      "head": "4eebf6b00d8ef900c99b6754ee20993d34363ef4",
+      "conclusion": "success",
+      "package": {
+        "tests": 667,
+        "skipped": 13,
+        "failed": 0
+      },
+      "simulator": {
+        "tests": 327,
+        "skipped": 11,
+        "failed": 0
+      },
+      "python": {
+        "server": 55,
+        "source_release": 26,
+        "probe": 6
+      },
+      "unsigned_iOS_build": "success",
+      "shell_suites": "success",
+      "logs": "/tmp/wax-r8-forward-39352047580.zip"
+    },
+    "39352249119": {
+      "run": 39352249119,
+      "url": "https://github.com/dylldev/wax-signer/actions/runs/39352249119",
+      "head": "dea2b8e9fe9ee5ed7967085b309bc28c0e79d53f",
+      "conclusion": "success",
+      "package": {
+        "tests": 667,
+        "skipped": 13,
+        "failed": 0
+      },
+      "simulator": {
+        "tests": 310,
+        "skipped": 11,
+        "failed": 0
+      },
+      "python": {
+        "server": 55,
+        "source_release": 26,
+        "probe": 6
+      },
+      "unsigned_iOS_build": "success",
+      "shell_suites": "success",
+      "logs": "/tmp/wax-master-forward-39352249119.zip"
+    },
+    "39353267108": {
+      "run": 39353267108,
+      "url": "https://github.com/dylldev/wax-signer/actions/runs/39353267108",
+      "head": "46d50a05cb584da7a760381de9b16ce954d0cb35",
+      "conclusion": "success",
+      "package": {
+        "tests": 691,
+        "skipped": 13,
+        "failed": 0
+      },
+      "simulator": {
+        "tests": 363,
+        "skipped": 11,
+        "failed": 0
+      },
+      "python": {
+        "server": 55,
+        "source_release": 26,
+        "probe": 6
+      },
+      "unsigned_iOS_build": "success",
+      "shell_suites": "success",
+      "logs": "/workspace/shared/downloads/wax-r15-forward-39353267108.zip"
+    }
+  },
+  "major_checkpoints": [
+    {
+      "head": "b4d507923de6da4de20f15017df139931d486d3d",
+      "run": 39350943230,
+      "status": "success"
+    }
+  ],
+  "redundant_runs": [
+    {
+      "canceled": 39350807115,
+      "retained": 39350807268,
+      "head": "0ccac854a6a40d14ecc7aafc7ede594898deb37e",
+      "base": "ccd994f16daafd692fe93bf1191b018a67d9e8c4",
+      "reason": "duplicate pull_request CI, same head/base/workflow and creation instant; retained complete run required"
+    }
+  ],
+  "final_regression_pr": 27,
+  "final_verification": "Updated PR27 and actual final-main exact-head results will be recorded on PR27 after execution.",
+  "device_verification": "Not performed",
+  "superseded_prs": [],
+  "phase7": "Not implemented in this integration checkpoint"
 }
