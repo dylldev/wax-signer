@@ -215,8 +215,9 @@ struct CredentialsView: View {
                 } label: {
                     Label(mine ? "Testing…" : "Test install on this phone", systemImage: "arrow.down.app").font(.subheadline.weight(.semibold))
                 }
-                .disabled(tester.isRunning)
+                .disabled(tester.isRunning || !ota.canInstall)
                 .tint(Wax.link)
+                if mine { Button("Cancel test", role: .destructive) { tester.cancel() } }
                 if InstallTestStore().result(for: cert.sha1Fingerprint) != nil {
                     Button("Forget result") { tester.forget(cert) }.font(.subheadline).tint(Wax.sub)
                 }
