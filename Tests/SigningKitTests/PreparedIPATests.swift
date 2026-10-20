@@ -289,6 +289,37 @@ final class PreparedIPATests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: lease.work.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
     }
+    func testPathReplacementCannotSwitchTheCapturedIPAOrItsPreviewIdentity() throws {
+        let original = try Data(contentsOf: input)
+        var replaced = false, restored = false
+        let lease = try prepare(progress: { p in
+            if p.message == "Preparing captured IPA…", !replaced {
+                try! Data("a different file at the source path".utf8).write(to: self.input, options: .atomic)
+                replaced = true
+            } else if p.message == "Preparing the IPA…", replaced, !restored {
+                try! original.write(to: self.input, options: .atomic); restored = true
+            }
+        })
+        defer { lease.discard() }
+        XCTAssertTrue(replaced); XCTAssertTrue(restored)
+        XCTAssertEqual(lease.preview.original.identifier, try IPAInspector.inspect(url: Fixtures.ipa).bundleIdentifier)
+        XCTAssertEqual(lease.preview.sourceSHA256, try PreparedIPA.fingerprint(input, checkpoint: {}))
+        let outcome = try lease.execute(identity: credentials.signer, output: output)
+        XCTAssertTrue(outcome.selfCheck.passed)
+    }
+    func testCapturedIPAMutationIsRefusedBeforeAnySigningOutput() throws {
+        let lease = try prepare()
+        let captured = lease.work.appendingPathComponent("source.ipa")
+        var bytes = try Data(contentsOf: captured); bytes[bytes.count - 1] ^= 1; try bytes.write(to: captured)
+        XCTAssertThrowsError(try lease.execute(identity: credentials.signer, output: output)) { XCTAssertEqual($0 as? PreparedIPA.Failure, .sourceChanged) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
+    }
+    func testCapturedSourceAndExtractedTreeShareOneScratchLimit() throws {
+        var limits = PreparedIPA.Limits(); limits.maximumPreparedBytes = try Data(contentsOf: input).count + 1
+        XCTAssertThrowsError(try prepare(limits: limits))
+        XCTAssertNotNil(try? IPAInspector.inspect(url: input))
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path).contains { $0.hasPrefix("prepared-") })
+    }
     #if os(macOS)
     func testPreparedRepackedOutputPassesIndependentAppleCodesign() throws {
         let lease = try prepare(); let start = DispatchTime.now().uptimeNanoseconds

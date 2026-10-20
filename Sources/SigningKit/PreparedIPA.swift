@@ -58,6 +58,7 @@ public final class PreparedIPA: @unchecked Sendable {
     let work: URL
     let tree: URL
     private let sourceURL: URL
+    private let capturedSource: URL
     private let inventory: IPAExtractionInventory
     private let input: IPAMetadata
     private let manifest: IPAArchiveManifest
@@ -68,9 +69,9 @@ public final class PreparedIPA: @unchecked Sendable {
     private var state = State.ready
 
     private init(preview: Preview, cancellation: SigningCancellation, work: URL, tree: URL, source: URL,
-                 inventory: IPAExtractionInventory, input: IPAMetadata, manifest: IPAArchiveManifest, plan: SigningPlan, budget: PreparationBudget) {
+                 inventory: IPAExtractionInventory, input: IPAMetadata, manifest: IPAArchiveManifest, plan: SigningPlan, capturedSource: URL, budget: PreparationBudget) {
         self.preview = preview; self.cancellation = cancellation; self.work = work; self.tree = tree
-        sourceURL = source; self.inventory = inventory; self.input = input; self.manifest = manifest; self.plan = plan; self.budget = budget
+        sourceURL = source; self.capturedSource = capturedSource; self.inventory = inventory; self.input = input; self.manifest = manifest; self.plan = plan; self.budget = budget
     }
     deinit { try? FileManager.default.removeItem(at: work) }
 
@@ -90,17 +91,21 @@ public final class PreparedIPA: @unchecked Sendable {
         defer { if !retained { try? FileManager.default.removeItem(at: work) } }
         try budget.check()
         progress?(SigningProgress(message: "Checking the archive…", fraction: 0))
-        let digest = try fingerprint(ipa, checkpoint: budget.check)
-        let source = try IPAArchiveSession(url: ipa), input = try source.inspect()
+        // The digest and all ZIP decisions refer to these exact copied bytes, not separate path opens.
+        // The snapshot is app-owned, exclusive and part of the same scratch budget as extraction/edits.
+        let capturedSource = work.appendingPathComponent("source.ipa")
+        let digest = try fingerprint(ipa, copyingTo: capturedSource, beforeCopy: { try budget.charge($0, directory: work) }, checkpoint: budget.check)
+        progress?(SigningProgress(message: "Preparing captured IPA…", fraction: 0.1))
+        let source = try IPAArchiveSession(url: capturedSource), input = try source.inspect()
         let tree = work.appendingPathComponent("tree", isDirectory: true)
         var extraction = limits.extraction
-        extraction.maxTotalBytes = min(extraction.maxTotalBytes, limits.maximumPreparedBytes)
+        extraction.maxTotalBytes = min(extraction.maxTotalBytes, limits.maximumPreparedBytes - budget.chargedBytes)
         let inventory = try source.extract(to: tree, limits: extraction, byteProgress: {
             progress?(SigningProgress(message: "Preparing the IPA…", fraction: 0.1 + 0.6 * $0))
         }, checkCancellation: { try budget.check() })
         let app = tree.appendingPathComponent("Payload/" + input.appFolder)
         // Before edits, bound existing code and imported inputs. No whole-file hashing buffer is used.
-        budget.chargedBytes = try budget.inspect(tree: tree)
+        try budget.charge(try budget.inspect(tree: tree), directory: work, reservingDisk: false)
         try budget.inspectImports(edits.injectLibraries)
         try budget.check()
         // Bound edits metadata before it can become oversized plist data in scratch.
@@ -115,7 +120,8 @@ public final class PreparedIPA: @unchecked Sendable {
         let plan = try BundleSigner.plan(appDirectory: app, certificateChainDER: certificateChainDER,
             certificateTeamID: certificateTeamID, profiles: profiles, options: frozen, profilePolicy: profilePolicy)
         let manifest = try IPAArchiveManifest.capture(directory: tree, checkpoint: { try budget.check() })
-        guard try fingerprint(ipa, checkpoint: budget.check) == digest else { throw Failure.sourceChanged }
+        guard try fingerprint(capturedSource, checkpoint: budget.check) == digest,
+              try fingerprint(ipa, checkpoint: budget.check) == digest else { throw Failure.sourceChanged }
         let plist = try readInfo(app)
         guard let mainDecision = plan.bundles.first else { throw SigningError.bundle("prepared app has no main signing decision") }
         let proposed = AppIdentity(identifier: mainDecision.identifier,
@@ -156,7 +162,7 @@ public final class PreparedIPA: @unchecked Sendable {
         retained = true
         progress?(SigningProgress(message: "Ready to review", fraction: 1))
         return PreparedIPA(preview: preview, cancellation: owner, work: work, tree: tree, source: ipa,
-                           inventory: inventory, input: input, manifest: manifest, plan: plan, budget: budget)
+                           inventory: inventory, input: input, manifest: manifest, plan: plan, capturedSource: capturedSource, budget: budget)
     }
 
     /// Cancellation during execution requests cooperative stop. It never removes scratch under a worker.
@@ -185,7 +191,8 @@ public final class PreparedIPA: @unchecked Sendable {
             throw SigningError.io("signed output must be outside preparation scratch and must not replace the source IPA")
         }
         try budget.check()
-        guard try Self.fingerprint(sourceURL, checkpoint: budget.check) == preview.sourceSHA256 else { throw Failure.sourceChanged }
+        guard try Self.fingerprint(capturedSource, checkpoint: budget.check) == preview.sourceSHA256,
+              try Self.fingerprint(sourceURL, checkpoint: budget.check) == preview.sourceSHA256 else { throw Failure.sourceChanged }
         try manifest.verifyTree(checkpoint: { try self.budget.check() })
         progress?(SigningProgress(message: "Signing confirmed plan…", fraction: 0.05))
         let result = try BundleSigner.sign(plan: plan, identity: identity, now: now)
@@ -197,7 +204,7 @@ public final class PreparedIPA: @unchecked Sendable {
         guard report.passed else { throw SigningError.selfCheckFailed(report.failures.prefix(5).map { "\($0.name) \($0.detail)" }) }
         try budget.check()
         var inspected: IPAMetadata?
-        try IPAArchiver.archive(directory: tree, to: output, reusing: sourceURL, compressChangedFiles: compressChangedFiles,
+        try IPAArchiver.archive(directory: tree, to: output, reusing: capturedSource, compressChangedFiles: compressChangedFiles,
             byteProgress: { progress?(SigningProgress(message: "Packing…", fraction: 0.35 + 0.65 * $0)) }, reusingExtraction: inventory,
             verifiedManifest: expected, validateArchive: { staged in
                 inspected = try IPAInspector.inspect(url: staged)
@@ -212,7 +219,8 @@ public final class PreparedIPA: @unchecked Sendable {
         guard let dict = try PropertyListSerialization.propertyList(from: Data(contentsOf: app.appendingPathComponent("Info.plist")), format: nil) as? [String: Any] else { throw IPAError.invalidInfoPlist }
         return dict
     }
-    static func fingerprint(_ url: URL, checkpoint: () throws -> Void) throws -> String {
+    static func fingerprint(_ url: URL, copyingTo destination: URL? = nil, beforeCopy: (Int) throws -> Void = { _ in },
+                            checkpoint: () throws -> Void) throws -> String {
         let fd = open(url.path, O_RDONLY | O_NOFOLLOW)
         guard fd >= 0 else { throw SigningError.io("cannot open the source IPA for identity verification") }
         let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
@@ -220,16 +228,28 @@ public final class PreparedIPA: @unchecked Sendable {
         var before = stat(), after = stat()
         guard fstat(fd, &before) == 0, before.st_mode & 0o170000 == 0o100000, before.st_size >= 0,
               before.st_size < UInt32.max else { throw IPAError.unsupportedZip("source is not a regular classic-ZIP file") }
+        var output: FileHandle?, created: URL?, completed = false
+        defer {
+            try? output?.close()
+            if !completed, let created { try? FileManager.default.removeItem(at: created) }
+        }
+        if let destination {
+            try beforeCopy(Int(before.st_size))
+            let target = open(destination.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+            guard target >= 0 else { throw SigningError.io("cannot create exclusive captured IPA") }
+            output = FileHandle(fileDescriptor: target, closeOnDealloc: true); created = destination
+        }
         var digest = SHA256(), count: Int64 = 0
         while true {
             try checkpoint()
             guard let chunk = try file.read(upToCount: 256 * 1024), !chunk.isEmpty else { break }
             guard Int64(chunk.count) <= before.st_size - count else { throw Failure.sourceChanged }
+            try output?.write(contentsOf: chunk)
             count += Int64(chunk.count); digest.update(data: chunk)
         }
         guard count == before.st_size, fstat(fd, &after) == 0, before.st_size == after.st_size,
               before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec, before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec else { throw Failure.sourceChanged }
-        try file.close()
+        try output?.close(); try file.close(); completed = true
         return digest.finalize().map { String(format: "%02x", $0) }.joined()
     }
 }
@@ -274,13 +294,13 @@ private final class PreparationBudget: @unchecked Sendable {
         if let failure { throw failure }
         return bytes
     }
-    func charge(_ bytes: Int, directory: URL) throws {
+    func charge(_ bytes: Int, directory: URL, reservingDisk: Bool = true) throws {
         try check()
         guard bytes >= 0, bytes <= limits.maximumPreparedBytes - chargedBytes else { throw PreparedIPA.Failure.scratchLimit }
         chargedBytes += bytes
         let disk = try FileManager.default.attributesOfFileSystem(forPath: directory.path)
         guard let free = disk[.systemFreeSize] as? NSNumber else { throw SigningError.io("cannot measure preparation storage") }
-        let (required, overflow) = limits.extraction.minimumFreeBytes.addingReportingOverflow(Int64(bytes))
+        let (required, overflow) = limits.extraction.minimumFreeBytes.addingReportingOverflow(reservingDisk ? Int64(bytes) : 0)
         guard !overflow, free.int64Value >= required else { throw PreparedIPA.Failure.scratchLimit }
     }
     func inspectImports(_ urls: [URL]) throws {
