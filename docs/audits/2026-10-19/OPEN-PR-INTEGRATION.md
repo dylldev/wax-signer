@@ -34,16 +34,21 @@ Only after independent approval of each change, current required checks/protecti
 | 13 | [#11](https://github.com/dylldev/wax-signer/pull/11) R12: Build the installation probe from source and retain CI evidence | `main` | `afb1ce598c4de957c9edaecc555cecdd77570a65` |
 | 14 | [#19](https://github.com/dylldev/wax-signer/pull/19) R8: Bind OTA preparation, cancellation and delivery to owned sessions | `codex/r8-session-prerequisites` | `b7edd93e975cbdb48a90169f2aa6f159363d8634` |
 | 15 | [#20](https://github.com/dylldev/wax-signer/pull/20) R7: Bound install responses and cancel silent certificate downloads | `codex/r14-bucket-cleanup-ledger` | `de21fa573a27f19293a112c9db5d8465266c5230` |
-| 16 | [#21](https://github.com/dylldev/wax-signer/pull/21) R15: Expose immutable read-only signing plans and reject stale execution | `codex/r6-app-id-prefix` | `c8248a8f0385a460a59864e1c31e3224984bcee5` |
-| 17 | [#22](https://github.com/dylldev/wax-signer/pull/22) R7: Bound custom icon reads and decode only thumbnails | `main` | `698b741c0d679a78b3b0fc29c20a6ad9df43ec0f` |
-| 18 | [#16](https://github.com/dylldev/wax-signer/pull/16) R16: Pause decorative signing animation when hidden or inactive | `main` | `035c0ddc3e6c91667747644e9ff07ec07d074b99` |
-| 19 | [#18](https://github.com/dylldev/wax-signer/pull/18) R11: Prepare validated release candidates from tagged sources | `codex/r4-distribution-correctness` | `524ef773ab58784440347165bdde65fc106cefb0` |
-| 20 | [#6](https://github.com/dylldev/wax-signer/pull/6) Track R3–R20 execution evidence and continuation gates | `main` | `ea1d3ebf980080f83aaff06d8f454693f639f2be` |
+| 16 | [#23](https://github.com/dylldev/wax-signer/pull/23) R7: Enforce extraction storage, deadline and worker budgets | `main` | `1d6f207f0cdb08ab0424d990fd2daebf074a064d` |
+| 17 | [#24](https://github.com/dylldev/wax-signer/pull/24) R8: Cancel owned signing work before the final publication barrier | `codex/r8-signing-cancellation-base` | `d8dd695420899c2a93f7ed5d64c9a023c29b6e52` |
+| 18 | [#22](https://github.com/dylldev/wax-signer/pull/22) R7: Bound custom icon reads and decode only thumbnails | `main` | `698b741c0d679a78b3b0fc29c20a6ad9df43ec0f` |
+| 19 | [#21](https://github.com/dylldev/wax-signer/pull/21) R15: Expose immutable read-only signing plans and reject stale execution | `codex/r6-app-id-prefix` | `c8248a8f0385a460a59864e1c31e3224984bcee5` |
+| 20 | [#16](https://github.com/dylldev/wax-signer/pull/16) R16: Pause decorative signing animation when hidden or inactive | `main` | `035c0ddc3e6c91667747644e9ff07ec07d074b99` |
+| 21 | [#18](https://github.com/dylldev/wax-signer/pull/18) R11: Prepare validated release candidates from tagged sources | `codex/r4-distribution-correctness` | `524ef773ab58784440347165bdde65fc106cefb0` |
+| 22 | [#6](https://github.com/dylldev/wax-signer/pull/6) Track R3–R20 execution evidence and continuation gates | `main` | `99803b1725560ec88463494a96a7b8824ba63b7d` |
 
 #15 is deliberately before #19 so the R10 words and loopback-test union are resolved once before the final coordinator integration. #11 precedes #19/#18 so source-built probe/version1 behavior is preserved, not restored to the historical opaque resource. #21 is after #7 and does not by itself adopt a new app production CMS policy. #6 documentation is last so its ledger reflects actual reviewed integration, rather than asserting that a proposed order already happened.
 
 ## Confirmed textual conflicts
 
+- **#24 + #21:** `Sources/SigningKit/BundleSigner.swift`.
+- **#24 + #15:** `App/IdentityReadiness.swift`, `Tests/InstallKitTests/LoopbackHostTests.swift`.
+- **#24 + #11:** `App/IdentityReadiness.swift`.
 - **#19 + #15:** `App/IdentityReadiness.swift`, `Tests/InstallKitTests/LoopbackHostTests.swift`.
 - **#19 + #11:** `App/IdentityReadiness.swift`.
 - **#15 + #13:** `Tests/InstallKitTests/LoopbackHostTests.swift`.
@@ -73,6 +78,15 @@ Pairs below are based on current declared-base net file overlap. A clean result 
 
 | PR pair | Result | Shared net files |
 |---|---|---|
+| #24 + #21 | CONFLICT | `Sources/SigningKit/BundleSigner.swift` |
+| #24 + #19 | clean merge-tree | `App/IdentityReadiness.swift`, `App/OTAInstallModel.swift`, `App/SigningModel.swift`, `Tests/AppModelTests/OTASessionOutcomeTests.swift` |
+| #24 + #17 | clean merge-tree | `App/SigningModel.swift` |
+| #24 + #15 | CONFLICT | `App/IdentityReadiness.swift` |
+| #24 + #14 | clean merge-tree | `App/OTAInstallModel.swift` |
+| #24 + #11 | CONFLICT | `App/IdentityReadiness.swift` |
+| #24 + #7 | clean merge-tree | `Sources/SigningKit/BundleSigner.swift` |
+| #24 + #3 | clean merge-tree | `App/SigningModel.swift` |
+| #23 + #21 | clean merge-tree | `Sources/IPAKit/ArchiveIntegrity.swift` |
 | #21 + #7 | clean merge-tree | `Sources/SigningKit/BundleSigner.swift` |
 | #20 + #14 | clean merge-tree | `Sources/InstallKit/S3Host.swift` |
 | #19 + #17 | clean merge-tree | `App/SigningModel.swift` |
@@ -101,3 +115,6 @@ Start an integration branch from freshly fetched main; integrate only independen
 
 
 Final-head code verification observed23:45UTC: #19 `b7edd93` CI39318615526, #20 `de21fa5` CI39317651235, #21 `c8248a8` CI39317698285, #22 `698b741` CI39318320934 allSUCCESS. Actual full package/iOS build/Simulator summaries are recorded in the master checkpoint. This does not change the unresolved combined-integration/device gates. PR#6's table SHA `ea1d3eb` is the starting documentation checkpoint, not the later documentation update containing this assessment.
+
+
+Latest additions: #23 is independent extraction budgets; #24 depends on #19 + #23 through development composite `codex/r8-signing-cancellation-base` (`4554d4a`). Final CI is pending at this update, not covered by earlier greens. Recommended #23 → #24 → #21 integration keeps extraction/owner cancellation before R15 plan adoption. New conflict #24/#21 in BundleSigner requires retaining R15 shared planner/exact-CMS cache and R8 cancellation checks in shared preparation/execution. The #24/#15/#11 IdentityReadiness conflicts additionally require preserving the cancellation bridge alongside owned sessions, truthful probe wording and source-built probe1.0/build1. Add combined cancellation-at-each-stage, staged-packing/output-preservation, plan/stale-tree and low-storage regressions to the integration gate. No individual PR green proves that combined result.
