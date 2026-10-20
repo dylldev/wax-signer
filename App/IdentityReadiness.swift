@@ -99,6 +99,7 @@ final class IdentityTester: ObservableObject {
              sign: @escaping @Sendable () async throws -> URL,
              detected: @escaping () -> Bool,
              cancelSigning: @escaping () -> Void = {},
+             background: BackgroundJob? = nil,
              record: @escaping (InstallTestResult, String) -> Void = { InstallTestStore().set($0, for: $1) },
              pause: @escaping () async throws -> Void = { try await Task.sleep(for: .seconds(2)) },
              seconds: Int = 90, open: @escaping (URL) -> Void) async {
@@ -113,8 +114,13 @@ final class IdentityTester: ObservableObject {
         }
         let generation = UUID(); operationID = generation
         testing = identityID; lastTested = identityID; reservation = (ota, session); state = .signing
+        let background = background ?? .shared
+        let backgroundID = background.begin(title: "Wax Probe", onExpiration: { [weak self] in self?.cancel(generation) })
+        guard operationID == generation else { background.end(backgroundID, success: false); return }
         let task = Task {
+            var observed = false
             defer {
+                background.end(backgroundID, success: observed)
                 ota.release(session)
                 if operationID == generation { testing = nil; reservation = nil; operation = nil; operationID = nil }
             }
@@ -147,6 +153,7 @@ final class IdentityTester: ObservableObject {
                     }
                     state = .waiting(secondsLeft: left)
                     if detected() {
+                        observed = true
                         record(.installed, fingerprint)
                         state = .finished(.installed, "Wax Probe was detected. Launch it to confirm it opens; other apps and profiles may behave differently.")
                         return

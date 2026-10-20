@@ -3,6 +3,7 @@ import InstallKit
 import IPAKit
 import SourcesKit
 import XCTest
+import UIKit
 @testable import LocalIPASigner
 
 @MainActor
@@ -91,6 +92,42 @@ final class LibraryOutcomeTests: XCTestCase {
         XCTAssertEqual(downloads, 1); XCTAssertTrue(model.isFiled(app, source: nil, library: library)); XCTAssertEqual(spoken.count, 1)
         XCTAssertNil(model.retainedFile(app, source: nil)); XCTAssertEqual(library.unsigned.count, 1)
         XCTAssertEqual(library.unsigned.first?.provenance, .sourceDownload)
+    }
+    func testExpiredNoncooperativeDownloadIsRetainedAndRetrySavesWithoutRedownload() async throws {
+        var expiration: (@MainActor () -> Void)?, resume: CheckedContinuation<Void, Never>?
+        let entered = expectation(description: "download entered")
+        let background = BackgroundJob(system: .init(beginGrace: { _, expired in expiration = expired; return UIBackgroundTaskIdentifier(rawValue: 1) },
+            endGrace: { _ in }, requestContinued: { _ in }, cancelContinued: {}, isInBackground: { true }))
+        var downloads = 0, spoken: [String] = []
+        let model = SourcesModel(sourceStore: SourceStore(directory: base.appendingPathComponent("sources")), download: { _, directory in
+            downloads += 1
+            let file = directory.appendingPathComponent("completed.ipa")
+            try FileManager.default.copyItem(at: self.fixture, to: file)
+            await withCheckedContinuation { resume = $0; entered.fulfill() }
+            return file // deliberately returns useful bytes despite cancellation
+        }, announce: { spoken.append($0) }, background: background)
+        let app = SourceApp(id: "test", name: "Demo", bundleID: "com.demo", version: "1", size: nil, iconURL: nil,
+            downloadURL: URL(string: "https://fixture.invalid/app.ipa")!, date: nil, summary: "", developer: "")
+        let signing = try signingModel(), router = Router(); router.tab = .sources
+        let task = try XCTUnwrap(model.get(app, from: nil, signAfter: true, library: library, signing: signing, router: router))
+        await fulfillment(of: [entered], timeout: 5); expiration?(); resume?.resume(); await task.value
+        XCTAssertFalse(model.isFiled(app, source: nil, library: library)); XCTAssertTrue(spoken.isEmpty)
+        XCTAssertEqual(router.tab, .sources); XCTAssertEqual(background.activeCount, 0)
+        let retained = try XCTUnwrap(model.retainedFile(app, source: nil)); XCTAssertNotNil(try? IPAInspector.inspect(url: retained))
+        XCTAssertTrue(model.message?.contains("kept") == true)
+        await model.get(app, from: nil, signAfter: false, library: library, signing: signing, router: router)?.value
+        XCTAssertEqual(downloads, 1); XCTAssertTrue(model.isFiled(app, source: nil, library: library)); XCTAssertEqual(spoken.count, 1)
+        XCTAssertNil(model.retainedFile(app, source: nil))
+    }
+    func testImmediateBackgroundExpirationCancelsDownloadBeforeItStarts() async throws {
+        let background = BackgroundJob(system: .init(beginGrace: { _, expired in expired(); return UIBackgroundTaskIdentifier(rawValue: 1) },
+            endGrace: { _ in }, requestContinued: { _ in }, cancelContinued: {}, isInBackground: { true }))
+        let model = SourcesModel(sourceStore: SourceStore(directory: base.appendingPathComponent("sources")), download: { _, _ in XCTFail("canceled before start"); throw CancellationError() },
+            announce: { _ in XCTFail("cannot announce success") }, background: background)
+        let app = SourceApp(id: "test", name: "Demo", bundleID: "com.demo", version: "1", size: nil, iconURL: nil,
+            downloadURL: URL(string: "https://fixture.invalid/app.ipa")!, date: nil, summary: "", developer: "")
+        await model.get(app, from: nil, signAfter: false, library: library, signing: try signingModel(), router: Router())?.value
+        XCTAssertFalse(model.isFiled(app, source: nil, library: library)); XCTAssertEqual(background.activeCount, 0)
     }
     private func signedPendingAndReport() throws -> (UUID, SigningModel.Report) {
         let pending = try library.storage.reserve(kind: .signed, name: "Signed test", provenance: .waxSigned)
