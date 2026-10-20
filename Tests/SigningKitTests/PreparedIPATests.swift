@@ -292,7 +292,9 @@ final class PreparedIPATests: XCTestCase {
     func testPathReplacementCannotSwitchTheCapturedIPAOrItsPreviewIdentity() throws {
         let original = try Data(contentsOf: input)
         var replaced = false, restored = false
+        let callbackLock = NSLock()
         let lease = try prepare(progress: { p in
+            callbackLock.lock(); defer { callbackLock.unlock() }
             if p.message == "Preparing captured IPA…", !replaced {
                 try! Data("a different file at the source path".utf8).write(to: self.input, options: .atomic)
                 replaced = true
