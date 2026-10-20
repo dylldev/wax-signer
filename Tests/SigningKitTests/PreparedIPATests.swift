@@ -149,7 +149,10 @@ final class PreparedIPATests: XCTestCase {
     }
     func testExtractionLowStorageRefusesAndCleansUp() throws {
         var limits = PreparedIPA.Limits(); limits.extraction.minimumFreeBytes = Int64.max
-        XCTAssertThrowsError(try prepare(limits: limits)) { XCTAssertTrue($0 is IPAExtractor.BudgetError) }
+        XCTAssertThrowsError(try prepare(limits: limits)) {
+            // The snapshot charge can refuse first (scratchLimit); extraction refuses if it gets that far.
+            XCTAssertTrue($0 is IPAExtractor.BudgetError || $0 as? PreparedIPA.Failure == .scratchLimit, "\($0)")
+        }
         XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path).contains { $0.hasPrefix("prepared-") })
     }
     func testUnknownAndIncompatibleOverridesAreRejected() throws {
