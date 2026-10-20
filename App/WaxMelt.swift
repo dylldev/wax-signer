@@ -5,12 +5,16 @@ import SwiftUI
 struct WaxMelt: View {
     let progress: Double
     var height: CGFloat = 230
+    var isVisible = true
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    private var animates: Bool { isVisible && scenePhase == .active && !reduceMotion && progress < 1 }
+
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !animates)) { timeline in
             Canvas { context, size in
-                draw(&context, size, time: reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate)
+                draw(&context, size, time: animates ? timeline.date.timeIntervalSinceReferenceDate : 0)
             }
         }
         .frame(height: height)

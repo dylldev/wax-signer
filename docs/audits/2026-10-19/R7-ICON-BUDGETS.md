@@ -1,0 +1,13 @@
+# R7 bounded custom icon acquisition and decode
+
+Partial original R7 milestone; implementation prepared, macOS CI pending. Independent branch from R2/main. Does not replace source artwork work in R16 or complete extraction/worker/scratch budgets.
+
+Confirmed baseline `8ad4b2e`: `App/SigningOptionsView.swift:161` loads the entire Photos item as Data before any cap and previews via UIImage; `Sources/SigningKit/AppEditor.swift:106` fully decodes the source image before drawing it into120/152px contexts. Encoded-byte and pixel-work limits were absent. This is a resource-exhaustion risk; no fabricated measured phone crash is claimed.
+
+`BoundedIcon` streams regular transferred files with a16MiB actual-byte cap, checks first-frame metadata against64MiPixels and32,768 per dimension without multiplication overflow, then asks ImageIO for a152px thumbnail with source cache disabled. The UI gets a small canonical PNG, so preview no longer decodes a full camera image. The editor uses the same bounded thumbnail path for direct API callers, then preserves its existing120/152px output sizes, names and plist settings. First-frame/previous orientation behavior is retained; unsupported/extreme inputs receive a recovery message.
+
+Photos import uses FileRepresentation inside the provider's temporary-file lease rather than loading Data in full. A retained generation-owned task forwards cancellation to its worker and rejects stale completions on a new pick/reset/dismiss. Disk reads/ImageIO work run in a detached worker; the lease stays alive until it settles. No provider source is deleted and no signing algorithms or credential custody change. Photos itself may download/materialize a provider-owned temporary file before handing it to Wax; this API cannot bound that system-managed acquisition, only Wax's reads/decode/retention.
+
+8 regressions: bounded thumbnail output, file/Data cap and source preservation, pixel cap before decode, dimensions/overflow, bad limits/input, cancellation retaining source, and editor refusal without icon/plist publication. Existing icon/signing tests remain enabled. Offline frontend syntax parsing passed; Apple package/build/Simulator results will be recorded after actual CI.
+
+Performance: retained input<=16MiB, thumbnail bitmap<=152x152 pixels plus codec overhead; no full input-image bitmap is requested. Actual codec auxiliary allocations/CPU and provider/iPhone behavior remain unmeasured. Up to64MiPixels includes48MP camera images within byte/dimension limits. Oversized inputs formerly attempted now fail explicitly. Physical Photos/iCloud transfer, rapid selection/reset/dismiss and VoiceOver busy/error feedback still need device testing. No deployment or physical installation/launch claims.

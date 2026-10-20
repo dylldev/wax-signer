@@ -73,8 +73,8 @@ public final class LoopbackHost: InstallHost, @unchecked Sendable {
     /// What to tell the person when the transfer did not finish. `served` is whether iOS ever fetched the IPA here.
     public static func transferFailureMessage(served: Bool) -> String {
         served
-            ? "The download stopped before the end, so nothing was installed. Try again."
-            : "iOS never asked this phone for the app, so nothing was installed. You may have cancelled the install prompt. "
+            ? "The download stopped before the end. Wax could not confirm installation. Retry delivery or export the signed IPA."
+            : "iOS never asked this phone for the app. The installation outcome is unknown; you may have cancelled the install prompt. "
               + "If not, this network may be redirecting the install name: try another network, switch Install host to My server, "
               + "or Export the signed IPA from the IPA tab."
     }

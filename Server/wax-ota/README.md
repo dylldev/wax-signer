@@ -48,3 +48,13 @@ To update the service later, copy the new `wax_ota.py` over `/opt/wax-ota/wax_ot
 
 The Caddy settings the installer uses are in `Caddyfile.example`. Do not enable access logs for `/ota/*`:
 paths contain the secret id. iOS needs the correct `Content-Type` for `.ipa` and `.plist`.
+
+## Upload transaction guarantees (R5)
+
+Each session admits one PUT or DELETE at a time; an overlapping request gets HTTP 409 and should retry after the current request finishes. Other sessions continue, up to 16 admitted body readers (503 when busy). Body idle timeout is 60 seconds; a total deadline applies to actual read chunks. Header reads have a 30-second idle timeout. Existing Caddy request-size limits and bearer-token checks remain mandatory. Reverse-proxy global header/connection limits should also be set for the operator's traffic; this stdlib service is not a general Internet edge.
+
+Each request writes its own hidden, unpredictable `.part` file, verifies the complete declared body/hash, flushes it, then atomically renames to the requested artifact. Failures before publication preserve previous bytes. Responses follow owned-temporary cleanup and session release. Cleanup failures retain hidden quota-counted files for TTL collection; Caddy hides these files. Active sessions are excluded from GC and DELETE. GC never follows session symlinks.
+
+The optional hash cache uses inode/size/mtime only as a candidate prefilter; a hit also requires streaming SHA-256 over the actual file while that session is protected from mutations/GC. Other sessions remain free to progress. The IPA and cache are two renames, not one transaction: a crash or cache-write failure yields a safe cache miss. Once IPA publication succeeds, a cache failure returns 201 with a warning because the requested IPA bytes really committed. Plain-text pre-R5 cache records become misses until uploaded again. Sequential replacement remains supported; callers must not treat a session as immutable across later explicit uploads. No power-loss or multiple backend-process coordination guarantee is claimed. Run exactly one backend process per storage root.
+
+`python3 -m unittest discover -s Server/wax-ota -p 'test_*.py'` includes event-synchronized same-session conflicts, different-session progress, active GC/DELETE, aborted bodies, publication/cache/cleanup faults and containment. No server is deployed by these tests.

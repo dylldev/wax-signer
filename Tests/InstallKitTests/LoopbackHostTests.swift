@@ -280,5 +280,13 @@ final class LoopbackHostTests: XCTestCase {
         catch { XCTAssertTrue(error.localizedDescription.contains("empty")) }
         XCTAssertEqual(host.activeConnectionCount, 0)
     }
+    func testIncompleteDeliveryNeverClaimsToObserveTheOSInstallOutcome() {
+        for served in [true, false] {
+            let text = LoopbackHost.transferFailureMessage(served: served)
+            XCTAssertFalse(text.contains("nothing was installed"))
+            XCTAssertFalse(text.contains("installation failed"))
+            XCTAssertTrue(text.contains("could not confirm installation") || text.contains("outcome is unknown"))
+        }
+    }
 
 }

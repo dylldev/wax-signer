@@ -145,7 +145,7 @@ final class IdentityTester: ObservableObject {
                     state = .waiting(secondsLeft: left)
                     if detected() {
                         record(.installed, fingerprint)
-                        state = .finished(.installed, "Wax Probe was detected. Launch it to confirm it opens; other apps and profiles may behave differently.")
+                        state = .finished(.installed, InstallProbeMessaging.detected)
                         return
                     }
                     try await pause()
@@ -153,7 +153,7 @@ final class IdentityTester: ObservableObject {
                 try Task.checkCancellation()
                 guard operationID == generation, ota.owns(session) else { return }
                 record(.failed, fingerprint)
-                state = .finished(.failed, "Wax Probe was not detected before the timeout. This does not prove iOS rejected it. Retry if you canceled the prompt.")
+                state = .finished(.failed, InstallProbeMessaging.notDetected)
             } catch {
                 guard operationID == generation else { return }
                 state = .problem(Task.isCancelled || error is CancellationError
