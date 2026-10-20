@@ -1,0 +1,200 @@
+{
+  "baseline": "8ad4b2eed8b062b0ddb419f33fa0f858ff0b0379",
+  "original_open_count": 24,
+  "prs": [
+    {
+      "number": 3,
+      "original_head": "2a045f98c18ae2d09fc881c192c13b3828f9f610",
+      "original_branch": "codex/r3-durable-library",
+      "original_base": "main",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 4,
+      "original_head": "45342312868f6e31af28f1b7402edcdc55631b2e",
+      "original_branch": "codex/r4-distribution-correctness",
+      "original_base": "main",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 5,
+      "original_head": "3e30326629fa1db3536b0e03dd994122b502fa47",
+      "original_branch": "codex/r5-ota-upload-reliability",
+      "original_base": "main",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 6,
+      "original_head": "049d56ded87f3f0f3493aebea2e03d78962d0bec",
+      "original_branch": "codex/master-roadmap-execution",
+      "original_base": "main",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 7,
+      "original_head": "3ef32fec540cc7af3ea979ce9cb2b17a42786d8a",
+      "original_branch": "codex/r6-app-id-prefix",
+      "original_base": "main",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 8,
+      "original_head": "be5c53c6a63c0f8d5dd2a86e41f1f0b90a74d249",
+      "original_branch": "codex/r14-source-cache-transactions",
+      "original_base": "main",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 9,
+      "original_head": "6d4ccf0e8bfeee2d4bc22b06cccc4e1c9d2cd6ef",
+      "original_branch": "codex/r13-performance-evidence",
+      "original_base": "main",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 10,
+      "original_head": "023a29b67390575f1815b99c8526ccbbd5822880",
+      "original_branch": "codex/r7-download-budgets",
+      "original_base": "main",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 11,
+      "original_head": "afb1ce598c4de957c9edaecc555cecdd77570a65",
+      "original_branch": "codex/r12-probe-conformance",
+      "original_base": "main",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 12,
+      "original_head": "e60774128ce0d7b48c679af4583d5afb9356bb85",
+      "original_branch": "codex/r9-responsive-import",
+      "original_base": "codex/r3-durable-library",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 13,
+      "original_head": "0a044e02d753c93d65b1200700a206532e50183c",
+      "original_branch": "codex/r8-loopback-session-ownership",
+      "original_base": "main",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 14,
+      "original_head": "0760cf52adb02a47cfb5ae0dcb853a20a27f147a",
+      "original_branch": "codex/r14-bucket-cleanup-ledger",
+      "original_base": "codex/r3-durable-library",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 15,
+      "original_head": "73d3020f92781a3978e7ba7a857537fb48a04f91",
+      "original_branch": "codex/r10-install-observation-language",
+      "original_base": "main",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 16,
+      "original_head": "035c0ddc3e6c91667747644e9ff07ec07d074b99",
+      "original_branch": "codex/r16-pause-hidden-animation",
+      "original_base": "main",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 17,
+      "original_head": "731e5fc46d30e0c1520c7b561bce6687dc691932",
+      "original_branch": "codex/r8-background-job-ownership",
+      "original_base": "codex/r3-durable-library",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 18,
+      "original_head": "524ef773ab58784440347165bdde65fc106cefb0",
+      "original_branch": "codex/r11-release-candidate-gate",
+      "original_base": "codex/r4-distribution-correctness",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 19,
+      "original_head": "b7edd93e975cbdb48a90169f2aa6f159363d8634",
+      "original_branch": "codex/r8-ota-session-ownership",
+      "original_base": "codex/r8-session-prerequisites",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 20,
+      "original_head": "de21fa573a27f19293a112c9db5d8465266c5230",
+      "original_branch": "codex/r7-install-response-budgets",
+      "original_base": "codex/r14-bucket-cleanup-ledger",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 21,
+      "original_head": "c8248a8f0385a460a59864e1c31e3224984bcee5",
+      "original_branch": "codex/r15-read-only-signing-plan",
+      "original_base": "codex/r6-app-id-prefix",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 22,
+      "original_head": "698b741c0d679a78b3b0fc29c20a6ad9df43ec0f",
+      "original_branch": "codex/r7-icon-input-budgets",
+      "original_base": "main",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 23,
+      "original_head": "1d6f207f0cdb08ab0424d990fd2daebf074a064d",
+      "original_branch": "codex/r7-extraction-budgets",
+      "original_base": "main",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 24,
+      "original_head": "11150a48c393f7ab20b4b6add6c6540a65db2531",
+      "original_branch": "codex/r8-signing-cancellation",
+      "original_base": "codex/r8-signing-cancellation-base",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 25,
+      "original_head": "a33156f230cece7d07db0704c127c73992213f50",
+      "original_branch": "codex/r8-background-expiration",
+      "original_base": "codex/r8-signing-cancellation",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    },
+    {
+      "number": 26,
+      "original_head": "a3774382c5b1465493d65efe08c243104fa27db6",
+      "original_branch": "codex/r7-source-object-budgets",
+      "original_base": "main",
+      "disposition": "candidate verification pending",
+      "merge_sha": null
+    }
+  ],
+  "integration_ci": null,
+  "final_main": null
+}

@@ -21,6 +21,27 @@ final class SigningPlanTests: XCTestCase {
         XCTAssertEqual(preview.bundles[0].profile.profileName, try ProvisioningProfile.parse(FixtureData.profileWildcardAll).info.name)
         try before.verifyTree()
     }
+    func testCanceledOwnerCannotEnterSharedPlanningOrDirectPreparation() throws {
+        let credentials = try TestCredentials(), before = try snapshot(), token = SigningCancellation()
+        token.cancel(); var options = SigningOptions(); options.cancellation = token
+        XCTAssertThrowsError(try plan(credentials, options: options)) { XCTAssertTrue($0 is CancellationError) }
+        XCTAssertThrowsError(try BundleSigner.sign(appDirectory: app, identity: credentials.signer,
+            certificateTeamID: credentials.loaded.teamID, profiles: ProfileSet(single: .parse(FixtureData.profileWildcardAll)), options: options)) {
+            XCTAssertTrue($0 is CancellationError)
+        }
+        try before.verifyTree()
+    }
+    func testCancelAfterPreviewRefusesFrozenExecutionWithoutMutatingTree() throws {
+        let credentials = try TestCredentials(), token = SigningCancellation()
+        var options = SigningOptions(); options.cancellation = token
+        let preview = try plan(credentials, options: options), before = try snapshot()
+        token.cancel()
+        XCTAssertThrowsError(try BundleSigner.sign(plan: preview, identity: credentials.signer)) { XCTAssertTrue($0 is CancellationError) }
+        try before.verifyTree()
+        XCTAssertThrowsError(try BundleSigner.sign(plan: preview, identity: credentials.signer)) {
+            XCTAssertTrue($0.localizedDescription.contains("already attempted"))
+        }
+    }
     func testPlanExecutionUsesExactlyPreviewedProfilesAndEntitlements() throws {
         let credentials = try TestCredentials(), preview = try plan(credentials)
         let result = try BundleSigner.sign(plan: preview, identity: credentials.signer)
