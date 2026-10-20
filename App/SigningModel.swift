@@ -514,7 +514,7 @@ final class SigningModel: ObservableObject {
 
     nonisolated static func describe(_ status: ProfileSignatureStatus) -> String {
         switch status {
-        case .appleChainVerified: return "signed by an Apple chain"
+        case .appleChainVerified: return "CMS intact; chain reaches a pinned Apple root. Profile-signing eligibility is not evaluated."
         case .signatureValidButUntrusted: return "profile signature intact but not shown to be Apple's"
         case .invalid(let why): return "profile signature invalid (\(why))"
         }
