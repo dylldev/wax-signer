@@ -1,0 +1,9 @@
+# R14 milestone: source cache and validator transactions
+
+This is one independent subtask of original R14, not completion of credential/Keychain/bucket cleanup migrations. Baseline 8ad4b2e SourceStore.refresh wrote cache/ETag outside its source-index lock and reused old ETag when a new 200 omitted it. A removed source's in-flight refresh could republish cache; older responses could overwrite newer ones.
+
+Refresh now snapshots a per-source generation and coherent cache/validator under lock, fetches outside the lock, then validates source membership/generation before serialized cache/index publication. Remove invalidates refresh ownership. New 200 without ETag clears the old validator. Validator removal precedes cache replacement: interruptions produce an unconditional fetch, not old-validator/new-content 304 reuse. Index-write failure restores in-memory metadata and throws, while any newly written cache retains its own matching validator. This does not claim the cache and index form one crash-atomic transaction. Existing source files/credential APIs are unchanged.
+
+Five new XCTest regressions cover missing ETag, remove during refresh, out-of-order refreshes, cache-write failure and index-write failure. Six isolated transaction checks compiled and passed against the actual SourceStore/SourceParser sources in Linux, using only a temporary FoundationNetworking import adapter and a seeded local index; URLSession/Apple tests were not executed by that harness. Swift frontend parsing passed. Full macOS CI is required and recorded in the PR/master report.
+
+Scope/limits: one SourceStore instance owns its source index. No claim of multi-process/multiple independent store-instance transactions, credential secret migration, bucket cleanup identity or device upgrade verification. Those original R14 requirements remain NOT COMPLETED. No source is preloaded and no remote telemetry is added.

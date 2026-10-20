@@ -9,9 +9,10 @@ public struct SavedSource: Codable, Identifiable, Equatable, Sendable {
 }
 
 public enum SourceStoreError: Error, LocalizedError, Equatable {
-    case notHTTPS, http(Int), tooLarge, unreachable(String)
+    case notHTTPS, http(Int), tooLarge, unreachable(String), refreshSuperseded
     public var errorDescription: String? {
         switch self {
+        case .refreshSuperseded: "This source changed or was removed during refresh. Refresh the current source again."
         case .notHTTPS: "A source address must start with https://."
         case .http(let c): "The source server answered with an error (HTTP \(c))."
         case .tooLarge: "That source file is too large to load."
@@ -27,6 +28,7 @@ public final class SourceStore: @unchecked Sendable {
     private let session: URLSession
     private let lock = NSLock()
     private var saved: [SavedSource]
+    private var refreshing: [UUID: UUID] = [:]
 
     static let maxBytes = 64 * 1024 * 1024
     private var indexURL: URL { directory.appendingPathComponent("sources.json") }
@@ -43,6 +45,10 @@ public final class SourceStore: @unchecked Sendable {
     public var sources: [SavedSource] { lock.withLock { saved } }
 
     public func cached(_ id: UUID) -> SourceRepo? {
+        lock.withLock { cachedLocked(id) }
+    }
+
+    private func cachedLocked(_ id: UUID) -> SourceRepo? {
         (try? Data(contentsOf: cacheURL(id))).flatMap { try? JSONDecoder().decode(SourceRepo.self, from: $0) }
     }
 
@@ -75,24 +81,49 @@ public final class SourceStore: @unchecked Sendable {
             saved.removeAll { $0.id == id }
             do { try saveIndexLocked() }
             catch { saved = before; throw error }
+            refreshing[id] = nil
+            removeCache(for: id)
         }
-        removeCache(for: id)
     }
 
     @discardableResult
     public func refresh(_ id: UUID) async throws -> SourceRepo {
-        guard let source = sources.first(where: { $0.id == id }) else { throw SourceError.noApps }
-        let known = cached(id)
-        let etag = known == nil ? nil : (try? String(contentsOf: etagURL(id), encoding: .utf8))
-        let (repo, newTag) = try await fetch(source.url, etag: etag, fallback: known)
-        try write(repo: repo, etag: newTag ?? etag, for: id)
-        lock.withLock {
-            if let i = saved.firstIndex(where: { $0.id == id }) {
-                saved[i].name = repo.name; saved[i].appCount = repo.apps.count; saved[i].updated = Date()
-            }
+        let refresh = try beginRefresh(id)
+        let (repo, newTag) = try await fetch(refresh.source.url, etag: refresh.etag, fallback: refresh.known)
+        return try finishRefresh(refresh, repo: repo, etag: newTag)
+    }
+
+    // Split around the await so tests can deterministically reorder/remove refreshes.
+    struct Refresh {
+        let source: SavedSource
+        let known: SourceRepo?
+        let etag: String?
+        let token: UUID
+    }
+    func beginRefresh(_ id: UUID) throws -> Refresh {
+        try lock.withLock {
+            guard let source = saved.first(where: { $0.id == id }) else { throw SourceStoreError.refreshSuperseded }
+            let known = cachedLocked(id), token = UUID()
+            let tag = known == nil ? nil : (try? String(contentsOf: etagURL(id), encoding: .utf8))
+            refreshing[id] = token
+            return Refresh(source: source, known: known, etag: tag, token: token)
         }
-        try saveIndex()
-        return repo
+    }
+    func finishRefresh(_ refresh: Refresh, repo: SourceRepo, etag: String?) throws -> SourceRepo {
+        try lock.withLock {
+            let id = refresh.source.id
+            guard refreshing[id] == refresh.token, let i = saved.firstIndex(where: { $0.id == id && $0.url == refresh.source.url }) else {
+                throw SourceStoreError.refreshSuperseded
+            }
+            // Cache + ETag + metadata commit serialize with snapshots/removal. Invalidating the old
+            // ETag first makes interruption a safe unconditional re-fetch, never stale-cache 304 reuse.
+            try write(repo: repo, etag: etag, for: id)
+            let before = saved
+            saved[i].name = repo.name; saved[i].appCount = repo.apps.count; saved[i].updated = Date()
+            do { try saveIndexLocked() } catch { saved = before; throw error }
+            refreshing[id] = nil
+            return repo
+        }
     }
 
     // MARK: Network
@@ -129,6 +160,9 @@ public final class SourceStore: @unchecked Sendable {
 
     private func write(repo: SourceRepo, etag: String?, for id: UUID) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // Remove the prior validator before replacing its content; no failure can pair old ETag/new bytes.
+        let validator = etagURL(id)
+        if FileManager.default.fileExists(atPath: validator.path) { try FileManager.default.removeItem(at: validator) }
         try JSONEncoder().encode(repo).write(to: cacheURL(id), options: .atomic)
         if let etag { try Data(etag.utf8).write(to: etagURL(id), options: .atomic) }
     }
