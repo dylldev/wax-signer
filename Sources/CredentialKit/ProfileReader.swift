@@ -33,6 +33,16 @@ enum ProfileReader {
         guard let appID = entitlements["application-identifier"] as? String, !appID.isEmpty else {
             throw CredentialError.profileMissingKey("Entitlements.application-identifier")
         }
+        // TN2311: the App ID prefix is not necessarily the Team ID. The actual entitlement
+        // binds the selected prefix; a declared list must agree, not override it arbitrarily.
+        let prefix = String(appID.prefix { $0 != "." })
+        guard prefix.range(of: "^[A-Z0-9]{10}$", options: .regularExpression) != nil,
+              appID.hasPrefix(prefix + "."), appID.count > prefix.count + 1 else { throw CredentialError.profileInvalidPlist }
+        if let declared = plist["ApplicationIdentifierPrefix"] {
+            guard let prefixes = declared as? [String], !prefixes.isEmpty,
+                  prefixes.allSatisfy({ $0.range(of: "^[A-Z0-9]{10}$", options: .regularExpression) != nil }),
+                  Set(prefixes).count == prefixes.count, prefixes.contains(prefix) else { throw CredentialError.profileInvalidPlist }
+        }
         let certs = try required("DeveloperCertificates", [Data].self)
 
         guard expiration > now else { throw CredentialError.profileExpired(expiration) }

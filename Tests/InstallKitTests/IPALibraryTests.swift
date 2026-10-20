@@ -32,12 +32,13 @@ final class IPALibraryTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: lib.url(for: a)).count, 10)
     }
 
-    func testAddingTheSameAppAgainReplacesTheOldEntry() throws {
+    func testExactDuplicateReusesStableEntryWithoutDeletingOriginal() throws {
         let lib = IPALibrary(root: root)
         let first = try lib.add(file: try file("a.ipa", bytes: 10), kind: .unsigned, name: "A", version: "1", bundleID: "com.a")
         let second = try lib.add(file: try file("a2.ipa", bytes: 10), kind: .unsigned, name: "A", version: "1", bundleID: "com.a")
         XCTAssertEqual(lib.entries(.unsigned).map(\.id), [second.id])
-        XCTAssertFalse(FileManager.default.fileExists(atPath: lib.url(for: first).path))
+        XCTAssertEqual(first.id, second.id)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: lib.url(for: first).path))
     }
 
     func testRemoveDeletesTheFileAndTheEntry() throws {
@@ -48,10 +49,10 @@ final class IPALibraryTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: lib.url(for: e).path))
     }
 
-    func testEntriesSurviveReloadAndMissingFilesAreDropped() throws {
+    func testEntriesSurviveReloadAndMissingFilesAreHidden() throws {
         let lib = IPALibrary(root: root)
         let keep = try lib.add(file: try file("a.ipa", bytes: 10), kind: .unsigned, name: "A", version: "1", bundleID: "com.a")
-        let gone = try lib.add(file: try file("b.ipa", bytes: 10), kind: .unsigned, name: "B", version: "1", bundleID: "com.b")
+        let gone = try lib.add(file: try file("b.ipa", bytes: 11), kind: .unsigned, name: "B", version: "1", bundleID: "com.b")
         try FileManager.default.removeItem(at: lib.url(for: gone))
         let reloaded = IPALibrary(root: root)
         XCTAssertEqual(reloaded.entries(.unsigned).map(\.id), [keep.id])

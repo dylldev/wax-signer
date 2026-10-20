@@ -44,7 +44,8 @@ public struct ProfileInfo: Codable, Equatable, Identifiable, Sendable {
     public let appIDName: String?
     public let teamID: String
     public let teamName: String?
-    /// Full application identifier, e.g. `TEAMID.com.example.app` or `TEAMID.*`.
+    /// Full application identifier, e.g. `PREFIX.com.example.app` or `PREFIX.*`.
+    /// App ID prefixes can differ from the certificate/profile Team ID.
     public let applicationIdentifier: String
     public let platforms: [String]
     public let creationDate: Date?
@@ -58,10 +59,16 @@ public struct ProfileInfo: Codable, Equatable, Identifiable, Sendable {
     public let certificateSHA1s: [String]
     public let importedAt: Date
 
-    /// Application identifier without the team prefix, e.g. `com.example.app` or `*`.
+    /// App ID prefix from the profile entitlement; independent of TeamIdentifier.
+    /// Computed from the existing persisted field, so legacy indexes need no destructive migration.
+    public var applicationIdentifierPrefix: String {
+        String(applicationIdentifier.prefix { $0 != "." })
+    }
+
+    /// Application identifier without its App ID prefix, e.g. `com.example.app` or `*`.
     public var bundleIdentifierPattern: String {
-        applicationIdentifier.hasPrefix(teamID + ".")
-            ? String(applicationIdentifier.dropFirst(teamID.count + 1)) : applicationIdentifier
+        applicationIdentifier.hasPrefix(applicationIdentifierPrefix + ".")
+            ? String(applicationIdentifier.dropFirst(applicationIdentifierPrefix.count + 1)) : applicationIdentifier
     }
 
     public func isExpired(at date: Date) -> Bool { date > expirationDate }

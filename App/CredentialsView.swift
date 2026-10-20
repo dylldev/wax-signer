@@ -7,6 +7,7 @@ struct CredentialsView: View {
     @EnvironmentObject private var model: CredentialsModel
     @EnvironmentObject private var ota: OTAInstallModel
     @EnvironmentObject private var tester: IdentityTester
+    @EnvironmentObject private var router: Router
     @Environment(\.openURL) private var openURL
     private enum ImportKind { case certificate, profile }
     // One picker for both kinds. It is the system document picker in copy mode (see DocumentPicker).
@@ -35,6 +36,11 @@ struct CredentialsView: View {
                         importKind = .profile; showImporter = true
                     }
 
+                    if model.canRetryPassword {
+                        WaxFeedbackCard(tone: .bad, text: "The certificate was not imported. Its encrypted bytes are kept in memory so you can retry without choosing the file again.")
+                        Button("Retry password") { model.requestPasswordRetry() }.buttonStyle(WaxSecondaryButtonStyle())
+                        Button("Discard pending import") { password = ""; model.cancelPassword() }.font(.footnote)
+                    }
                     WaxSectionLabel(text: "Identities")
                     if let successNote { WaxFeedbackCard(tone: .ok, text: successNote) }
                     if model.certificates.isEmpty {
@@ -87,6 +93,12 @@ struct CredentialsView: View {
             .toolbarBackground(.visible, for: .navigationBar)
             }
         }
+        .onChange(of: model.busyMessage) { _, busy in if busy != nil { successNote = nil } }
+        .onDisappear { password = ""; model.dismissPassword() }
+        // Tabs stay mounted behind opacity, so onDisappear alone does not clear an abandoned prompt.
+        .onChange(of: router.tab) { _, tab in
+            if tab != .settings { password = ""; model.dismissPassword() }
+        }
         .sheet(isPresented: $showImporter) {
             DocumentPicker { picked in
                 showImporter = false
@@ -105,6 +117,7 @@ struct CredentialsView: View {
                 VStack(spacing: 10) {
                     WaxProgressBar(progress: nil)
                     Text(busy).font(.footnote).foregroundStyle(Wax.text)
+                    if model.canCancelReading { Button("Cancel opening") { password = ""; model.cancelPassword() } }
                 }
                 .padding(16).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
@@ -145,6 +158,7 @@ struct CredentialsView: View {
             WaxRow(icon: icon, title: title, subtitle: subtitle) { WaxLinkText(text: "Import") }
         }
         .buttonStyle(.plain)
+        .disabled(model.busyMessage != nil)
     }
 
     private func emptyCard(_ title: String, _ text: String) -> some View {
@@ -185,7 +199,7 @@ struct CredentialsView: View {
                 ForEach(model.profiles) { profile in compatibilityRow(cert, profile) }
             }
             WaxDivider()
-            WaxDestructiveRow(title: "Delete certificate") { certToDelete = cert }
+            WaxDestructiveRow(title: "Delete certificate") { certToDelete = cert }.disabled(model.busyMessage != nil)
         }
     }
 
@@ -257,6 +271,8 @@ struct CredentialsView: View {
             WaxDivider()
             WaxKV(key: "Team", value: profile.teamName.map { "\($0) (\(profile.teamID))" } ?? profile.teamID)
             WaxDivider()
+            WaxKV(key: "App ID prefix", value: profile.applicationIdentifierPrefix)
+            WaxDivider()
             WaxKV(key: "Type (inferred)", value: kind(profile))
             WaxDivider()
             WaxKV(key: "Devices", value: devices(profile))
@@ -265,7 +281,7 @@ struct CredentialsView: View {
             WaxDivider()
             WaxKV(key: "Status", value: profile.isExpired(at: Date()) ? "Expired" : "Not expired")
             WaxDivider()
-            WaxDestructiveRow(title: "Delete profile") { profileToDelete = profile }
+            WaxDestructiveRow(title: "Delete profile") { profileToDelete = profile }.disabled(model.busyMessage != nil)
         }
     }
 

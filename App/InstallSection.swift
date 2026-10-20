@@ -82,6 +82,7 @@ struct InstallSection: View {
                 Button("Save keys") { model.saveBucketKeys() }.disabled(model.accessKeyDraft.isEmpty || model.secretKeyDraft.isEmpty)
             }
             Button("Test the bucket") { model.testBucket() }
+            Button("Retry expired upload cleanup") { model.retryBucketCleanup() }
             if let note = model.bucketNote {
                 if note.hasPrefix("Checking") { ProgressView(note).font(.footnote) }
                 else { Label(note, systemImage: note.contains("accepted") ? "checkmark.circle.fill" : "exclamationmark.circle.fill")

@@ -10,19 +10,27 @@ extension ProfileInfo {
 
 /// The one place the application-identifier pattern of a profile is interpreted.
 public enum ProfileFitness {
-    /// Whether `bundleIdentifier` sits inside this profile's own application identifier.
+    /// Legacy label retained for source compatibility. This argument must be the App ID prefix.
     public static func permits(bundleIdentifier: String, profileApplicationIdentifier appID: String, teamID: String) -> Bool {
-        guard appID.hasPrefix(teamID + ".") else { return false }
-        let pattern = appID.dropFirst(teamID.count + 1)
+        permits(bundleIdentifier: bundleIdentifier, profileApplicationIdentifier: appID, applicationIdentifierPrefix: teamID)
+    }
+    public static func rewrittenIdentifier(profileApplicationIdentifier appID: String, teamID: String, original: String) -> String {
+        rewrittenIdentifier(profileApplicationIdentifier: appID, applicationIdentifierPrefix: teamID, original: original)
+    }
+
+    /// Whether `bundleIdentifier` sits inside this profile's own application identifier.
+    public static func permits(bundleIdentifier: String, profileApplicationIdentifier appID: String, applicationIdentifierPrefix prefix: String) -> Bool {
+        guard appID.hasPrefix(prefix + ".") else { return false }
+        let pattern = appID.dropFirst(prefix.count + 1)
         if pattern == "*" { return true }
         if pattern.hasSuffix(".*") { return bundleIdentifier.hasPrefix(String(pattern.dropLast())) }
         return pattern == bundleIdentifier
     }
 
     /// The identifier the profile forces onto an app, or `original` when the wildcard allows keeping it.
-    public static func rewrittenIdentifier(profileApplicationIdentifier appID: String, teamID: String, original: String) -> String {
-        guard appID.hasPrefix(teamID + ".") else { return appID }
-        let pattern = appID.dropFirst(teamID.count + 1)
+    public static func rewrittenIdentifier(profileApplicationIdentifier appID: String, applicationIdentifierPrefix prefix: String, original: String) -> String {
+        guard appID.hasPrefix(prefix + ".") else { return appID }
+        let pattern = appID.dropFirst(prefix.count + 1)
         if pattern == "*" { return original }
         if pattern.hasSuffix(".*") {
             let last = original.split(separator: ".").last.map(String.init) ?? original
