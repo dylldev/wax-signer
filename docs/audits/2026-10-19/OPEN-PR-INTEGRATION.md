@@ -140,3 +140,50 @@ Latest additions: #23 is independent extraction budgets; #24 depends on #19 + #2
 #25 subsequently passed final-head run39345842055:612 package/13 skips,317 Simulator/11 skips,0 failures; unsigned iOS build and scripts passed. Its original pending text above describes the inventory refresh time, not the final observed result. Full combined #15/#11/#21 integration still has not been built or reviewed.
 
 #26 subsequently passed final-head run39346300960:553 package/13 skips,240 Simulator/11 skips,0 failures; unsigned iOS build,45 server/3 source Python and both shell suites passed. All new parser/cache-refusal regressions executed. Thus all8 new source heads #19–#26 in this continuation are individually green. This does not resolve the8 documented pairwise conflicts or establish a full combined-integration test result.
+
+
+## Authorized integration checkpoint — 2026-10-20
+
+The latest user instruction explicitly authorizes verified integration/merging/closure of the existing source PRs #3–#26. Earlier no-merge instructions in historical sections are superseded for this frozen inventory; newly developed Phase7 features remain separately review-gated. No branch protection, required approval or failing check may be bypassed. Distribution repository/release/deployment/production credentials remain out of scope.
+
+Original source main8ad4b2e; original24 open PRs all had green frozen-head checks, zero unresolved review threads and no configured main protection rules. The one PR3 general issue comment was inspected as nonblocking design advice, not a formal change request; no external promotional link was followed. Combined branch codex/verified-roadmap-integration, PR#27, ef427d4dde578d36d244ade0233005feea915aae passed CI39349296379:695 package tests/13 skips,366 Simulator tests/11 skips,0 failures; unsigned iOS build;55 server/26 source-release/6 probe tests; both shell suites; independent codesign/CMS fixtures. This success preceded every main merge.
+
+Three explicit combined resolutions retain both loopback test suites, owned probe tasks+source-built build1+central truthful messages, and shared immutable planning/exact-CMS trust plus cancellation checks. Four new interaction regressions are on #27 and will be integrated only as a narrow follow-up after existing source changes reach main; #27 is not a wholesale composite squash shortcut.
+
+### Merged and tree-verified so far
+
+| PR | Original head | GitHub merge SHA | Method |
+|---|---|---|---|
+| #3 | `2a045f98c18ae2d09fc881c192c13b3828f9f610` | `8da5dc70be11b50e48f5eeb1a92bd6adcccbe20c` | merge |
+| #4 | `45342312868f6e31af28f1b7402edcdc55631b2e` | `8709429707cd44c64a90d72df063f77d8f58daa3` | merge |
+| #5 | `3e30326629fa1db3536b0e03dd994122b502fa47` | `cce1e28dceab64efc9c8d58590498f7a03ee53b2` | squash |
+| #7 | `3ef32fec540cc7af3ea979ce9cb2b17a42786d8a` | `485aedb31675dc1b09d11fc1fee9f65e3e614f75` | merge |
+| #8 | `be5c53c6a63c0f8d5dd2a86e41f1f0b90a74d249` | `207eaa40dc99bab2d3f242e3620e3b4da7b37b27` | squash |
+| #9 | `6d4ccf0e8bfeee2d4bc22b06cccc4e1c9d2cd6ef` | `e6b56ad6af1b061151892c0ec2fd4ae62d3c49bf` | squash |
+| #10 | `023a29b67390575f1815b99c8526ccbbd5822880` | `bd16bcd155a42b0ca53841994abc2490599dcb38` | squash |
+| #26 | `a3774382c5b1465493d65efe08c243104fa27db6` | `b5cba2f02aada53b76d0b059996aa773d2df615d` | squash |
+| #12 | `e60774128ce0d7b48c679af4583d5afb9356bb85` | `a50e1632e5c22293f527e75f11ec4e837646c430` | squash |
+| #13 | `0a044e02d753c93d65b1200700a206532e50183c` | `c0304d548411933b799bb1cb4524c337f9cc0eec` | merge |
+| #14 | `0760cf52adb02a47cfb5ae0dcb853a20a27f147a` | `d40c4a824a0053780cb232fdf8a37ce45ef8204f` | merge |
+| #17 | `731e5fc46d30e0c1520c7b561bce6687dc691932` | `ccd994f16daafd692fe93bf1191b018a67d9e8c4` | merge |
+| #11 | `afb1ce598c4de957c9edaecc555cecdd77570a65` | `ff3e9d6ace4291afcb05d6b337afaa72200f95bb` | squash |
+| #20 | `de21fa573a27f19293a112c9db5d8465266c5230` | `2f9612fdcb1ffbab387e0ca82bff33257968c772` | squash |
+| #23 | `1d6f207f0cdb08ab0424d990fd2daebf074a064d` | `05a4c6961b9dd92f580615c635bde49c791dcf4b` | merge |
+| #22 | `698b741c0d679a78b3b0fc29c20a6ad9df43ec0f` | `de7acde45465b374dadcc3600528c4ac69f16aa2` | squash |
+| #16 | `035c0ddc3e6c91667747644e9ff07ec07d074b99` | `201f6411b95318db0280aa13cc81b8c2619f46a7` | squash |
+| #18 | `524ef773ab58784440347165bdde65fc106cefb0` | `b4d507923de6da4de20f15017df139931d486d3d` | squash |
+| #15 | `73d3020f92781a3978e7ba7a857537fb48a04f91` | `8773c9970e9ba3691542db3a7c557d6ccf4f680f` | squash |
+
+Current main at this document's authoring is8773c9970e9ba3691542db3a7c557d6ccf4f680f (19 original PRs merged). Main checkpoint b4d507923de6da4de20f15017df139931d486d3d passed full CI39350943230:664 package/13 skips;310 Simulator/11 skips;0 failures; unsigned iOS build and55 server/26 source/6 probe/shell tests. Later R10 head0ccac854a6a40d14ecc7aafc7ede594898deb37e passed39350807268:636 package/13 skips;301 Simulator/11 skips;0 failures and unsigned build, then merged as8773c99. These are distinct verification levels, not a final-main claim.
+
+Dependency roots use GitHub-supported merge commits to retain original parent ancestry; independent leaves use squash. Before each merge: live frozen/explicitly updated head, successful applicable checks, no unresolved threads/required blocker, incremental file scope against original base, clean merge-tree simulation; after merge: GitHub merged state, merge SHA, exact simulated tree and main ancestry. No force-push/admin override.
+
+### Current next action
+
+Wait for PR#19 forward-integrated head4eebf6b00d8ef900c99b6754ee20993d34363ef4 / CI39352047580. Its original head b7edd93 was preserved by an ordinary forward merge with main; IdentityReadiness resolution comes from inspected/tested combined stage293b736. After success, merge19; retarget24/25 and verify only their increments; forward-integrate21 using stageb6caf50 BundleSigner shared prepare/cancellation resolution, obtain its own green CI. PR#6's updated documentation head also needs its own checks. All final dispositions, new source/regression-only #27 diff, final-main CI and safe branch cleanup still require completion.
+
+A redundant identical PR15 CI event39350807115 was canceled only after confirming same head/base/workflow/creation instant; retained39350807268 passed. Superseded intermediate main runs were canceled to conserve runners, never represented as passing. Major checkpoint39350943230 was retained through success. One transient read-only401 recovered by bounded normal API retry; no authentication settings changed.
+
+Program remains PARTIALLY COMPLETE. Original R7 packaging/provider/legacy-cache/artwork/whole-engine budgets; R15 prepared-IPA/app preview; R8 deeper cancellation/probe retention; R10 contextual history; R14 secret/accessibility migration; R16 browsing/AX; R17–R20 remain as inventoried. Device install/launch/OS expiry, actual Keychain custody and issuer-policy experiments remain unverified. Read-only packaging investigation is saved at /workspace/shared/WAX-R7-PACKAGING-NEXT.md, not implementation.
+
+Per-merge resumable state: /workspace/shared/wax-pr-integration-state.json; guarded scripts /tmp/wax-merge-one.py, /tmp/wax-forward-pr.py, /tmp/wax-cancel-obsolete-main.py, /tmp/wax-integration-progress.py. PR#27 description carries the current durable live table. Original audit artifacts remain untracked and untouched. No release/deployment/distribution or production credential change occurred.
