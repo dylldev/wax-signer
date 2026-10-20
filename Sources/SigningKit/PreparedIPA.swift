@@ -107,10 +107,10 @@ public final class PreparedIPA: @unchecked Sendable {
         guard try JSONEncoder().encode(edits).count <= 1024 * 1024 else { throw Failure.scratchLimit }
         let edited = try AppEditor.applyDetailed(edits, to: app, scratchDirectory: work,
             checkCancellation: budget.check, beforeLibraryWrite: { try budget.charge($0, directory: work) })
-        let thinningNotes = try FatMachO.thinTree(at: app)
+        let thinningNotes = try FatMachO.thinTree(at: app, scratchDirectory: work, checkpoint: budget.check, beforeWrite: { try budget.charge($0, directory: work) })
         try budget.inspect(tree: tree)
         var frozen = options
-        frozen.cancellation = owner; frozen.preparationCheck = { try budget.check() }
+        frozen.cancellation = owner; frozen.ownedScratchDirectory = work; frozen.preparationCheck = { try budget.check() }
         frozen.priorRenames.merge(edited.renames) { _, new in new }
         let plan = try BundleSigner.plan(appDirectory: app, certificateChainDER: certificateChainDER,
             certificateTeamID: certificateTeamID, profiles: profiles, options: frozen, profilePolicy: profilePolicy)

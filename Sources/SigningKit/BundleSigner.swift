@@ -23,6 +23,7 @@ public struct SigningOptions {
     public var cancellation: SigningCancellation?
     // Owned preparation deadline/resource checkpoint; never a public bypass of cancellation.
     var preparationCheck: (() throws -> Void)?
+    var ownedScratchDirectory: URL?
     func check() throws { try cancellation?.check(); try preparationCheck?() }
     public var now = Date()
     public init() {}
@@ -65,7 +66,7 @@ public enum BundleSigner {
                             profiles: ProfileSet, options: SigningOptions = SigningOptions()) throws -> SigningResult {
         var ctx = try prepare(appDirectory: appDirectory, identity: identity, certificateTeamID: certificateTeamID, profiles: profiles, options: options)
         // Validate all inputs before changing any binary in the app tree.
-        ctx.result.warnings.append(contentsOf: try FatMachO.thinTree(at: appDirectory))
+        ctx.result.warnings.append(contentsOf: try FatMachO.thinTree(at: appDirectory, scratchDirectory: options.ownedScratchDirectory, checkpoint: { try options.check() }))
         try options.check()
         try ctx.signBundle(at: appDirectory, kind: .app)
         return ctx.result
@@ -134,7 +135,7 @@ public enum BundleSigner {
             }
             var execution = ctx
             execution.identity = identity
-            execution.result.warnings.append(contentsOf: try FatMachO.thinTree(at: appDirectory))
+            execution.result.warnings.append(contentsOf: try FatMachO.thinTree(at: appDirectory, scratchDirectory: frozen.ownedScratchDirectory, checkpoint: { try frozen.check() }))
             try frozen.check()
             try execution.signBundle(at: appDirectory, kind: .app)
             return execution.result
