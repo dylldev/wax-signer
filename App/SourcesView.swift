@@ -231,7 +231,10 @@ struct SourceAppsView: View {
     }
 
     private func appRow(_ app: SourceApp) -> some View {
-        HStack(spacing: 12) {
+        let subtitle = [app.version.isEmpty ? nil : app.version,
+                        app.size.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) }]
+            .compactMap { $0 }.joined(separator: " · ")
+        return HStack(spacing: 12) {
             Button { selectedApp = app } label: {
                 HStack(spacing: 12) {
                     AsyncImage(url: app.iconURL) { image in image.resizable().scaledToFill() } placeholder: {
@@ -243,8 +246,7 @@ struct SourceAppsView: View {
                     .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(app.name).font(.callout.weight(.semibold)).foregroundStyle(Wax.text).lineLimit(2)
-                        Text([app.version.isEmpty ? nil : app.version, app.size.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) }]
-                                .compactMap { $0 }.joined(separator: " · "))
+                        Text(subtitle)
                             .font(.footnote).foregroundStyle(Wax.sub).lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -256,6 +258,7 @@ struct SourceAppsView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Details for " + app.name)
+            .accessibilityValue(subtitle)
             .accessibilityHint("Shows source-reported information and any saved IPA metadata")
             getButton(app)
         }
