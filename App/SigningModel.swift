@@ -79,8 +79,14 @@ final class SigningModel: ObservableObject {
     /// How long the last signing run took, for the progress estimate.
     private(set) var lastSignSeconds: Double = 0
     private let credentials: CredentialsModel
+    private let library: LibraryModel
+    @Published private(set) var shelfSaveState: LibraryModel.SaveState = .idle
+    private var signedPendingID: UUID?
+    private var resultGeneration = UUID()
+    private var busyOwner = UUID()
+    @Published private(set) var runningSign = false
 
-    init(credentials: CredentialsModel) { self.credentials = credentials }
+    init(credentials: CredentialsModel, library: LibraryModel? = nil) { self.credentials = credentials; self.library = library ?? .shared }
 
     /// Weights signing against uploading by how long each took on earlier runs (or sensible defaults).
     func jobProgress(uploadFraction: Double, exportOnly: Bool) -> JobProgress {
@@ -89,7 +95,7 @@ final class SigningModel: ObservableObject {
         return JobProgress(signSeconds: e.sign, uploadSeconds: exportOnly ? 0 : e.upload)
     }
 
-    func clearResult() { report = nil; errorText = nil; readyLink = nil }
+    func clearResult() { resultGeneration = UUID(); report = nil; errorText = nil; readyLink = nil; signedPendingID = nil; shelfSaveState = .idle }
 
     enum BundleIDMode: String, CaseIterable { case keep, rename }
 
@@ -110,29 +116,58 @@ final class SigningModel: ObservableObject {
     @Published private(set) var readyLink: URL?
     /// True from the tap on Sign & Install until the app has been handed over (or failed), so a second install cannot start.
     @Published private(set) var installing = false
+    private var installSession: OTAInstallModel.Session?
+
+    func ownsInstallation(_ ota: OTAInstallModel) -> Bool { installSession.map { ota.owns($0) } ?? false }
+    func cancelInstallation(ota: OTAInstallModel) { if let installSession { ota.cancel(installSession) } }
+    func startOver(ota: OTAInstallModel) { cancelInstallation(ota: ota); clearResult(); ota.resetIfIdle() }
+    func canOpenInstallLink(_ link: URL, ota: OTAInstallModel) -> Bool {
+        ota.activeSession == nil || (ownsInstallation(ota) && readyLink == link)
+    }
+    /// Notification activation can be delayed by foregrounding. It must not open over a replacement operation.
+    func openInstallLink(_ link: URL, ota: OTAInstallModel, prepare: () async throws -> Void, open: (URL) -> Void) async -> Bool {
+        guard canOpenInstallLink(link, ota: ota), !Task.isCancelled else { return false }
+        let owner = ota.activeSession?.id
+        do { try await prepare() } catch { return false }
+        guard !Task.isCancelled, owner == ota.activeSession?.id, canOpenInstallLink(link, ota: ota) else { return false }
+        open(link); return true
+    }
 
     /// One tap: sign with the chosen certificate (when there is one), then upload and hand the app to iOS.
     /// Nothing is uploaded unless signing succeeded and its self-check passed. Keeps going if Wax is sent to the
     /// background, and posts a notification when the app is ready to install.
     func signAndInstall(ota: OTAInstallModel, open: @escaping (URL) -> Void) async {
-        guard !installing else { return }
-        installing = true
+        guard !installing, !Task.isCancelled else { return }
+        let session: OTAInstallModel.Session
+        do { session = try ota.reserve() }
+        catch { errorText = error.localizedDescription; return }
+        installing = true; installSession = session
+        defer { ota.release(session); if installSession === session { installSession = nil } }
+        let cancellation = SigningCancellation()
+        ota.onRelease(of: session) { cancellation.cancel() }
+        let needsSigning = certificateID != nil
         let job = BackgroundJob.shared
         job.askForNotificationPermission()
-        job.begin(title: ipaInfo?.displayName ?? "Wax")
+        let backgroundID = job.begin(title: ipaInfo?.displayName ?? "Wax", onExpiration: {
+            cancellation.cancel()
+            ota.cancel(session)
+        })
         var succeeded = false
-        defer { job.end(success: succeeded); installing = false }
+        defer { job.end(backgroundID, success: succeeded); installing = false }
         readyLink = nil
 
         let target: InstallTarget?
-        if certificateID != nil {
-            guard let task = sign(standalone: false, storeBigFiles: ota.hostKind == .phone) else { return }
-            await task.value
-            guard let r = report, r.checkFailures.isEmpty else { return }
+        if needsSigning {
+            guard let task = sign(standalone: false, storeBigFiles: session.kind == .phone, backgroundID: backgroundID, cancellation: cancellation) else { return }
+            await withTaskCancellationHandler(operation: { await task.value }, onCancel: {
+                task.cancel()
+                Task { @MainActor in ota.cancel(session) }
+            })
+            guard !Task.isCancelled, ota.owns(session), let r = report, r.checkFailures.isEmpty else { return }
             if BundleIDGuard.replacesRunningWax(originalID: ipaInfo?.bundleIdentifier ?? "",
                                                 finalID: r.installTarget.bundleIdentifier,
                                                 runningID: Bundle.main.bundleIdentifier) {
-                ota.block(BundleIDGuard.explanation)
+                ota.fail(session, reason: BundleIDGuard.explanation)
                 return
             }
             target = r.installTarget
@@ -144,25 +179,26 @@ final class SigningModel: ObservableObject {
             let isWaxItself = ipaInfo?.executable == Bundle.main.object(forInfoDictionaryKey: "CFBundleExecutable") as? String
             if let t = target, !isWaxItself,
                t.bundleIdentifier == Bundle.main.bundleIdentifier {
-                ota.block(BundleIDGuard.explanation)
+                ota.fail(session, reason: BundleIDGuard.explanation)
                 return
             }
         }
-        guard let target else { return }
+        guard let target, !Task.isCancelled, ota.owns(session) else { return }
 
         // Mirror the upload's real progress into the system's background progress.
         let weights = jobProgress(uploadFraction: 0, exportOnly: false)
         let watcher = ota.$state.sink { state in
-            if case .uploading(let f) = state { job.update(fraction: weights.overall(sign: 1, upload: f), subtitle: "Sending to your server") }
+            if ota.owns(session), case .uploading(let f) = state { job.update(backgroundID, fraction: weights.overall(sign: 1, upload: f), subtitle: "Sending to your server") }
         }
         defer { watcher.cancel() }
 
         let uploadStart = Date()
         guard let link = await ota.upload(ipa: target.ipa, bundleIdentifier: target.bundleIdentifier,
-                                          version: target.version, build: target.build, title: target.title) else { return }
+                                          version: target.version, build: target.build, title: target.title, session: session),
+              !Task.isCancelled, ota.owns(session) else { return }
         let megabytes = Double((try? target.ipa.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) / 1_000_000
         var estimator = JobEstimator(store: UserDefaults.standard)
-        estimator.record(megabytes: megabytes, signSeconds: certificateID != nil ? lastSignSeconds : 0,
+        estimator.record(megabytes: megabytes, signSeconds: needsSigning ? lastSignSeconds : 0,
                          uploadSeconds: Date().timeIntervalSince(uploadStart))
         readyLink = link
         if UIApplication.shared.applicationState == .active {
@@ -171,64 +207,81 @@ final class SigningModel: ObservableObject {
             job.notifyIfInBackground(InstallNotification.readyToInstall(appTitle: target.title, link: link))
         }
         // The phone serves the file itself, so it must stay alive (also in the background) until iOS has it all.
-        job.update(fraction: 1, subtitle: "Waiting for iOS to take the app")
-        succeeded = await ota.finishPhoneTransfer()
-        if ota.hostKind == .phone { readyLink = nil }      // the listener is closed now; the link no longer works
+        job.update(backgroundID, fraction: 1, subtitle: "Waiting for iOS to take the app")
+        succeeded = await ota.finishPhoneTransfer(session: session)
+        if session.kind == .phone || !succeeded { readyLink = nil }      // the listener is closed now; the link no longer works
     }
 
     var canSignAndInstall: Bool {
-        busyMessage == nil && !installing && ipaInfo != nil && (certificateID != nil || signedInputTarget != nil)
+        busyMessage == nil && !runningSign && !shelfSaveState.isSaving && !installing && ipaInfo != nil && (certificateID != nil || signedInputTarget != nil)
     }
 
-    var canSign: Bool { ipaInfo != nil && certificateID != nil && busyMessage == nil }
+    var canSign: Bool { ipaInfo != nil && certificateID != nil && busyMessage == nil && !runningSign && !shelfSaveState.isSaving }
 
     // MARK: Choosing the IPA
 
     /// Chooses an IPA already on the shelf.
-    func use(_ entry: LibraryEntry) {
-        let copy = FileManager.default.temporaryDirectory.appendingPathComponent("Wax-Pick-\(UUID().uuidString).ipa")
-        guard (try? FileManager.default.copyItem(at: LibraryModel.shared.url(for: entry), to: copy)) != nil else {
-            errorText = "That file is no longer in Wax's library."
-            LibraryModel.shared.refresh()
-            return
-        }
-        picked(ipa: copy, fromLibrary: entry)
-    }
+    func use(_ entry: LibraryEntry) { picked(ipa: library.url(for: entry), fromLibrary: entry) }
 
     func picked(ipa url: URL, fromLibrary: LibraryEntry? = nil) {
-        report = nil
-        errorText = nil
-        ipaInfo = nil
-        edits = edits.defaultsOnly()          // name, version and ID belong to the last app
+        clearResult(); ipaInfo = nil
+        let generation = resultGeneration; busyOwner = generation
+        edits = edits.defaultsOnly()
         profileChoice = nil; customEntitlements = nil; customEntitlementsName = nil
-        ipaName = url.lastPathComponent
-        busyMessage = "Reading “\(url.lastPathComponent)”…"
-        ImportLogs.shared.log("sign: picked \(ImportLog.describe(url))")
-        // Keep our own copy: the picker's copy is removed when this call returns.
-        let model = self
-        Task.detached {
+        ipaName = url.lastPathComponent; busyMessage = "Reading “\(url.lastPathComponent)”…"
+        Task {
             do {
-                // A folder of its own per pick, so two quick picks cannot delete each other's file.
-                let kept = FileManager.default.temporaryDirectory.appendingPathComponent("Wax-Input-\(UUID().uuidString)", isDirectory: true)
-                try FileManager.default.createDirectory(at: kept, withIntermediateDirectories: true)
-                let dest = kept.appendingPathComponent("input.ipa")
-                try FileManager.default.moveItem(at: url, to: dest)
-                let info = try IPAInspector.inspect(url: dest)
-                await MainActor.run {
-                    if let old = model.ipaURL { try? FileManager.default.removeItem(at: old.deletingLastPathComponent()) }
-                    model.ipaURL = dest
-                    model.ipaInfo = info
-                    model.busyMessage = nil
-                    if fromLibrary == nil { LibraryModel.shared.file(dest, info: info) }
+                if fromLibrary != nil {
+                    let info = try await Task.detached { try IPAInspector.inspect(url: url) }.value
+                    guard resultGeneration == generation else { return }
+                    ipaURL = url; ipaInfo = info
+                } else {
+                    let (pending, info) = try await library.preparePicked(url)
+                    discardPickerCopy(url)
+                    guard resultGeneration == generation else { return }
+                    let storage = library.storage
+                    ipaURL = try await Task.detached { try storage.pendingURL(pending.id) }.value; ipaInfo = info
+                    do {
+                        let saved = try await library.finishPending(pending.id)
+                        ipaURL = library.url(for: saved.entry)
+                    } catch {
+                        // Signing can still use the durable input; its shelf failure is a separate outcome.
+                        errorText = "The IPA is ready to sign, but its unsigned shelf save failed. " + error.localizedDescription
+                    }
                 }
-            } catch {
-                ImportLogs.shared.log("sign: ipa rejected \(ImportLog.describe(error))")
-                await MainActor.run {
-                    model.busyMessage = nil
-                    model.errorText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                }
-            }
+            } catch { if resultGeneration == generation { errorText = error.localizedDescription } }
+            if busyOwner == generation { busyMessage = nil }
         }
+    }
+
+    /// Only the signer calls this after its self-check and R2 artifact gate. Report survives a shelf failure.
+    func acceptSignedResult(_ result: Report, pendingID: UUID, generation: UUID? = nil) async {
+        guard generation == nil || generation == resultGeneration else { return }
+        report = result; signedPendingID = pendingID
+        await retrySignedSave()
+    }
+
+    func retrySignedSave() async {
+        guard let id = signedPendingID, report != nil, !shelfSaveState.isSaving else { return }
+        shelfSaveState = .saving
+        do {
+            let saved = try await library.finishPending(id)
+            guard signedPendingID == id else { return }
+            relocateReport(to: library.url(for: saved.entry))
+            shelfSaveState = .saved(saved)
+        } catch {
+            guard signedPendingID == id, let report else { return }
+            let file = (error as? ShelfSaveFailure)?.artifact ?? report.output
+            relocateReport(to: file)
+            shelfSaveState = .failed((error as? ShelfSaveFailure) ?? ShelfSaveFailure(reason: error.localizedDescription, artifact: file, pendingID: id))
+        }
+    }
+    private func relocateReport(to file: URL) {
+        guard var result = report else { return }
+        let old = result.installTarget
+        result.output = file
+        result.installTarget = InstallTarget(ipa: file, bundleIdentifier: old.bundleIdentifier, version: old.version, build: old.build, title: old.title)
+        report = result
     }
 
     // MARK: Signing
@@ -236,17 +289,17 @@ final class SigningModel: ObservableObject {
     @discardableResult
     /// `storeBigFiles` writes changed big files uncompressed: right for an install that stays on this phone, wrong for
     /// anything uploaded or exported.
-    func sign(standalone: Bool = true, storeBigFiles: Bool = false) -> Task<Void, Never>? {
-        guard let ipaURL, let info = ipaInfo, let certificateID, let store = credentials.store,
+    func sign(standalone: Bool = true, storeBigFiles: Bool = false, backgroundID: UUID? = nil, cancellation: SigningCancellation? = nil) -> Task<Void, Never>? {
+        guard busyMessage == nil, !runningSign, !shelfSaveState.isSaving, let ipaURL, let info = ipaInfo, let certificateID, let store = credentials.store,
               let cert = credentials.certificates.first(where: { $0.id == certificateID }) else { return nil }
-        report = nil
-        errorText = nil
+        clearResult()
+        let generation = resultGeneration
+        busyOwner = generation; runningSign = true
         busyMessage = "Preparing…"
         let title = info.displayName.isEmpty ? "Wax" : info.displayName
-        if standalone {
-            BackgroundJob.shared.askForNotificationPermission()
-            BackgroundJob.shared.begin(title: title)
-        }
+        if standalone { BackgroundJob.shared.askForNotificationPermission() }
+        let cancellation = cancellation ?? SigningCancellation()
+        let ownedBackgroundID = standalone ? BackgroundJob.shared.begin(title: title, onExpiration: { cancellation.cancel() }) : backgroundID
         let weights = jobProgress(uploadFraction: 0, exportOnly: standalone)
         let rewrite = rewriteBundleID
         let appEdits = edits
@@ -254,33 +307,36 @@ final class SigningModel: ObservableObject {
         let entitlementsOverride = customEntitlements
         let keep = keepBundleID
         let model = self
+        let shelf = library.storage
         ImportLogs.shared.log("sign: start id=\(ipaInfo?.bundleIdentifier ?? "?") rewrite=\(rewrite)")
 
         signFraction = 0
         signStarted = Date()
         let throttle = ProgressThrottle()
         return Task.detached(priority: .userInitiated) {
+          await withTaskCancellationHandler(operation: {
             do {
+                try cancellation.check()
                 let identity = try SecurityFrameworkIdentity(identity: store.identity(for: certificateID))
 
                 // Every imported, still-valid profile is a candidate; the engine picks per bundle and says why.
                 var pool: [ProvisioningProfile] = []
                 var skipped: [String] = []
                 for info in store.profiles() {
+                    try cancellation.check()
                     do { pool.append(try ProvisioningProfile.parse(try store.profileData(for: info.id))) }
                     catch { skipped.append("\(info.name): \((error as? LocalizedError)?.errorDescription ?? "unreadable")") }
                 }
 
                 var options = SigningOptions()
+                options.cancellation = cancellation
                 options.rewriteBundleIdentifier = rewrite
         options.keepBundleIdentifier = keep
         options.overrideEntitlements = entitlementsOverride
 
-                let outDir = FileManager.default.temporaryDirectory.appendingPathComponent("Wax-Signed", isDirectory: true)
-                try? FileManager.default.removeItem(at: outDir)
-                let stem = (info.displayName.isEmpty ? "App" : info.displayName)
-                    .filter { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
-                let output = outDir.appendingPathComponent("\(stem.isEmpty ? "App" : stem)-signed.ipa")
+                try cancellation.check()
+                let pending = try shelf.reserve(kind: .signed, name: title, provenance: .waxSigned)
+                let output = try shelf.pendingURL(pending.id)
 
                 let outcome = try IPASigner.sign(
                     ipa: ipaURL, identity: identity, certificateTeamID: cert.teamID,
@@ -292,8 +348,9 @@ final class SigningModel: ObservableObject {
                     // The engine reports often; only pass on a visible change.
                     guard throttle.shouldPublish(p) else { return }
                     Task { @MainActor in
+                        guard model.report == nil, model.resultGeneration == generation else { return }
                         model.busyMessage = p.message; model.signFraction = p.fraction
-                        BackgroundJob.shared.update(fraction: weights.overall(sign: p.fraction, upload: 0), subtitle: p.message)
+                        if let ownedBackgroundID { BackgroundJob.shared.update(ownedBackgroundID, fraction: weights.overall(sign: p.fraction, upload: 0), subtitle: p.message) }
                     }
                 }
 
@@ -325,23 +382,29 @@ final class SigningModel: ObservableObject {
                         ipa: outcome.output, bundleIdentifier: outcome.outputArchive.bundleIdentifier,
                         version: outcome.outputArchive.version, build: outcome.outputArchive.build, title: outcome.outputArchive.displayName))
                 ImportLogs.shared.log("sign: ok items=\(outcome.signing.items.count) bytes=\(size)")
+                await model.acceptSignedResult(r, pendingID: pending.id, generation: generation)
                 await MainActor.run {
-                    model.lastSignSeconds = Date().timeIntervalSince(model.signStarted ?? Date())
-                    model.report = r; model.busyMessage = nil
-                    LibraryModel.shared.file(outcome.output, info: outcome.outputArchive, signed: true)
+                    model.runningSign = false
+                    if model.busyOwner == generation { model.busyMessage = nil }
+                    if model.resultGeneration == generation { model.lastSignSeconds = Date().timeIntervalSince(model.signStarted ?? Date()) }
                     if standalone {
-                        BackgroundJob.shared.end(success: true)
-                        BackgroundJob.shared.notifyIfInBackground(InstallNotification.signed(appTitle: title))
+                        let saved = model.resultGeneration == generation && model.shelfSaveState.confirmedSaved
+                        if let ownedBackgroundID { BackgroundJob.shared.end(ownedBackgroundID, success: saved) }
+                        if saved { BackgroundJob.shared.notifyIfInBackground(InstallNotification.signed(appTitle: title)) }
                     }
                 }
             } catch {
-                let text = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                let text = error is CancellationError ? "Signing canceled. The original and earlier signed IPAs are kept. Retry when ready."
+                    : ((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
                 ImportLogs.shared.log("sign: failed \(ImportLog.describe(error))")
                 await MainActor.run {
-                    model.errorText = text; model.busyMessage = nil
-                    if standalone { BackgroundJob.shared.end(success: false) }
+                    model.runningSign = false
+                    if model.resultGeneration == generation { model.errorText = text }
+                    if model.busyOwner == generation { model.busyMessage = nil }
+                    if standalone, let ownedBackgroundID { BackgroundJob.shared.end(ownedBackgroundID, success: false) }
                 }
             }
+          }, onCancel: { cancellation.cancel() })
         }
     }
 

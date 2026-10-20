@@ -106,9 +106,7 @@ public enum AppEditor {
     /// Writes the icon at 60pt@2x (iPhone) and 76pt@2x (iPad) and points the plist at them, dropping the
     /// asset-catalog icon name that would otherwise take priority. Throws before touching anything if the image is unreadable.
     private static func writeIcon(_ data: Data, into app: URL, plist: inout [String: Any]) throws {
-        guard let src = CGImageSourceCreateWithData(data as CFData, nil), let image = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
-            throw SigningError.bundle("The chosen icon could not be read as an image.")
-        }
+        let image = try BoundedIcon.thumbnail(data)
         for (name, side) in [("WaxIcon60x60@2x.png", 120), ("WaxIcon76x76@2x~ipad.png", 152)] {
             guard let ctx = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
                                       space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else {

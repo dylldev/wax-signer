@@ -3,10 +3,27 @@ import Foundation
 /// Unpacks an IPA to a directory. Streams every entry to disk (no whole-file reads), verifies CRC32 and sizes,
 /// keeps Unix permissions and symlinks, and refuses anything that could write outside the destination.
 public enum IPAExtractor {
-    public struct Limits {
+    public struct Limits: Sendable {
         public var maxTotalBytes: Int = 6 * 1024 * 1024 * 1024
         public var maxEntries: Int = 65_534
+        /// Bounded streaming decoders/file handles; not an estimate of total process RAM.
+        public var maximumConcurrentEntries: Int = 4
+        public var minimumFreeBytes: Int64 = 16 * 1024 * 1024
+        public var deadline: TimeInterval = 1800
         public init() {}
+    }
+
+    public enum BudgetError: Error, Equatable, LocalizedError {
+        case invalidLimits
+        case deadline
+        case diskSpace(required: Int64, available: Int64)
+        public var errorDescription: String? {
+            switch self {
+            case .invalidLimits: "The extraction resource limits are invalid."
+            case .deadline: "Unpacking exceeded its total time limit. Retry with a smaller IPA or a longer configured limit."
+            case .diskSpace(let required, let available): "Unpacking needs at least \(required) free bytes; only \(available) are available. Free storage and retry."
+            }
+        }
     }
 
     /// Whether a symlink's target stays inside the app bundle the link itself sits in. Real frameworks link to their
@@ -25,21 +42,34 @@ public enum IPAExtractor {
 
     @discardableResult
     public static func extract(ipa: URL, to directory: URL, limits: Limits = Limits(),
-                               progress: ((Int, Int) -> Void)? = nil, byteProgress: ((Double) -> Void)? = nil) throws -> [String] {
-        try IPAArchiveSession(url: ipa).extract(to: directory, limits: limits, progress: progress, byteProgress: byteProgress).names
+                               progress: ((Int, Int) -> Void)? = nil, byteProgress: ((Double) -> Void)? = nil,
+                               checkCancellation: @escaping @Sendable () throws -> Void = { try Task.checkCancellation() }) throws -> [String] {
+        try IPAArchiveSession(url: ipa).extract(to: directory, limits: limits, progress: progress, byteProgress: byteProgress,
+                                             checkCancellation: checkCancellation).names
     }
 
     static func extract(session: IPAArchiveSession, to directory: URL, limits: Limits,
-                        progress: ((Int, Int) -> Void)?, byteProgress: ((Double) -> Void)?) throws -> IPAExtractionInventory {
+                        progress: ((Int, Int) -> Void)?, byteProgress: ((Double) -> Void)?,
+                        checkCancellation: @escaping @Sendable () throws -> Void = { try Task.checkCancellation() },
+                        environment: ExtractionEnvironment = .live) throws -> IPAExtractionInventory {
+        let budget = try ExtractionBudget(limits: limits, directory: directory, environment: environment, cancellation: checkCancellation)
         let zip = session.zip
         guard zip.entries.count <= limits.maxEntries else { throw IPAError.unsupportedZip("too many entries") }
-        let total = zip.entries.reduce(0) { $0 + $1.uncompressedSize }
-        guard total <= limits.maxTotalBytes else {
-            throw IPAError.unsupportedZip("archive expands to \(total) bytes, over the \(limits.maxTotalBytes) byte limit")
+        var total = 0
+        for entry in zip.entries {
+            guard entry.uncompressedSize <= limits.maxTotalBytes - total else {
+                throw IPAError.unsupportedZip("archive expands beyond the \(limits.maxTotalBytes) byte limit")
+            }
+            total += entry.uncompressedSize
         }
 
         let fm = FileManager.default
+        // Only a newly created destination is owned for failure cleanup. Never remove an existing user's folder.
+        let createdDestination = !fm.fileExists(atPath: directory.path)
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        var succeeded = false
+        defer { if !succeeded, createdDestination { try? fm.removeItem(at: directory) } }
+        try budget.begin(total: total)
         let root = directory.resolvingSymlinksInPath().path
         var names: [String] = []
 
@@ -52,6 +82,7 @@ public enum IPAExtractor {
         var done = 0
         var doneBytes = 0
         for entry in zip.entries {
+            try budget.check()
             let name = entry.name
             if IPAInspector.isUnsafe(name) { throw IPAError.unsafePath(name) }
             let dest = directory.appendingPathComponent(name)
@@ -68,6 +99,7 @@ public enum IPAExtractor {
             if entry.isDirectory {
                 try fm.createDirectory(at: dest, withIntermediateDirectories: true)
             } else if entry.isSymlink {
+                guard entry.uncompressedSize < 4096 else { throw IPAError.unsafePath("\(name) -> link target is too long") }
                 let data = try zip.data(for: entry)   // a link target is a short path
                 guard data.count < 4096, let target = String(data: data, encoding: .utf8), !target.isEmpty,
                       !target.hasPrefix("/"), Self.staysInsideTheApp(link: name, target: target) else {
@@ -100,6 +132,7 @@ public enum IPAExtractor {
         // once a link is involved), and the end must land inside the app. Links in the middle of a path are fine, as in
         // versioned frameworks (`Versions/Current`): where they lead is checked by the final resolution.
         for link in links {
+            try budget.check()
             let parts = link.name.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
             let inApp = parts.count >= 3 && parts[1].hasSuffix(".app")
             let allowedURL = inApp ? directory.appendingPathComponent(parts[0] + "/" + parts[1]) : directory
@@ -127,21 +160,30 @@ public enum IPAExtractor {
             guard inside(current.resolvingSymlinksInPath().path) else { throw refuse }
         }
 
-        // Pass 2: the regular files, on every core. Biggest first so no core is left finishing one huge file alone.
+        // Pass 2: bounded workers claim jobs from one queue. Biggest first preserves load balancing.
         // Workers share the archive safely (positioned reads) and each writes a different file.
         let order = jobs.indices.sorted { jobs[$0].entry.uncompressedSize > jobs[$1].entry.uncompressedSize }
         let lock = NSLock()
         var failure: Error?
-        DispatchQueue.concurrentPerform(iterations: order.count) { slot in
-            lock.lock(); let stop = failure != nil; lock.unlock()
-            if stop { return }
+        var next = 0
+        DispatchQueue.concurrentPerform(iterations: min(limits.maximumConcurrentEntries, order.count)) { _ in
+          while true {
+            let slot: Int? = lock.withLock {
+                guard failure == nil, next < order.count else { return nil }
+                let claimed = next; next += 1; return claimed
+            }
+            guard let slot else { return }
             let job = jobs[order[slot]]
             do {
                 // Belt and braces: never write through a link, whatever happened since the safety pass.
                 if (try? fm.attributesOfItem(atPath: job.dest.path))?[.type] as? FileAttributeType == .typeSymbolicLink {
                     throw IPAError.unsafePath(job.entry.name)
                 }
-                try zip.extract(job.entry, to: job.dest)
+                try budget.check(probeDisk: true)
+                try zip.extract(job.entry, to: job.dest, checkpoint: {
+                    if let error = lock.withLock({ failure }) { throw error }
+                    try budget.check()
+                }, beforeWrite: { try budget.beforeWrite($0) })
                 let mode = Int((job.entry.unixMode ?? 0o644) & 0o777) | 0o600   // owner can always read and rewrite
                 try fm.setAttributes([.posixPermissions: mode], ofItemAtPath: job.dest.path)
                 lock.lock()
@@ -154,9 +196,13 @@ public enum IPAExtractor {
                 byteProgress?(total > 0 ? Double(b) / Double(total) : 1)
             } catch {
                 lock.lock(); failure = failure ?? error; lock.unlock()
+                return
             }
+          }
         }
         if let failure { throw failure }
+        try budget.check()
+        succeeded = true
         return IPAExtractionInventory(names: names, session: session, directory: directory.standardizedFileURL.resolvingSymlinksInPath())
     }
 }

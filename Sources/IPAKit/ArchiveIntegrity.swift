@@ -9,8 +9,10 @@ public final class IPAArchiveSession {
     public init(url: URL) throws { self.url = url.standardizedFileURL; zip = try ZipArchive(url: url) }
     public func inspect() throws -> IPAMetadata { try IPAInspector.inspect(archive: zip) }
     public func extract(to directory: URL, limits: IPAExtractor.Limits = IPAExtractor.Limits(),
-                        progress: ((Int, Int) -> Void)? = nil, byteProgress: ((Double) -> Void)? = nil) throws -> IPAExtractionInventory {
-        try IPAExtractor.extract(session: self, to: directory, limits: limits, progress: progress, byteProgress: byteProgress)
+                        progress: ((Int, Int) -> Void)? = nil, byteProgress: ((Double) -> Void)? = nil,
+                        checkCancellation: @escaping @Sendable () throws -> Void = { try Task.checkCancellation() }) throws -> IPAExtractionInventory {
+        try IPAExtractor.extract(session: self, to: directory, limits: limits, progress: progress, byteProgress: byteProgress,
+                                 checkCancellation: checkCancellation)
     }
 }
 

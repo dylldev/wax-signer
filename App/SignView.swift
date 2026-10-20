@@ -20,6 +20,7 @@ struct SignView: View {
     @State private var exportRun = false
     /// One outcome per run: the haptic and the spoken line must not repeat themselves.
     @State private var announced = false
+    @State private var pendingInstallTask: Task<Void, Never>?
 
     // MARK: Derived state
 
@@ -41,7 +42,7 @@ struct SignView: View {
         SignPhase.resolve(busy: model.busyMessage != nil && !isReading, hasError: errorText != nil, hasReport: model.report != nil)
     }
 
-    private var uploading: Bool { if case .uploading = ota.state { return true } else { return false } }
+    private var uploading: Bool { ota.activeSession != nil && model.installing && model.busyMessage == nil }
 
     private var errorText: String? {
         if let e = model.errorText { return e }
@@ -68,7 +69,13 @@ struct SignView: View {
                 ScrollView {
                     VStack(spacing: 10) {
                         header.id("top")
-                        if let stage {
+                        if model.ownsInstallation(ota) {
+                            Button("Cancel installation", role: .destructive) { model.cancelInstallation(ota: ota) }
+                                .accessibilityHint("Keeps signed and saved IPA files. Signing already in progress may finish safely before stopping.")
+                        }
+                        if let r = model.report {
+                            resultCard(r)
+                        } else if let stage {
                             progressCard(stage)
                         } else if phase == .done && errorText == nil, let r = model.report {
                             resultCard(r)
@@ -101,7 +108,11 @@ struct SignView: View {
         .onChange(of: phase) { _, new in if new == .done { stamp() } else { stamped = false } }
         .onChange(of: model.busyMessage) { _, busy in if busy != nil { announced = false } }   // a new run earns its own feedback
         .onChange(of: model.ipaInfo != nil) { _, ready in if ready { announceRead() } }
-        .onChange(of: model.report != nil) { _, done in if done { announceOutcome(success: true) } }
+        .onChange(of: model.shelfSaveState.confirmedSaved) { _, saved in if saved { announceOutcome(success: true, message: "Signed and saved. Wax checked the file.") } }
+        .onChange(of: model.shelfSaveState.isSaving) { _, saving in
+            if saving { announced = false }
+            else if case .failed = model.shelfSaveState { announceOutcome(success: false, message: "Signing succeeded. Shelf saving failed. Retry Save or export the retained IPA.") }
+        }
         .onChange(of: model.errorText) { _, text in if let text { announceOutcome(success: false, message: text) } }
         .onChange(of: inbox.pendingLink) { _, _ in openPendingInstall() }
         .onAppear { openPendingInstall() }   // a tap that launched Wax from scratch
@@ -110,14 +121,16 @@ struct SignView: View {
 
     /// A tapped "Ready to install" notification: go to this screen and bring up iOS's install prompt.
     private func openPendingInstall() {
-        guard let link = inbox.pendingLink else { return }
+        pendingInstallTask?.cancel()
+        guard let link = inbox.pendingLink, model.canOpenInstallLink(link, ota: ota) else { return }
         router.tab = .sign
-        inbox.pendingLink = nil
-        // iOS ignores the install request while Wax is still coming to the front, so wait until it is active.
-        Task { @MainActor in
-            for _ in 0..<30 where UIApplication.shared.applicationState != .active { try? await Task.sleep(for: .milliseconds(100)) }
-            try? await Task.sleep(for: .milliseconds(300))
-            openURL(link)
+        pendingInstallTask = Task { @MainActor in
+            let opened = await model.openInstallLink(link, ota: ota, prepare: {
+                for _ in 0..<30 where UIApplication.shared.applicationState != .active { try await Task.sleep(for: .milliseconds(100)) }
+                try await Task.sleep(for: .milliseconds(300))
+                guard inbox.pendingLink == link else { throw CancellationError() }
+            }, open: { openURL($0) })
+            if opened, inbox.pendingLink == link { inbox.pendingLink = nil }
         }
     }
 
@@ -256,7 +269,7 @@ struct SignView: View {
                 Label(primary.title, systemImage: primaryIcon)
             }
             .buttonStyle(WaxPrimaryButtonStyle())
-            .disabled(model.installing)
+            .disabled(model.installing || ota.activeSession != nil)
             .padding(.top, 4)
             Text(primary.reason)
                 .font(.footnote).foregroundStyle(Wax.sub).multilineTextAlignment(.center)
@@ -306,7 +319,7 @@ struct SignView: View {
         let percent = Int(jobFraction * 100)
         let message = progressMessage
         return VStack(spacing: Wax.Space.m) {
-            WaxMelt(progress: jobFraction, height: 230)
+            WaxMelt(progress: jobFraction, height: 230, isVisible: router.tab == .sign)
             Text("\(percent)%")
                 .font(.system(size: 46, weight: .bold, design: .rounded).monospacedDigit())
                 .foregroundStyle(Wax.text)
@@ -362,13 +375,28 @@ struct SignView: View {
         let failed = !r.checkFailures.isEmpty
         return VStack(spacing: 8) {
             resultHeader(failed)
-            if !failed { signedShelfLink }
+            if let errorText { WaxFeedbackCard(tone: .bad, text: errorText) }
+            if !failed {
+                switch model.shelfSaveState {
+                case .saved(let saved):
+                    signedShelfLink
+                    if let warning = saved.warning { WaxFeedbackCard(tone: .bad, text: warning) }
+                case .saving:
+                    ProgressView("Saving to the IPA shelf…")
+                case .failed(let failure):
+                    WaxFeedbackCard(tone: .bad, text: "Signing succeeded, but shelf saving failed. " + failure.localizedDescription)
+                    Button("Retry Save") { announced = false; Task { await model.retrySignedSave() } }.buttonStyle(WaxSecondaryButtonStyle())
+                case .idle:
+                    Text("The signed file is retained. It has not been saved on the shelf.").font(.footnote).foregroundStyle(Wax.sub)
+                }
+            }
             if let link = model.readyLink {
                 Button { openURL(link) } label: { Label("Install", systemImage: "arrow.down.app") }
                     .buttonStyle(WaxPrimaryButtonStyle())
+                    .disabled(!model.canOpenInstallLink(link, ota: ota))
             }
-            exportButton(r)
-            Button { model.clearResult(); ota.reset() } label: {
+            exportButton(r).disabled(model.shelfSaveState.isSaving)
+            Button { model.startOver(ota: ota) } label: {
                 Label("Start over", systemImage: "arrow.counterclockwise")
                     .font(.subheadline.weight(.semibold)).foregroundStyle(Wax.sub)
                     .frame(maxWidth: .infinity, minHeight: Wax.touch)

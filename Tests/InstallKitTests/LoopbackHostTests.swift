@@ -1,5 +1,6 @@
 import XCTest
 import Security
+import Network
 @testable import InstallKit
 
 /// A throwaway self-signed certificate for "localhost" (password "wax"), valid 100 years. Test use only.
@@ -211,4 +212,81 @@ final class LoopbackHostTests: XCTestCase {
         do { _ = try await bad.publish(ipa: ipa, bundleIdentifier: "a.b", version: "1", build: "1", title: "T", progress: { _ in }); XCTFail("expected throw") }
         catch { XCTAssertTrue(error.localizedDescription.lowercased().contains("this iphone"), error.localizedDescription) }
     }
+    /// Real TLS connection, trusted only by this synthetic test client. Production trust is unchanged.
+    private func client(to url: URL) async throws -> NWConnection {
+        let tls = NWProtocolTLS.Options()
+        sec_protocol_options_set_verify_block(tls.securityProtocolOptions, { _, _, complete in complete(true) }, .global())
+        let connection = NWConnection(host: "localhost", port: NWEndpoint.Port(rawValue: UInt16(try XCTUnwrap(url.port)))!, using: NWParameters(tls: tls))
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            var resumed = false // connection callback queue is serial
+            connection.stateUpdateHandler = { state in
+                guard !resumed else { return }
+                switch state {
+                case .ready: resumed = true; continuation.resume()
+                case .failed(let error): resumed = true; continuation.resume(throwing: error)
+                case .cancelled: resumed = true; continuation.resume(throwing: CancellationError())
+                default: break
+                }
+            }
+            connection.start(queue: DispatchQueue(label: "test.loopback.client"))
+        }
+        return connection
+    }
+    private func observe(_ condition: () -> Bool) async throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        while !condition(), ProcessInfo.processInfo.systemUptime < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertTrue(condition(), "expected lifecycle transition within deadline")
+    }
+    func testStopClosesAcceptedConnectionWaitingForHeaders() async throws {
+        let published = try await publish(), connection = try await client(to: published.ipa)
+        defer { connection.cancel() }
+        try await observe { self.host.activeConnectionCount == 1 }
+        host.stop(); XCTAssertEqual(host.activeConnectionCount, 0); XCTAssertEqual(host.openFileCount, 0)
+        let ended = expectation(description: "accepted connection closed remotely")
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 1024) { _, _, complete, error in
+            XCTAssertTrue(complete || error != nil); ended.fulfill()
+        }
+        await fulfillment(of: [ended], timeout: 5)
+    }
+    func testStopAndRepublishCloseActiveFileAndRejectOldCompletion() async throws {
+        // Sparse runtime fixture creates backpressure without a committed large binary or whole-file buffer.
+        let file = try FileHandle(forWritingTo: ipa); try file.truncate(atOffset: 64 * 1024 * 1024); try file.close()
+        let published = try await publish(), connection = try await client(to: published.ipa)
+        defer { connection.cancel() }
+        connection.send(content: Data("GET \(published.ipa.path) HTTP/1.1\r\nHost: localhost\r\n\r\n".utf8), completion: .contentProcessed { _ in })
+        try await observe { self.host.openFileCount == 1 }
+        host.stop(); XCTAssertEqual(host.openFileCount, 0); XCTAssertEqual(host.activeConnectionCount, 0)
+        _ = try await publish()
+        // Old contentProcessed/receive callbacks can now run, but cannot seal a range in the new generation.
+        let completed = await host.waitForTransfer(timeout: 0.2)
+        XCTAssertFalse(completed); XCTAssertFalse(host.servedIPA)
+        XCTAssertEqual(host.openFileCount, 0)
+    }
+    func testCancelledWaitDoesNotSpinOrAcceptLaterSession() async throws {
+        _ = try await publish()
+        let waiter = Task { await self.host.waitForTransfer(timeout: 30) }
+        waiter.cancel()
+        let completed = await waiter.value; XCTAssertFalse(completed)
+    }
+    func testCancelledPublishCannotLeaveAListenerOrAcceptedResources() async throws {
+        let publishing = Task { try await self.publish() }; publishing.cancel()
+        do { _ = try await publishing.value; XCTFail("canceled publication must not succeed") } catch {}
+        XCTAssertEqual(host.activeConnectionCount, 0); XCTAssertEqual(host.openFileCount, 0)
+        let completed = await host.waitForTransfer(timeout: 0.1); XCTAssertFalse(completed)
+    }
+    func testEmptyIPAIsControlledFailureBeforeListenerPublication() async throws {
+        try Data().write(to: ipa)
+        do { _ = try await publish(); XCTFail("expected empty-input rejection") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("empty")) }
+        XCTAssertEqual(host.activeConnectionCount, 0)
+    }
+    func testIncompleteDeliveryNeverClaimsToObserveTheOSInstallOutcome() {
+        for served in [true, false] {
+            let text = LoopbackHost.transferFailureMessage(served: served)
+            XCTAssertFalse(text.contains("nothing was installed"))
+            XCTAssertFalse(text.contains("installation failed"))
+            XCTAssertTrue(text.contains("could not confirm installation") || text.contains("outcome is unknown"))
+        }
+    }
+
 }

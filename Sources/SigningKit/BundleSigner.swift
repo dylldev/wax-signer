@@ -19,6 +19,8 @@ public struct SigningOptions {
     /// A chosen entitlements set that replaces what the main app asks for. Only what the profile grants is kept.
     public var overrideEntitlements: [String: Any]?
     public var entitlementPolicy: EntitlementMismatchPolicy = .dropAndWarn
+    /// Optional owner token. In-place bundle signing itself is not transactional; IPASigner owns an isolated tree.
+    public var cancellation: SigningCancellation?
     public var now = Date()
     public init() {}
 }
@@ -61,6 +63,7 @@ public enum BundleSigner {
         var ctx = try prepare(appDirectory: appDirectory, identity: identity, certificateTeamID: certificateTeamID, profiles: profiles, options: options)
         // Validate all inputs before changing any binary in the app tree.
         ctx.result.warnings.append(contentsOf: try FatMachO.thinTree(at: appDirectory))
+        try options.cancellation?.check()
         try ctx.signBundle(at: appDirectory, kind: .app)
         return ctx.result
     }
@@ -70,6 +73,7 @@ public enum BundleSigner {
     public static func plan(appDirectory: URL, certificateChainDER: [Data], certificateTeamID: String?, profiles: ProfileSet,
                             options: SigningOptions = SigningOptions(), profilePolicy: SigningPlan.ProfilePolicy = .requireValidCMS,
                             maxBundles: Int = 256) throws -> SigningPlan {
+        try options.cancellation?.check()
         guard maxBundles > 0, maxBundles <= 4096,
               Context.signableBundles(in: appDirectory).count <= maxBundles else { throw SigningError.bundle("preflight bundle count exceeds its limit") }
         let canonicalRoot = appDirectory.resolvingSymlinksInPath().path
@@ -116,6 +120,7 @@ public enum BundleSigner {
         }
         try manifest.verifyTree() // preparation itself must have observed one unchanged input tree
         return SigningPlan(bundles: bundles, identifierChanges: ctx.result.bundleIdentifierChanges) { identity, now in
+            try frozen.cancellation?.check()
             guard identity.certificateChainDER == certificateChainDER else { throw SigningError.bundle("preflight signing certificate chain changed; make a new plan") }
             try manifest.verifyTree()
             guard let leaf = certificateChainDER.first, let validity = CertificateValidity.dates(of: leaf) else { throw SigningError.bundle("preflight certificate is unreadable") }
@@ -127,6 +132,7 @@ public enum BundleSigner {
             var execution = ctx
             execution.identity = identity
             execution.result.warnings.append(contentsOf: try FatMachO.thinTree(at: appDirectory))
+            try frozen.cancellation?.check()
             try execution.signBundle(at: appDirectory, kind: .app)
             return execution.result
         }
@@ -157,6 +163,7 @@ public enum BundleSigner {
     }
     private static func prepare(appDirectory: URL, identity: CodeSigningIdentity, certificateTeamID: String?, profiles: ProfileSet,
                                 options: SigningOptions) throws -> Context {
+        try options.cancellation?.check()
         guard let leaf = identity.certificateChainDER.first else { throw SigningError.keyOperation("no certificate") }
         let leafSHA1 = Insecure.SHA1.hash(data: leaf).map { String(format: "%02X", $0) }.joined()
 
@@ -224,6 +231,7 @@ public enum BundleSigner {
         ///   container directory), otherwise it would ship unsigned;
         /// - FairPlay-encrypted binaries are refused rather than mangled (universal binaries were thinned before this).
         func preflight() throws {
+            try options.cancellation?.check()
             let fm = FileManager.default
             let root = rootURL.resolvingSymlinksInPath().path
             var handled = Set<String>()
@@ -254,6 +262,7 @@ public enum BundleSigner {
                                              options: []) else { throw SigningError.io("cannot read \(rootURL.path)") }
             let writeTargets: Set<String> = ["embedded.mobileprovision", "CodeResources", "_CodeSignature", "Info.plist"]
             for case let url as URL in walker {
+                try options.cancellation?.check()
                 let rel = rel(url)
                 let values = try url.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey])
                 if values.isSymbolicLink == true {
@@ -291,6 +300,7 @@ public enum BundleSigner {
             let bundles = Self.signableBundles(in: rootURL)
             var infos: [(url: URL, original: String, requested: [String: Any])] = []
             for url in bundles {
+                try options.cancellation?.check()
                 let id = (try infoPlist(at: url)["CFBundleIdentifier"] as? String) ?? ""
                 guard !id.isEmpty else { throw SigningError.bundle("\(relative(url)): Info.plist has no CFBundleIdentifier") }
                 var requested = existingEntitlements(try MachO(FatMachO.thin(Data(contentsOf: executableURL(of: url))))) ?? [:]
@@ -443,6 +453,7 @@ public enum BundleSigner {
         }
 
         mutating func signBundle(at bundle: URL, kind: SignedItem.Kind) throws {
+            try options.cancellation?.check()
             // 1. nested code first: its final bytes are sealed into this bundle's CodeResources
             for container in BundleLayout.containers {
                 let dir = bundle.appendingPathComponent(container)
@@ -513,7 +524,9 @@ public enum BundleSigner {
             }
 
             // 4. seal resources, then sign the executable
+            try options.cancellation?.check()
             let resources = try CodeResources.build(bundleRoot: bundle, executable: executableName)
+            try options.cancellation?.check()
             let sigDir = bundle.appendingPathComponent("_CodeSignature", isDirectory: true)
             try FileManager.default.createDirectory(at: sigDir, withIntermediateDirectories: true)
             try resources.write(to: sigDir.appendingPathComponent("CodeResources"))
@@ -535,6 +548,7 @@ public enum BundleSigner {
 
         func signExecutable(at url: URL, identifier: String, teamID: String?, infoPlist: Data?, codeResources: Data?,
                             entitlements: [String: Any]?) throws -> String {
+            try options.cancellation?.check()
             let original = try MachO(Data(contentsOf: url))
 
             let requirements = Requirements.designated(identifier: identifier, chainDER: identity.certificateChainDER)
@@ -555,6 +569,7 @@ public enum BundleSigner {
             }
 
             func buildSignature(for image: MachO) throws -> Data {
+                try options.cancellation?.check()
                 let directory = CodeDirectory(
                     identifier: identifier, teamIdentifier: teamID, codeLimit: image.signedLength,
                     execSegmentBase: image.textFileOffset, execSegmentLimit: image.textFileSize,
@@ -562,6 +577,7 @@ public enum BundleSigner {
                         | (getTaskAllow ? CodeDirectory.execAllowUnsigned : 0),
                     specialHashes: specials)
                 let cd = directory.build(image: image.data)
+                try options.cancellation?.check()
                 let cms = try CMS.detachedSignature(over: cd, identity: identity, now: options.now)
                 let entries: [(slot: UInt32, blob: Data)] =
                     [(Blob.Slot.codeDirectory, cd), (Blob.Slot.requirements, requirements)]
@@ -580,6 +596,7 @@ public enum BundleSigner {
             let signature = try buildSignature(for: image)
             guard signature.count == size else { throw SigningError.machO("signature size changed between passes") }
             try image.attach(signature: signature)
+            try options.cancellation?.check()
             try image.data.write(to: url)
 
             return Self.cdHashHex(signature: signature)

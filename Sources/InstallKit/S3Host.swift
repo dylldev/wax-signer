@@ -66,21 +66,32 @@ public struct S3Host: InstallHost {
         parts.queryItems = [URLQueryItem(name: "list-type", value: "2"), URLQueryItem(name: "max-keys", value: "1")]
         var r = S3Signer.signedRequest(method: "GET", url: parts.url!, payloadSHA256: Self.emptySHA, credentials: credentials, date: now())
         r.timeoutInterval = 20
-        let data: Data, response: URLResponse
-        do { (data, response) = try await session.data(for: r) }
+        let result: (body: Data, code: Int)
+        do { result = try await InstallTransport.send(r, session: session) }
         catch { throw Failure(message: "Could not reach the bucket: \(error.localizedDescription)") }
-        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard code == 200 else { throw Self.explain(code, body: String(decoding: data.prefix(4096), as: UTF8.self)) }
+        guard result.code == 200 else { throw Self.explain(result.code, body: String(decoding: result.body.prefix(4096), as: UTF8.self)) }
     }
 
-    /// Removes both uploaded objects. Best effort: the bucket's own expiry rule is the backstop.
-    public func cleanup() async {
-        await delete("app.ipa"); await delete("manifest.plist")
+    /// Compatibility best-effort path for a failed publication. Durable callers use cleanupConfirmed.
+    public func cleanup() async { try? await cleanupConfirmed() }
+
+    /// Both objects must be confirmed deleted (or already absent) before a retention record is removed.
+    public func cleanupConfirmed() async throws {
+        var failure: Error?
+        for name in ["app.ipa", "manifest.plist"] {
+            do { try await delete(name) } catch { if failure == nil { failure = error } }
+        }
+        if let failure { throw failure }
     }
 
-    private func delete(_ name: String) async {
-        let r = S3Signer.signedRequest(method: "DELETE", url: objectURL(name), payloadSHA256: Self.emptySHA, credentials: credentials, date: now())
-        _ = try? await session.data(for: r)
+    private func delete(_ name: String) async throws {
+        var r = S3Signer.signedRequest(method: "DELETE", url: objectURL(name), payloadSHA256: Self.emptySHA, credentials: credentials, date: now())
+        r.timeoutInterval = 20
+        // Never redirect a credential-bearing destructive request to a different destination.
+        let (_, code) = try await InstallTransport.send(r, session: session)
+        guard (200..<300).contains(code) || code == 404 else {
+            throw Failure(message: "Bucket cleanup was not confirmed (HTTP \(code)). Its record is kept for retry.")
+        }
     }
 
     private static let emptySHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -90,7 +101,7 @@ public struct S3Host: InstallHost {
                                        credentials: credentials, date: now(), headers: ["Content-Type": type])
         r.timeoutInterval = 600
         let result: (body: Data, code: Int)
-        do { result = try await InstallTransport.sendUpload(r, file: file, session: session, delegate: ProgressDelegate(progress)) }
+        do { result = try await InstallTransport.sendUpload(r, file: file, session: session, progress: progress) }
         catch { throw Failure(message: "Could not reach the bucket: \(error.localizedDescription)") }
         guard (200..<300).contains(result.code) else { throw Self.explain(result.code, body: String(decoding: result.body.prefix(4096), as: UTF8.self)) }
     }

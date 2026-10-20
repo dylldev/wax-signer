@@ -168,10 +168,10 @@ public struct OTAUploader {
     public func checkToken() async throws {
         var r = URLRequest(url: endpoint.healthURL); r.timeoutInterval = 20
         r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let response: URLResponse
-        do { (_, response) = try await session.data(for: r) }
+        let result: (body: Data, code: Int)
+        do { result = try await InstallTransport.send(r, session: session) }
         catch { throw Failure(message: "Could not reach the install server: \(error.localizedDescription)") }
-        switch (response as? HTTPURLResponse)?.statusCode ?? 0 {
+        switch result.code {
         case 200, 204: return
         case 401: throw Failure(message: "The install server rejected the token. Check it in the install settings.")
         case let code: throw Failure(message: "The install server answered the token check with HTTP \(code). Is the upload service running behind the proxy?")
@@ -184,7 +184,7 @@ public struct OTAUploader {
         r.timeoutInterval = 600
         if let sha256 { r.setValue(sha256, forHTTPHeaderField: "X-Wax-SHA256") }
         let result: (body: Data, code: Int)
-        do { result = try await InstallTransport.sendUpload(r, file: file, session: session, delegate: ProgressDelegate(progress)) }
+        do { result = try await InstallTransport.sendUpload(r, file: file, session: session, progress: progress) }
         catch { throw Failure(message: "Could not reach the install server: \(error.localizedDescription)") }
         let code = result.code
         switch code {
@@ -194,15 +194,6 @@ public struct OTAUploader {
         case 507: throw Failure(message: "The install server is full. Try again in a few minutes.")
         default: throw Failure(message: "The install server returned an error (HTTP \(code)).")
         }
-    }
-}
-
-final class ProgressDelegate: NSObject, URLSessionTaskDelegate {
-    let report: @Sendable (Double) -> Void
-    init(_ report: @escaping @Sendable (Double) -> Void) { self.report = report }
-    func urlSession(_ s: URLSession, task: URLSessionTask, didSendBodyData b: Int64, totalBytesSent sent: Int64,
-                    totalBytesExpectedToSend total: Int64) {
-        if total > 0 { report(Double(sent) / Double(total)) }
     }
 }
 

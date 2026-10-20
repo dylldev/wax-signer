@@ -27,11 +27,12 @@ public struct SourceRepo: Codable, Equatable, Sendable {
 }
 
 public enum SourceError: Error, Equatable, LocalizedError {
-    case notJSON, noApps
+    case notJSON, noApps, resourceLimit(String)
     public var errorDescription: String? {
         switch self {
         case .notJSON: "That address did not return a source file (it is not JSON). Check the link."
         case .noApps: "That file is JSON, but it does not list any apps, so it is not a source."
+        case .resourceLimit(let why): "That source is too complex to load safely (\(why)). Ask its publisher for a smaller source."
         }
     }
 }
@@ -39,15 +40,37 @@ public enum SourceError: Error, Equatable, LocalizedError {
 /// Reads AltStore/Feather-format sources in both layouts: `apps[].versions[]` (current) and app-level
 /// `version`/`downloadURL` (older). Lenient by design: a malformed or download-less app is skipped, never fatal.
 public enum SourceParser {
-    public static func parse(_ data: Data) throws -> SourceRepo {
+    /// Limits apply before Foundation builds a JSON object graph, including ignored/malformed app fields.
+    public struct Limits: Sendable {
+        public var maxBytes = 64 * 1024 * 1024
+        public var maxContainers = 50_000
+        public var maxTokens = 250_000
+        public var maxDepth = 64
+        public var maxStringBytes = 1024 * 1024
+        public var deadline: TimeInterval = 15
+        public init() {}
+    }
+    public static func parse(_ data: Data, limits: Limits = Limits()) throws -> SourceRepo {
+        try parse(data, limits: limits, now: { ProcessInfo.processInfo.systemUptime })
+    }
+    static func parse(_ data: Data, limits: Limits, now: () -> TimeInterval) throws -> SourceRepo {
+        let started = now()
+        func checkpoint() throws {
+            try Task.checkCancellation()
+            let elapsed = now() - started
+            guard elapsed.isFinite, elapsed >= 0, elapsed < limits.deadline else { throw SourceError.resourceLimit("JSON processing deadline") }
+        }
+        try SourceJSONBudget.validate(data, limits: limits, checkpoint: checkpoint)
         let raw: Raw
         do { raw = try JSONDecoder().decode(Raw.self, from: data) } catch { throw SourceError.notJSON }
+        try checkpoint()
         guard let rawApps = raw.apps else { throw SourceError.noApps }
 
         var seen: [String: Int] = [:]
         var apps: [SourceApp] = []
         for item in rawApps {
-            guard let a = item.value, let app = a.reduce() else { continue }
+            try checkpoint()
+            guard let a = item.value, let app = try a.reduce(checkpoint: checkpoint) else { continue }
             let base = "\(app.bundleID)@\(app.version)"
             let n = seen[base, default: 0]; seen[base] = n + 1
             apps.append(n == 0 ? app.withID(base) : app.withID("\(base)#\(n)"))
@@ -119,11 +142,12 @@ public enum SourceParser {
             legacy.size = (try? c.decodeIfPresent(FlexInt.self, forKey: .size))?.value
         }
 
-        func reduce() -> SourceApp? {
+        func reduce(checkpoint: () throws -> Void) throws -> SourceApp? {
             guard let bundleID, !bundleID.isEmpty else { return nil }
             var candidates = (versions ?? []).compactMap(\.value)
             if legacy.downloadURL != nil { candidates.append(legacy) }
-            let usable = candidates.compactMap { v -> (RawVersion, URL, Date?)? in
+            let usable = try candidates.compactMap { v -> (RawVersion, URL, Date?)? in
+                try checkpoint()
                 guard let s = v.downloadURL, let url = URL(string: s), url.scheme == "https", url.host != nil else { return nil }
                 return (v, url, v.date.flatMap(SourceParser.parseDate))
             }

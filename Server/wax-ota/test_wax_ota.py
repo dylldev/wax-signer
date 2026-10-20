@@ -253,5 +253,143 @@ class Gc(unittest.TestCase):
             self.assertTrue(os.path.isdir(keep)); self.assertFalse(os.path.exists(gone))
         finally: shutil.rmtree(root, ignore_errors=True)
 
-if __name__ == "__main__":
-    unittest.main()
+
+class SessionTransactions(Base):
+    def pause(self, session=ID):
+        entered, release = threading.Event(), threading.Event()
+        original = self.srv.RequestHandlerClass._store
+        def paused(handler, parts, *args):
+            if parts[1] == session:
+                entered.set()
+                if not release.wait(5): raise AssertionError("test request was not released")
+            return original(handler, parts, *args)
+        self.srv.RequestHandlerClass._store = paused
+        return entered, release
+
+    def open_body(self, session=ID, body=b"new", declared=None):
+        conn = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        conn.sendall((f"PUT /u/{session}/app.ipa HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TOKEN}\r\n"
+                      f"Content-Length: {len(body) if declared is None else declared}\r\n\r\n").encode() + body)
+        return conn
+
+    def finish(self, conn):
+        response = http.client.HTTPResponse(conn); response.begin()
+        status = response.status; response.read(); conn.close(); return status
+
+    def test_overlapping_same_session_put_manifest_and_delete_are_conflicts(self):
+        entered, release = self.pause()
+        conn = self.open_body(body=b"first")
+        try:
+            self.assertTrue(entered.wait(3))
+            for name in ("app.ipa", "manifest.plist"):
+                self.assertEqual(self.req("PUT", f"/u/{ID}/{name}", b"second")[0], 409)
+            self.assertEqual(self.req("DELETE", f"/u/{ID}")[0], 409)
+            release.set(); self.assertEqual(self.finish(conn), 201)
+            with open(os.path.join(self.root, ID, "app.ipa"), "rb") as f: self.assertEqual(f.read(), b"first")
+        finally: release.set(); conn.close()
+
+    def test_other_sessions_continue_and_gc_cannot_remove_active_session(self):
+        self.assertEqual(self.req("PUT", f"/u/{ID}/app.ipa", b"old")[0], 201)
+        entered, release = self.pause(); conn = self.open_body()
+        try:
+            self.assertTrue(entered.wait(3))
+            old = time.time() - 120; os.utime(os.path.join(self.root, ID), (old, old))
+            self.srv.collect(); self.assertTrue(os.path.isfile(os.path.join(self.root, ID, "app.ipa")))
+            self.assertEqual(self.req("PUT", f"/u/{'Z'*22}/app.ipa", b"other")[0], 201)
+            release.set(); self.assertEqual(self.finish(conn), 201)
+        finally: release.set(); conn.close()
+
+    def test_aborted_replacement_and_hash_failure_preserve_existing_file(self):
+        self.assertEqual(self.req("PUT", f"/u/{ID}/app.ipa", b"old")[0], 201)
+        conn = self.open_body(body=b"partial", declared=100)
+        conn.shutdown(socket.SHUT_WR)
+        self.assertEqual(self.finish(conn), 400)
+        self.assertEqual(self.req("PUT", f"/u/{ID}/app.ipa", b"bad", headers={"X-Wax-SHA256": "0"*64})[0], 400)
+        with open(os.path.join(self.root, ID, "app.ipa"), "rb") as f: self.assertEqual(f.read(), b"old")
+        self.assertEqual(os.listdir(os.path.join(self.root, ID)), ["app.ipa"])
+
+    def test_publication_failure_preserves_file_and_hash(self):
+        from unittest.mock import patch
+        self.assertEqual(self.req("PUT", f"/u/{ID}/app.ipa", b"hello", headers={"X-Wax-SHA256": HASH})[0], 201)
+        replace = os.replace
+        def fail(source, destination):
+            if destination.endswith("app.ipa"): raise OSError("injected publication failure")
+            return replace(source, destination)
+        with patch.object(wax_ota.os, 'replace', side_effect=fail):
+            self.assertEqual(self.req("PUT", f"/u/{ID}/app.ipa", b"new")[0], 500)
+        with open(os.path.join(self.root, ID, "app.ipa"), "rb") as f: self.assertEqual(f.read(), b"hello")
+        self.assertEqual(self.req("GET", f"/has/{HASH}")[0], 200)
+
+    def test_cache_publication_failure_is_a_real_upload_but_never_false_hash_hit(self):
+        from unittest.mock import patch
+        self.req("PUT", f"/u/{ID}/app.ipa", b"hello", headers={"X-Wax-SHA256": HASH})
+        replace = os.replace
+        def fail(source, destination):
+            if destination.endswith(".sha256"): raise OSError("injected cache write failure")
+            return replace(source, destination)
+        new = b"new"; sha = hashlib.sha256(new).hexdigest()
+        with patch.object(wax_ota.os, 'replace', side_effect=fail):
+            status, data = self.req("PUT", f"/u/{ID}/app.ipa", new, headers={"X-Wax-SHA256": sha})
+        self.assertEqual(status, 201); self.assertIn("warning", json.loads(data))
+        self.assertEqual(self.req("GET", f"/has/{HASH}")[0], 404)
+        self.assertEqual(self.req("GET", f"/has/{sha}")[0], 404)
+        with open(os.path.join(self.root, ID, "app.ipa"), "rb") as f: self.assertEqual(f.read(), new)
+
+    def test_failed_cleanup_is_hidden_counted_and_collectable(self):
+        from unittest.mock import patch
+        unlink = os.unlink
+        def fail(path, *args, **kw):
+            if str(path).endswith('.part'): raise OSError("injected cleanup failure")
+            return unlink(path, *args, **kw)
+        with patch.object(wax_ota.os, 'unlink', side_effect=fail):
+            self.assertEqual(self.req("PUT", f"/u/{ID}/app.ipa", b"bad", headers={"X-Wax-SHA256": "0"*64})[0], 400)
+        self.assertGreater(wax_ota.dir_size(self.root), 0)
+        self.assertTrue(all(n.startswith('.') and n.endswith('.part') for n in os.listdir(os.path.join(self.root, ID))))
+        old = time.time() - 120; os.utime(os.path.join(self.root, ID), (old, old)); self.srv.collect()
+        self.assertFalse(os.path.exists(os.path.join(self.root, ID)))
+
+    def test_symlinked_session_does_not_write_outside_root(self):
+        outside = tempfile.mkdtemp()
+        try:
+            os.symlink(outside, os.path.join(self.root, ID))
+            self.assertEqual(self.req("PUT", f"/u/{ID}/app.ipa", b"bad")[0], 400)
+            self.assertEqual(os.listdir(outside), [])
+        finally: shutil.rmtree(outside)
+
+    def test_delete_cleanup_failure_is_not_false_success(self):
+        from unittest.mock import patch
+        self.req("PUT", f"/u/{ID}/app.ipa", b"old")
+        with patch.object(wax_ota.shutil, 'rmtree', side_effect=OSError("injected delete failure")):
+            self.assertEqual(self.req("DELETE", f"/u/{ID}")[0], 500)
+        self.assertEqual(self.req("DELETE", f"/u/{ID}")[0], 200)
+
+
+
+class HashIdentity(Base):
+    def test_stat_metadata_is_not_accepted_as_content_identity(self):
+        self.req("PUT", f"/u/{ID}/app.ipa", b"other")
+        path = os.path.join(self.root, ID, "app.ipa"); info = os.stat(path)
+        with open(os.path.join(self.root, ID, ".sha256"), "w") as cache:
+            json.dump(dict(sha256=HASH, inode=info.st_ino, size=info.st_size, mtime_ns=info.st_mtime_ns),cache)
+        self.assertEqual(self.req("GET", f"/has/{HASH}")[0],404)
+
+    def test_hash_verification_owns_its_session_but_does_not_block_others(self):
+        from unittest.mock import patch
+        self.req("PUT", f"/u/{ID}/app.ipa", b"hello",headers={"X-Wax-SHA256":HASH})
+        entered,release=threading.Event(),threading.Event();original=wax_ota.verified_file_hash
+        def pause(path,limit):
+            entered.set()
+            if not release.wait(5): raise AssertionError("test did not release hash verification")
+            return original(path,limit)
+        answer=[]
+        with patch.object(wax_ota,'verified_file_hash',side_effect=pause):
+            request=threading.Thread(target=lambda:answer.append(self.req("GET",f"/has/{HASH}")[0]));request.start()
+            try:
+                self.assertTrue(entered.wait(3))
+                self.assertEqual(self.req("DELETE",f"/u/{ID}")[0],409)
+                self.assertEqual(self.req("PUT",f"/u/{ID}/app.ipa",b"replace")[0],409)
+                self.assertEqual(self.req("PUT",f"/u/{'Z'*22}/app.ipa",b"other")[0],201)
+            finally:release.set();request.join(5)
+        self.assertEqual(answer,[200])
+
+if __name__ == "__main__": unittest.main()

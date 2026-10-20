@@ -101,6 +101,7 @@ struct SettingsView: View {
                     }
 
                     WaxSectionLabel(text: "Storage")
+                    if let message = library.message { WaxFeedbackCard(tone: .bad, text: message) }
                     WaxPanel {
                         storageRow("Unsigned", kind: .unsigned, count: library.unsigned.count)
                         WaxDivider()
@@ -156,7 +157,7 @@ struct SettingsView: View {
         .confirmationDialog("Delete \(confirmClear == .signed ? library.signed.count : library.unsigned.count) \(confirmClear == .signed ? "signed" : "unsigned") apps (\(Self.size(library.bytes(confirmClear ?? .unsigned))))?",
                             isPresented: Binding(get: { confirmClear != nil }, set: { if !$0 { confirmClear = nil } }),
                             titleVisibility: .visible) {
-            Button("Delete", role: .destructive) { if let k = confirmClear { library.clear(k) } }
+            Button("Delete", role: .destructive) { if let k = confirmClear { Task { await library.clear(k) } } }
         }
         .task { await refreshNotifications() }
         .onChange(of: showServer) { _, _ in Task { await refreshNotifications() } }
