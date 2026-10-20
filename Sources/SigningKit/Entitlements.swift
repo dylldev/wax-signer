@@ -41,7 +41,7 @@ struct EntitlementsPolicy {
     /// Core identity entitlements always come from the profile; everything else the app requested is kept
     /// only if the profile grants that key. Nothing is added that the app did not ask for.
     static func resolve(requested: [String: Any], profile: [String: Any], teamID: String,
-                        resolvedApplicationIdentifier: String) -> Result {
+                        resolvedApplicationIdentifier: String, applicationIdentifierPrefix: String? = nil) -> Result {
         var out: [String: Any] = [
             "application-identifier": resolvedApplicationIdentifier,
             "com.apple.developer.team-identifier": teamID,
@@ -52,8 +52,8 @@ struct EntitlementsPolicy {
         let identityKeys: Set<String> = ["application-identifier", "com.apple.developer.team-identifier", "get-task-allow"]
         for (key, value) in requested where !identityKeys.contains(key) {
             if key == "keychain-access-groups" {
-                // Profile typically grants `TEAM.*`; groups are rewritten onto the team prefix.
-                let groups = teamPrefixed((value as? [String]) ?? [], teamID: teamID)
+                // Keychain groups follow the selected App ID prefix, not necessarily the Team ID.
+                let groups = teamPrefixed((value as? [String]) ?? [], teamID: applicationIdentifierPrefix ?? teamID)
                 if granted(key: key, value: groups, profile: profile) { out[key] = groups } else { dropped.append(key) }
             } else if granted(key: key, value: value, profile: profile) {
                 out[key] = value
@@ -66,12 +66,12 @@ struct EntitlementsPolicy {
 
     /// Requested entitlement keys the profile does not grant. A key is granted only if the profile has it
     /// and every requested value is permitted by it (list members must each match, wildcards end in `*`).
-    static func unmet(requested: [String: Any], profile: [String: Any], teamID: String) -> [String] {
+    static func unmet(requested: [String: Any], profile: [String: Any], teamID: String, applicationIdentifierPrefix: String? = nil) -> [String] {
         let derived: Set<String> = ["application-identifier", "com.apple.developer.team-identifier", "get-task-allow"]
         return requested.keys.filter { key in
             guard !derived.contains(key) else { return false }
             let value = key == "keychain-access-groups"
-                ? teamPrefixed((requested[key] as? [String]) ?? [], teamID: teamID) : requested[key]!
+                ? teamPrefixed((requested[key] as? [String]) ?? [], teamID: applicationIdentifierPrefix ?? teamID) : requested[key]!
             return !granted(key: key, value: value, profile: profile)
         }.sorted()
     }
@@ -95,7 +95,7 @@ struct EntitlementsPolicy {
         return out
     }
 
-    /// Moves keychain groups onto `teamID`: a different 10-character team prefix is replaced, an
+    /// Legacy helper name: moves keychain groups onto the supplied App ID prefix: a different 10-character team prefix is replaced, an
     /// unprefixed group gets the prefix. Groups already on `teamID` are untouched.
     static func teamPrefixed(_ groups: [String], teamID: String) -> [String] {
         groups.map { group in
