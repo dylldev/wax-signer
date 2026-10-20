@@ -60,6 +60,109 @@ public enum BundleSigner {
 
     public static func sign(appDirectory: URL, identity: CodeSigningIdentity, certificateTeamID: String?,
                             profiles: ProfileSet, options: SigningOptions = SigningOptions()) throws -> SigningResult {
+        var ctx = try prepare(appDirectory: appDirectory, identity: identity, certificateTeamID: certificateTeamID, profiles: profiles, options: options)
+        // Validate all inputs before changing any binary in the app tree.
+        ctx.result.warnings.append(contentsOf: try FatMachO.thinTree(at: appDirectory))
+        try options.cancellation?.check()
+        try ctx.signBundle(at: appDirectory, kind: .app)
+        return ctx.result
+    }
+
+    /// Read-only planning for an already edited, app-owned unpacked tree. No private key is needed or retained.
+    /// UI preview/execution must keep exclusive ownership of this scratch tree; this is not a filesystem lock.
+    public static func plan(appDirectory: URL, certificateChainDER: [Data], certificateTeamID: String?, profiles: ProfileSet,
+                            options: SigningOptions = SigningOptions(), profilePolicy: SigningPlan.ProfilePolicy = .requireValidCMS,
+                            maxBundles: Int = 256) throws -> SigningPlan {
+        try options.cancellation?.check()
+        guard maxBundles > 0, maxBundles <= 4096,
+              Context.signableBundles(in: appDirectory).count <= maxBundles else { throw SigningError.bundle("preflight bundle count exceeds its limit") }
+        let canonicalRoot = appDirectory.resolvingSymlinksInPath().path
+        let paths = Set(Context.signableBundles(in: appDirectory).map { url -> String in
+            let path = url.resolvingSymlinksInPath().path
+            return path == canonicalRoot ? "." : String(path.dropFirst(canonicalRoot.count + 1))
+        })
+        guard Set(profiles.overrides.keys).isSubset(of: paths) else {
+            throw SigningError.bundle("preflight profile override names an unknown bundle path")
+        }
+        var frozen = options
+        frozen.requestedEntitlements = try freeze(options.requestedEntitlements)
+        frozen.overrideEntitlements = try freeze(options.overrideEntitlements)
+        // Reparse immutable bytes so caller-owned Foundation containers cannot mutate a retained decision.
+        let snapshots = try ProfileSet(pool: profiles.pool.map { try ProvisioningProfile.parse($0.rawData, now: frozen.now) },
+            overrides: profiles.overrides.mapValues { try ProvisioningProfile.parse($0.rawData, now: frozen.now) })
+        let publicIdentity = PlanningIdentity(certificateChainDER: certificateChainDER)
+        let manifest = try IPAArchiveManifest.capture(directory: appDirectory.deletingLastPathComponent(), rootFolder: appDirectory.lastPathComponent)
+        let ctx = try prepare(appDirectory: appDirectory, identity: publicIdentity, certificateTeamID: certificateTeamID, profiles: snapshots, options: frozen)
+        var bundles: [SigningPlan.Bundle] = []
+        for selection in ctx.result.profileSelections {
+            guard let decision = ctx.planned.first(where: { ctx.relative(URL(fileURLWithPath: $0.key)) == selection.bundlePath })?.value else {
+                throw SigningError.bundle("preflight has no decision for \(selection.bundlePath)")
+            }
+            if case .invalid(let reason) = selection.signatureStatus, profilePolicy == .requireValidCMS {
+                throw SigningError.profileRejected(bundle: selection.bundlePath, profile: selection.profileName, reason: "CMS signature invalid: \(reason)")
+            }
+            let resolved = ctx.resolve(decision)
+            let before = decision.originalRequested
+            let keys = Set(before.keys).union(resolved.entitlements.keys).sorted()
+            let changes = try keys.map { key -> SigningPlan.Entitlement in
+                let requested = before[key], granted = resolved.entitlements[key]
+                let disposition: SigningPlan.Entitlement.Disposition
+                if granted == nil { disposition = .dropped }
+                else if requested == nil { disposition = .identityAdded }
+                else if (requested! as AnyObject).isEqual(granted!) { disposition = .granted }
+                else { disposition = .rewritten }
+                return SigningPlan.Entitlement(key: key, disposition: disposition,
+                    requestedValueXML: try xmlValue(requested), signedValueXML: try xmlValue(granted))
+            }
+            bundles.append(SigningPlan.Bundle(path: selection.bundlePath, originalIdentifier: decision.originalIdentifier,
+                identifier: decision.identifier, profile: selection, entitlements: changes,
+                requestedEntitlementsXML: try xml(before), signedEntitlementsXML: try xml(resolved.entitlements)))
+        }
+        try manifest.verifyTree() // preparation itself must have observed one unchanged input tree
+        return SigningPlan(bundles: bundles, identifierChanges: ctx.result.bundleIdentifierChanges) { identity, now in
+            try frozen.cancellation?.check()
+            guard identity.certificateChainDER == certificateChainDER else { throw SigningError.bundle("preflight signing certificate chain changed; make a new plan") }
+            try manifest.verifyTree()
+            guard let leaf = certificateChainDER.first, let validity = CertificateValidity.dates(of: leaf) else { throw SigningError.bundle("preflight certificate is unreadable") }
+            if now > validity.notAfter { throw SigningError.certificateExpired(validity.notAfter) }
+            if now < validity.notBefore { throw SigningError.certificateNotYetValid(validity.notBefore) }
+            for decision in ctx.planned.values where decision.profile.info.isExpired(at: now) {
+                throw SigningError.profileRejected(bundle: decision.identifier, profile: decision.profile.info.name, reason: "expired since preflight")
+            }
+            var execution = ctx
+            execution.identity = identity
+            execution.result.warnings.append(contentsOf: try FatMachO.thinTree(at: appDirectory))
+            try frozen.cancellation?.check()
+            try execution.signBundle(at: appDirectory, kind: .app)
+            return execution.result
+        }
+    }
+
+    /// Execute the exact frozen decisions once, after a content/mode/symlink snapshot recheck.
+    public static func sign(plan: SigningPlan, identity: CodeSigningIdentity, now: Date = Date()) throws -> SigningResult {
+        try plan.execute(identity: identity, now: now)
+    }
+
+    private struct PlanningIdentity: CodeSigningIdentity {
+        let certificateChainDER: [Data]
+        func signRSAPKCS1SHA256(_ message: Data) throws -> Data { throw SigningError.keyOperation("read-only preflight cannot sign") }
+    }
+    private static func xml(_ value: [String: Any]) throws -> Data {
+        let data = try PropertyListSerialization.data(fromPropertyList: value, format: .xml, options: 0)
+        guard data.count <= 256 * 1024 else { throw SigningError.bundle("preflight entitlements exceed 256 KiB") }
+        return data
+    }
+    private static func xmlValue(_ value: Any?) throws -> Data? { try value.map { try xml(["value": $0]) } }
+    private static func freeze(_ value: [String: Any]?) throws -> [String: Any]? {
+        try value.map {
+            guard let frozen = try PropertyListSerialization.propertyList(from: xml($0), format: nil) as? [String: Any] else {
+                throw SigningError.bundle("preflight entitlements are not a dictionary")
+            }
+            return frozen
+        }
+    }
+    private static func prepare(appDirectory: URL, identity: CodeSigningIdentity, certificateTeamID: String?, profiles: ProfileSet,
+                                options: SigningOptions) throws -> Context {
         try options.cancellation?.check()
         guard let leaf = identity.certificateChainDER.first else { throw SigningError.keyOperation("no certificate") }
         let leafSHA1 = Insecure.SHA1.hash(data: leaf).map { String(format: "%02X", $0) }.joined()
@@ -76,11 +179,7 @@ public enum BundleSigner {
                           leafSHA1: leafSHA1, certificateTeamID: certificateTeamID)
         try ctx.preflight()
         try ctx.plan()
-        // Validate all inputs before changing any binary in the app tree.
-        ctx.result.warnings.append(contentsOf: try FatMachO.thinTree(at: appDirectory))
-        try options.cancellation?.check()
-        try ctx.signBundle(at: appDirectory, kind: .app)
-        return ctx.result
+        return ctx
     }
 
     // MARK: -
@@ -89,10 +188,12 @@ public enum BundleSigner {
         var identifier: String
         var profile: ProvisioningProfile
         var requested: [String: Any]
+        var originalRequested: [String: Any]
+        var originalIdentifier: String
     }
 
     private struct Context {
-        let identity: CodeSigningIdentity
+        var identity: CodeSigningIdentity
         let profiles: ProfileSet
         let options: SigningOptions
         let rootURL: URL
@@ -103,7 +204,7 @@ public enum BundleSigner {
         var newIdentifiers: [String: String] = [:]
         /// Profile, identifier and requested entitlements per signable bundle, keyed by directory path.
         var planned: [String: Planned] = [:]
-        var trustCache: [UUID: ProfileSignatureStatus] = [:]
+        var trustCache: [Data: ProfileSignatureStatus] = [:]
 
         init(identity: CodeSigningIdentity, profiles: ProfileSet, options: SigningOptions, rootURL: URL,
              leafSHA1: String, certificateTeamID: String?) {
@@ -264,13 +365,14 @@ public enum BundleSigner {
                 guard let chosen = try select(for: info.url, identifier: finalID, requested: requested, throwing: true) else {
                     continue
                 }
-                planned[info.url.path] = Planned(identifier: finalID, profile: chosen.profile, requested: requested)
+                planned[info.url.path] = Planned(identifier: finalID, profile: chosen.profile, requested: requested, originalRequested: info.requested, originalIdentifier: info.original)
                 var selection = ProfileSelection(
                     bundlePath: relative(info.url), bundleIdentifier: finalID, profileName: chosen.profile.info.name,
                     profileID: chosen.profile.info.id, rejected: chosen.rejected)
-                let id = chosen.profile.info.id
-                let status = trustCache[id] ?? ProfileTrust.evaluate(chosen.profile.rawData)
-                trustCache[id] = status
+                // Imported UUIDs are metadata, not the identity of the signed CMS bytes.
+                let bytes = chosen.profile.rawData
+                let status = trustCache[bytes] ?? ProfileTrust.evaluate(bytes)
+                trustCache[bytes] = status
                 selection.signatureStatus = status
                 result.profileSelections.append(selection)
             }
@@ -342,6 +444,14 @@ public enum BundleSigner {
 
         // MARK: Signing
 
+        /// One resolver supplies both the public preview and the actual signed entitlements.
+        func resolve(_ plan: Planned) -> EntitlementsPolicy.Result {
+            EntitlementsPolicy.resolve(requested: plan.requested, profile: plan.profile.entitlements, teamID: plan.profile.info.teamID,
+                resolvedApplicationIdentifier: options.keepBundleIdentifier && !plan.profile.info.bundleIdentifierPattern.contains("*")
+                    ? plan.profile.info.applicationIdentifier : plan.profile.info.applicationIdentifierPrefix + "." + plan.identifier,
+                applicationIdentifierPrefix: plan.profile.info.applicationIdentifierPrefix)
+        }
+
         mutating func signBundle(at bundle: URL, kind: SignedItem.Kind) throws {
             try options.cancellation?.check()
             // 1. nested code first: its final bytes are sealed into this bundle's CodeResources
@@ -401,11 +511,7 @@ public enum BundleSigner {
             if let plan = planned[bundle.path] {
                 try plan.profile.rawData.write(to: bundle.appendingPathComponent("embedded.mobileprovision"))
                 profileName = plan.profile.info.name
-                let resolved = EntitlementsPolicy.resolve(
-                    requested: plan.requested, profile: plan.profile.entitlements, teamID: plan.profile.info.teamID,
-                    resolvedApplicationIdentifier: options.keepBundleIdentifier && !plan.profile.info.bundleIdentifierPattern.contains("*")
-                        ? plan.profile.info.applicationIdentifier : plan.profile.info.applicationIdentifierPrefix + "." + identifier,
-                    applicationIdentifierPrefix: plan.profile.info.applicationIdentifierPrefix)
+                let resolved = resolve(plan)
                 if let previous = plan.requested["application-identifier"] as? String,
                    String(previous.prefix { $0 != "." }) != plan.profile.info.applicationIdentifierPrefix {
                     result.warnings.append("\(relative(bundle)): App ID prefix changes to \(plan.profile.info.applicationIdentifierPrefix). Existing keychain data may be inaccessible under the new prefix.")
