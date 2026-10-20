@@ -97,10 +97,13 @@ public final class PreparedIPA: @unchecked Sendable {
         }, checkCancellation: { try budget.check() })
         let app = tree.appendingPathComponent("Payload/" + input.appFolder)
         // Before edits, bound existing code and imported inputs. No whole-file hashing buffer is used.
-        try budget.inspect(tree: tree)
+        budget.chargedBytes = try budget.inspect(tree: tree)
         try budget.inspectImports(edits.injectLibraries)
         try budget.check()
-        let edited = try AppEditor.applyDetailed(edits, to: app)
+        // Bound edits metadata before it can become oversized plist data in scratch.
+        guard try JSONEncoder().encode(edits).count <= 1024 * 1024 else { throw Failure.scratchLimit }
+        let edited = try AppEditor.applyDetailed(edits, to: app, scratchDirectory: work,
+            checkCancellation: budget.check, beforeLibraryWrite: { try budget.charge($0, directory: work) })
         let thinningNotes = try FatMachO.thinTree(at: app)
         try budget.inspect(tree: tree)
         var frozen = options
@@ -224,6 +227,7 @@ public final class PreparedIPA: @unchecked Sendable {
 private final class PreparationBudget: @unchecked Sendable {
     let limits: PreparedIPA.Limits
     let cancellation: SigningCancellation
+    var chargedBytes = 0 // editor is synchronous; never accessed by extraction workers
     private let started = DispatchTime.now().uptimeNanoseconds
     init(limits: PreparedIPA.Limits, cancellation: SigningCancellation) throws {
         guard limits.lifetime.isFinite, limits.lifetime > 0, limits.lifetime <= 3600,
@@ -236,7 +240,8 @@ private final class PreparationBudget: @unchecked Sendable {
         try cancellation.check()
         guard remaining > 0 else { throw PreparedIPA.Failure.expired }
     }
-    func inspect(tree: URL) throws {
+    @discardableResult
+    func inspect(tree: URL) throws -> Int {
         var bytes = 0, entries = 0
         var failure: Error?
         guard let walk = FileManager.default.enumerator(at: tree, includingPropertiesForKeys: nil, errorHandler: { _, e in failure = e; return false }) else { throw SigningError.io("cannot inspect preparation scratch") }
@@ -253,6 +258,16 @@ private final class PreparationBudget: @unchecked Sendable {
             if MachO.looksLikeMachO(header), size > limits.maximumCodeFileBytes { throw PreparedIPA.Failure.codeLimit }
         }
         if let failure { throw failure }
+        return bytes
+    }
+    func charge(_ bytes: Int, directory: URL) throws {
+        try check()
+        guard bytes >= 0, bytes <= limits.maximumPreparedBytes - chargedBytes else { throw PreparedIPA.Failure.scratchLimit }
+        chargedBytes += bytes
+        let disk = try FileManager.default.attributesOfFileSystem(forPath: directory.path)
+        guard let free = disk[.systemFreeSize] as? NSNumber else { throw SigningError.io("cannot measure preparation storage") }
+        let (required, overflow) = limits.extraction.minimumFreeBytes.addingReportingOverflow(Int64(bytes))
+        guard !overflow, free.int64Value >= required else { throw PreparedIPA.Failure.scratchLimit }
     }
     func inspectImports(_ urls: [URL]) throws {
         guard urls.count <= 64 else { throw PreparedIPA.Failure.codeLimit }

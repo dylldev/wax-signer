@@ -212,6 +212,44 @@ final class PreparedIPATests: XCTestCase {
         })) { guard case IPAError.integrity = $0 else { return XCTFail("expected integrity refusal: \($0)") } }
         XCTAssertTrue(changed); XCTAssertEqual(try Data(contentsOf: output), old)
     }
+    func testImportedLibraryBytesAreFrozenAndDoNotRequireSourceAtConfirmation() throws {
+        let library = root.appendingPathComponent("Hook.dylib")
+        try FileManager.default.copyItem(at: Fixtures.appDirectory.appendingPathComponent("Frameworks/TestKit.framework/TestKit"), to: library)
+        var edits = AppEdits(); edits.injectLibraries = [library]
+        let lease = try prepare(edits: edits)
+        XCTAssertTrue(lease.preview.changes.contains { $0.contains("Hook.dylib") })
+        XCTAssertTrue(lease.preview.code.contains { $0.path == "Frameworks/Hook.dylib" })
+        try FileManager.default.removeItem(at: library)
+        let outcome = try lease.execute(identity: credentials.signer, output: output)
+        XCTAssertTrue(outcome.selfCheck.passed)
+        let app = try unpack(outcome.output)
+        XCTAssertTrue(try MachO(Data(contentsOf: app.appendingPathComponent("SigningTestApp"))).loadDylibNames.contains { $0.hasSuffix("Hook.dylib") })
+        XCTAssertTrue(SignatureVerifier.verifyBundle(at: app).passed)
+    }
+    func testCancellationInsideActualPrivateKeyOperationPreventsPublication() throws {
+        struct Canceling: CodeSigningIdentity {
+            let base: SecurityFrameworkIdentity
+            let owner: SigningCancellation
+            var certificateChainDER: [Data] { base.certificateChainDER }
+            func signRSAPKCS1SHA256(_ message: Data) throws -> Data {
+                let signed = try base.signRSAPKCS1SHA256(message)
+                owner.cancel(); return signed
+            }
+        }
+        let lease = try prepare(), old = Data([1, 9]); try old.write(to: output)
+        XCTAssertThrowsError(try lease.execute(identity: Canceling(base: credentials.signer, owner: lease.cancellation), output: output)) {
+            XCTAssertTrue($0 is CancellationError)
+        }
+        XCTAssertEqual(try Data(contentsOf: output), old)
+    }
+    func testCancellationAtLastPackingProgressPreservesExistingArtifact() throws {
+        let lease = try prepare(), old = Data([2, 8]); try old.write(to: output)
+        var reached = false
+        XCTAssertThrowsError(try lease.execute(identity: credentials.signer, output: output, progress: { p in
+            if p.message == "Packing…", p.fraction > 0.99 { reached = true; lease.cancellation.cancel() }
+        })) { XCTAssertTrue($0 is CancellationError) }
+        XCTAssertTrue(reached); XCTAssertEqual(try Data(contentsOf: output), old)
+    }
     #if os(macOS)
     func testPreparedRepackedOutputPassesIndependentAppleCodesign() throws {
         let lease = try prepare(); let start = DispatchTime.now().uptimeNanoseconds

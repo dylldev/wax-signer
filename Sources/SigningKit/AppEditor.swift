@@ -138,7 +138,10 @@ public enum AppEditor {
 
     /// Notes for each change, and every bundle ID that was changed (old to new), so entitlements named after
     /// those IDs can follow the rename when the app is signed.
-    public static func applyDetailed(_ edits: AppEdits, to app: URL, randomSuffix: () -> String = defaultSuffix) throws -> (notes: [String], renames: [String: String]) {
+    public static func applyDetailed(_ edits: AppEdits, to app: URL, randomSuffix: () -> String = defaultSuffix,
+                                     scratchDirectory: URL? = nil, checkCancellation: () throws -> Void = {},
+                                     beforeLibraryWrite: (Int) throws -> Void = { _ in }) throws -> (notes: [String], renames: [String: String]) {
+        try checkCancellation()
         var renamed: [String: String] = [:]
         func text(_ s: String?) -> String? {
             let t = (s ?? "").trimmingCharacters(in: .whitespaces)
@@ -196,13 +199,15 @@ public enum AppEditor {
             notes.append("Device restriction removed")
         }
         if !edits.injectLibraries.isEmpty {
-            notes.append(contentsOf: try LibraryInjector.inject(edits.injectLibraries, into: app))
+            notes.append(contentsOf: try LibraryInjector.inject(edits.injectLibraries, into: app, scratchDirectory: scratchDirectory, checkCancellation: checkCancellation, beforeWrite: beforeLibraryWrite))
         }
         if let png = edits.iconPNG {
             try writeIcon(png, into: app, plist: &main)
             notes.append("Icon replaced")
         }
+        try checkCancellation()
         for edit in edits.plistEdits {
+            try checkCancellation()
             let key = edit.key.trimmingCharacters(in: .whitespaces)
             guard !key.isEmpty else { continue }
             guard !AppEditor.protectedKeys.contains(key) else {
@@ -223,6 +228,7 @@ public enum AppEditor {
             var renames: [String: String] = [oldID: newID]
             var bundles = nestedBundles(in: app)
             for b in bundles {
+                try checkCancellation()
                 var p = try readPlist(b)
                 guard let id = p["CFBundleIdentifier"] as? String else { continue }
                 let renamed = NestedIdentifier.candidates(original: id, mainOriginal: oldID, newMain: newID)[0]
@@ -233,6 +239,7 @@ public enum AppEditor {
             // Cross references between the app, its Watch app and the extensions.
             bundles.append(app)
             for b in bundles {
+                try checkCancellation()
                 var p = try readPlist(b)
                 var changed = false
                 do {

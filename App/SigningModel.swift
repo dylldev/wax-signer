@@ -235,7 +235,7 @@ final class SigningModel: ObservableObject {
         busyMessage == nil && !runningSign && !shelfSaveState.isSaving && !installing && ipaInfo != nil && (certificateID != nil || signedInputTarget != nil)
     }
 
-    var canSign: Bool { ipaInfo != nil && certificateID != nil && busyMessage == nil && !runningSign && !shelfSaveState.isSaving }
+    var canSign: Bool { ipaInfo != nil && certificateID != nil && busyMessage == nil && !runningSign && !shelfSaveState.isSaving && !installing }
 
     // MARK: Choosing the IPA
 
