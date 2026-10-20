@@ -116,13 +116,34 @@ final class SigningModel: ObservableObject {
     @Published private(set) var readyLink: URL?
     /// True from the tap on Sign & Install until the app has been handed over (or failed), so a second install cannot start.
     @Published private(set) var installing = false
+    private var installSession: OTAInstallModel.Session?
+
+    func ownsInstallation(_ ota: OTAInstallModel) -> Bool { installSession.map { ota.owns($0) } ?? false }
+    func cancelInstallation(ota: OTAInstallModel) { if let installSession { ota.cancel(installSession) } }
+    func startOver(ota: OTAInstallModel) { cancelInstallation(ota: ota); clearResult(); ota.resetIfIdle() }
+    func canOpenInstallLink(_ link: URL, ota: OTAInstallModel) -> Bool {
+        ota.activeSession == nil || (ownsInstallation(ota) && readyLink == link)
+    }
+    /// Notification activation can be delayed by foregrounding. It must not open over a replacement operation.
+    func openInstallLink(_ link: URL, ota: OTAInstallModel, prepare: () async throws -> Void, open: (URL) -> Void) async -> Bool {
+        guard canOpenInstallLink(link, ota: ota), !Task.isCancelled else { return false }
+        let owner = ota.activeSession?.id
+        do { try await prepare() } catch { return false }
+        guard !Task.isCancelled, owner == ota.activeSession?.id, canOpenInstallLink(link, ota: ota) else { return false }
+        open(link); return true
+    }
 
     /// One tap: sign with the chosen certificate (when there is one), then upload and hand the app to iOS.
     /// Nothing is uploaded unless signing succeeded and its self-check passed. Keeps going if Wax is sent to the
     /// background, and posts a notification when the app is ready to install.
     func signAndInstall(ota: OTAInstallModel, open: @escaping (URL) -> Void) async {
-        guard !installing else { return }
-        installing = true
+        guard !installing, !Task.isCancelled else { return }
+        let session: OTAInstallModel.Session
+        do { session = try ota.reserve() }
+        catch { errorText = error.localizedDescription; return }
+        installing = true; installSession = session
+        defer { ota.release(session); if installSession === session { installSession = nil } }
+        let needsSigning = certificateID != nil
         let job = BackgroundJob.shared
         job.askForNotificationPermission()
         let backgroundID = job.begin(title: ipaInfo?.displayName ?? "Wax")
@@ -131,14 +152,17 @@ final class SigningModel: ObservableObject {
         readyLink = nil
 
         let target: InstallTarget?
-        if certificateID != nil {
-            guard let task = sign(standalone: false, storeBigFiles: ota.hostKind == .phone, backgroundID: backgroundID) else { return }
-            await task.value
-            guard let r = report, r.checkFailures.isEmpty else { return }
+        if needsSigning {
+            guard let task = sign(standalone: false, storeBigFiles: session.kind == .phone, backgroundID: backgroundID) else { return }
+            await withTaskCancellationHandler(operation: { await task.value }, onCancel: {
+                task.cancel()
+                Task { @MainActor in ota.cancel(session) }
+            })
+            guard !Task.isCancelled, ota.owns(session), let r = report, r.checkFailures.isEmpty else { return }
             if BundleIDGuard.replacesRunningWax(originalID: ipaInfo?.bundleIdentifier ?? "",
                                                 finalID: r.installTarget.bundleIdentifier,
                                                 runningID: Bundle.main.bundleIdentifier) {
-                ota.block(BundleIDGuard.explanation)
+                ota.fail(session, reason: BundleIDGuard.explanation)
                 return
             }
             target = r.installTarget
@@ -150,25 +174,26 @@ final class SigningModel: ObservableObject {
             let isWaxItself = ipaInfo?.executable == Bundle.main.object(forInfoDictionaryKey: "CFBundleExecutable") as? String
             if let t = target, !isWaxItself,
                t.bundleIdentifier == Bundle.main.bundleIdentifier {
-                ota.block(BundleIDGuard.explanation)
+                ota.fail(session, reason: BundleIDGuard.explanation)
                 return
             }
         }
-        guard let target else { return }
+        guard let target, !Task.isCancelled, ota.owns(session) else { return }
 
         // Mirror the upload's real progress into the system's background progress.
         let weights = jobProgress(uploadFraction: 0, exportOnly: false)
         let watcher = ota.$state.sink { state in
-            if case .uploading(let f) = state { job.update(backgroundID, fraction: weights.overall(sign: 1, upload: f), subtitle: "Sending to your server") }
+            if ota.owns(session), case .uploading(let f) = state { job.update(backgroundID, fraction: weights.overall(sign: 1, upload: f), subtitle: "Sending to your server") }
         }
         defer { watcher.cancel() }
 
         let uploadStart = Date()
         guard let link = await ota.upload(ipa: target.ipa, bundleIdentifier: target.bundleIdentifier,
-                                          version: target.version, build: target.build, title: target.title) else { return }
+                                          version: target.version, build: target.build, title: target.title, session: session),
+              !Task.isCancelled, ota.owns(session) else { return }
         let megabytes = Double((try? target.ipa.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) / 1_000_000
         var estimator = JobEstimator(store: UserDefaults.standard)
-        estimator.record(megabytes: megabytes, signSeconds: certificateID != nil ? lastSignSeconds : 0,
+        estimator.record(megabytes: megabytes, signSeconds: needsSigning ? lastSignSeconds : 0,
                          uploadSeconds: Date().timeIntervalSince(uploadStart))
         readyLink = link
         if UIApplication.shared.applicationState == .active {
@@ -178,8 +203,8 @@ final class SigningModel: ObservableObject {
         }
         // The phone serves the file itself, so it must stay alive (also in the background) until iOS has it all.
         job.update(backgroundID, fraction: 1, subtitle: "Waiting for iOS to take the app")
-        succeeded = await ota.finishPhoneTransfer()
-        if ota.hostKind == .phone { readyLink = nil }      // the listener is closed now; the link no longer works
+        succeeded = await ota.finishPhoneTransfer(session: session)
+        if session.kind == .phone || !succeeded { readyLink = nil }      // the listener is closed now; the link no longer works
     }
 
     var canSignAndInstall: Bool {
@@ -284,6 +309,7 @@ final class SigningModel: ObservableObject {
         let throttle = ProgressThrottle()
         return Task.detached(priority: .userInitiated) {
             do {
+                try Task.checkCancellation()
                 let identity = try SecurityFrameworkIdentity(identity: store.identity(for: certificateID))
 
                 // Every imported, still-valid profile is a candidate; the engine picks per bundle and says why.
@@ -299,6 +325,7 @@ final class SigningModel: ObservableObject {
         options.keepBundleIdentifier = keep
         options.overrideEntitlements = entitlementsOverride
 
+                try Task.checkCancellation()
                 let pending = try shelf.reserve(kind: .signed, name: title, provenance: .waxSigned)
                 let output = try shelf.pendingURL(pending.id)
 

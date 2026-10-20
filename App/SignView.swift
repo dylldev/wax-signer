@@ -20,6 +20,7 @@ struct SignView: View {
     @State private var exportRun = false
     /// One outcome per run: the haptic and the spoken line must not repeat themselves.
     @State private var announced = false
+    @State private var pendingInstallTask: Task<Void, Never>?
 
     // MARK: Derived state
 
@@ -41,7 +42,7 @@ struct SignView: View {
         SignPhase.resolve(busy: model.busyMessage != nil && !isReading, hasError: errorText != nil, hasReport: model.report != nil)
     }
 
-    private var uploading: Bool { if case .uploading = ota.state { return true } else { return false } }
+    private var uploading: Bool { ota.activeSession != nil && model.installing && model.busyMessage == nil }
 
     private var errorText: String? {
         if let e = model.errorText { return e }
@@ -68,6 +69,10 @@ struct SignView: View {
                 ScrollView {
                     VStack(spacing: 10) {
                         header.id("top")
+                        if model.ownsInstallation(ota) {
+                            Button("Cancel installation", role: .destructive) { model.cancelInstallation(ota: ota) }
+                                .accessibilityHint("Keeps signed and saved IPA files. Signing already in progress may finish safely before stopping.")
+                        }
                         if let r = model.report {
                             resultCard(r)
                         } else if let stage {
@@ -116,14 +121,16 @@ struct SignView: View {
 
     /// A tapped "Ready to install" notification: go to this screen and bring up iOS's install prompt.
     private func openPendingInstall() {
-        guard let link = inbox.pendingLink else { return }
+        pendingInstallTask?.cancel()
+        guard let link = inbox.pendingLink, model.canOpenInstallLink(link, ota: ota) else { return }
         router.tab = .sign
-        inbox.pendingLink = nil
-        // iOS ignores the install request while Wax is still coming to the front, so wait until it is active.
-        Task { @MainActor in
-            for _ in 0..<30 where UIApplication.shared.applicationState != .active { try? await Task.sleep(for: .milliseconds(100)) }
-            try? await Task.sleep(for: .milliseconds(300))
-            openURL(link)
+        pendingInstallTask = Task { @MainActor in
+            let opened = await model.openInstallLink(link, ota: ota, prepare: {
+                for _ in 0..<30 where UIApplication.shared.applicationState != .active { try await Task.sleep(for: .milliseconds(100)) }
+                try await Task.sleep(for: .milliseconds(300))
+                guard inbox.pendingLink == link else { throw CancellationError() }
+            }, open: { openURL($0) })
+            if opened, inbox.pendingLink == link { inbox.pendingLink = nil }
         }
     }
 
@@ -262,7 +269,7 @@ struct SignView: View {
                 Label(primary.title, systemImage: primaryIcon)
             }
             .buttonStyle(WaxPrimaryButtonStyle())
-            .disabled(model.installing)
+            .disabled(model.installing || ota.activeSession != nil)
             .padding(.top, 4)
             Text(primary.reason)
                 .font(.footnote).foregroundStyle(Wax.sub).multilineTextAlignment(.center)
@@ -386,9 +393,10 @@ struct SignView: View {
             if let link = model.readyLink {
                 Button { openURL(link) } label: { Label("Install", systemImage: "arrow.down.app") }
                     .buttonStyle(WaxPrimaryButtonStyle())
+                    .disabled(!model.canOpenInstallLink(link, ota: ota))
             }
             exportButton(r).disabled(model.shelfSaveState.isSaving)
-            Button { model.clearResult(); ota.reset() } label: {
+            Button { model.startOver(ota: ota) } label: {
                 Label("Start over", systemImage: "arrow.counterclockwise")
                     .font(.subheadline.weight(.semibold)).foregroundStyle(Wax.sub)
                     .frame(maxWidth: .infinity, minHeight: Wax.touch)

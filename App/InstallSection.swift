@@ -116,9 +116,14 @@ struct InstallSection: View {
                 else { Label(note, systemImage: note.contains("accepted") ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                     .font(.footnote).foregroundStyle(note.contains("accepted") ? Wax.ok : Wax.bad) }
             }
+        case .preparing: ProgressView("Preparing installation…")
         case .uploading(let p): ProgressView("Uploading…", value: p)
         case .handedToiOS: Text("Uploaded. iOS will now ask you to confirm the install.").font(.footnote)
         case .failed(let text): Text(text).font(.footnote).foregroundStyle(Wax.bad)
+        }
+        if model.activeSession != nil {
+            Button("Cancel installation", role: .destructive) { model.cancelActive() }
+            Text("Host changes apply to the next installation. Canceling keeps saved and signed IPA files.").font(.footnote)
         }
     }
 
