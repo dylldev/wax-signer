@@ -9,8 +9,8 @@ final class SignScreenLogicTests: XCTestCase {
         XCTAssertEqual(SignPhase.resolve(busy: false, hasError: false, hasReport: false), .idle)
     }
 
-    func testAFailedInstallTestHidesTheServerSetup() {
-        XCTAssertEqual(InstallSetupPanel.resolve(testResult: .failed, setupComplete: true), .hidden)
+    func testUndetectedProbeKeepsServerSetupAndRetryAvailable() {
+        XCTAssertEqual(InstallSetupPanel.resolve(testResult: .failed, setupComplete: true), .show(collapsed: true, eligibilityUnknown: true))
     }
 
     func testAnUntestedIdentityShowsSetupWithAnUncertaintyNote() {
@@ -18,9 +18,9 @@ final class SignScreenLogicTests: XCTestCase {
         XCTAssertEqual(InstallSetupPanel.resolve(testResult: nil, setupComplete: true), .show(collapsed: true, eligibilityUnknown: true))
     }
 
-    func testAVerifiedIdentityShowsSetupWithoutANote() {
-        XCTAssertEqual(InstallSetupPanel.resolve(testResult: .installed, setupComplete: false), .show(collapsed: false, eligibilityUnknown: false))
-        XCTAssertEqual(InstallSetupPanel.resolve(testResult: .installed, setupComplete: true), .show(collapsed: true, eligibilityUnknown: false))
+    func testLegacyPositiveObservationStillShowsEligibilityUncertainty() {
+        XCTAssertEqual(InstallSetupPanel.resolve(testResult: .installed, setupComplete: false), .show(collapsed: false, eligibilityUnknown: true))
+        XCTAssertEqual(InstallSetupPanel.resolve(testResult: .installed, setupComplete: true), .show(collapsed: true, eligibilityUnknown: true))
     }
 }
 
@@ -113,4 +113,18 @@ final class IdentityStatusTests: XCTestCase {
         store.set(nil, for: "AA")
         XCTAssertNil(store.result(for: "AA"))
     }
+    func testHistoricalProbeDetectionNeverClaimsCurrentInstallOrLaunchVerification() {
+        XCTAssertEqual(IdentityStatus.verified.label, "Probe detected")
+        XCTAssertTrue(IdentityStatus.verified.detail.contains("earlier test"))
+        XCTAssertTrue(IdentityStatus.verified.detail.contains("does not verify"))
+        XCTAssertFalse(IdentityStatus.verified.detail.contains("installed on this phone"))
+        XCTAssertTrue(InstallProbeMessaging.detected.contains("not independently confirmed"))
+    }
+    func testProbeTimeoutReportsUncertaintyAndOffersRetry() {
+        XCTAssertEqual(IdentityStatus.installFailed.label, "Not detected")
+        XCTAssertTrue(InstallProbeMessaging.notDetected.contains("outcome is unknown"))
+        XCTAssertFalse(InstallProbeMessaging.notDetected.contains("didn't install"))
+        XCTAssertTrue(InstallProbeMessaging.notDetected.contains("retry"))
+    }
+
 }

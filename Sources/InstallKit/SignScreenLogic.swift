@@ -72,14 +72,15 @@ public enum SignSetupChecklist {
 
 /// Whether the install-server setup is shown, and how.
 public enum InstallSetupPanel: Equatable, Sendable {
-    /// A test install with this identity did not complete, so uploading would only mislead.
+    /// Retained for API compatibility; a probe timeout alone must not hide delivery/retry setup.
     case hidden
     /// `collapsed`: setup is complete, show a one-line summary. `eligibilityUnknown`: this identity has not been
-    /// test-installed on this phone yet, so say it may not install.
+    /// independently verified for the current configuration, so say it may not install.
     case show(collapsed: Bool, eligibilityUnknown: Bool)
 
     public static func resolve(testResult: InstallTestResult?, setupComplete: Bool) -> InstallSetupPanel {
-        testResult == .failed ? .hidden : .show(collapsed: setupComplete, eligibilityUnknown: testResult == nil)
+        // A legacy scheme observation has no profile/OS/time binding and cannot establish eligibility.
+        .show(collapsed: setupComplete, eligibilityUnknown: true)
     }
 }
 
