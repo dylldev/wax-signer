@@ -30,6 +30,20 @@ final class AppIDPrefixTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(ProfileInfo.self, from: legacy).applicationIdentifierPrefix, prefix)
         if case .appleChainVerified = ProfileTrust.evaluate(profile.rawData) { XCTFail("synthetic profile is not trusted") }
     }
+    func testReadOnlyPlanAndExecutionAgreeForIndependentAppIDPrefix() throws {
+        let app = try makeWorkingApp(); defer { try? FileManager.default.removeItem(at: app.deletingLastPathComponent()) }
+        let credentials = try TestCredentials(), profile = try ProvisioningProfile.parse(bytes())
+        let preview = try BundleSigner.plan(appDirectory: app, certificateChainDER: credentials.signer.certificateChainDER,
+            certificateTeamID: team, profiles: ProfileSet(single: profile), profilePolicy: .allowInvalidForTesting)
+        let result = try BundleSigner.sign(plan: preview, identity: credentials.signer)
+        for row in preview.bundles {
+            let grants = try XCTUnwrap(try PropertyListSerialization.propertyList(from: row.signedEntitlementsXML, format: nil) as? [String: Any])
+            XCTAssertEqual(grants["application-identifier"] as? String, prefix + "." + row.identifier)
+            XCTAssertEqual(grants["com.apple.developer.team-identifier"] as? String, team)
+            XCTAssertEqual(result.items.first { $0.relativePath == row.path }?.entitlementKeys, grants.keys.sorted())
+        }
+        XCTAssertTrue(SignatureVerifier.verifyBundle(at: app).passed)
+    }
     func testMissingDeclaredPrefixUsesTheActualEntitlementPrefix() throws {
         XCTAssertEqual(try ProvisioningProfile.parse(bytes(declared: nil)).info.applicationIdentifierPrefix, prefix)
     }

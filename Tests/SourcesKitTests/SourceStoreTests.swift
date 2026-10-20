@@ -80,6 +80,19 @@ final class SourceStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: cache), before); XCTAssertEqual(try Data(contentsOf: tag), previousTag)
         XCTAssertEqual(store.sources, [saved]); XCTAssertEqual(store.cached(saved.id)?.apps.first?.name, "Alpha")
     }
+    func testRejectedBudgetRefreshCannotReauthorizeOlderResponseCommit() async throws {
+        StubProtocol.handler = { _ in (200, ["ETag": "\"good\""], self.good) }
+        let store = makeStore(); _ = try await store.add(url: sourceURL)
+        let saved = try XCTUnwrap(store.sources.first), older = try store.beginRefresh(saved.id)
+        let nested = Data((#"{"apps":[],"ignored":"# + String(repeating: "[", count: 64) + "0" + String(repeating: "]", count: 64) + "}").utf8)
+        StubProtocol.handler = { _ in (200, ["ETag": "\"bad\""], nested) }
+        do { _ = try await store.refresh(saved.id); XCTFail("must reject the newer input") }
+        catch { XCTAssertEqual(error as? SourceError, .resourceLimit("JSON nesting limit")) }
+        XCTAssertThrowsError(try store.finishRefresh(older, repo: SourceRepo(name: "stale", apps: []), etag: "stale")) {
+            XCTAssertEqual($0 as? SourceStoreError, .refreshSuperseded)
+        }
+        XCTAssertEqual(store.sources, [saved]); XCTAssertEqual(store.cached(saved.id)?.name, "Test Repo")
+    }
 
     func testFailedAddSavesNothing() async throws {
         StubProtocol.handler = { _ in (404, [:], Data("nope".utf8)) }
