@@ -91,9 +91,10 @@ public enum CertificateFeed {
                             allowedNames: Set<String>? = nil, bodyDeadline: TimeInterval = 20,
                             verify: ((CertificateBundle, Date) throws -> Void)? = nil) async throws -> CertificateBundle {
         guard feed.scheme?.lowercased() == "https" else { throw Failure(message: "The certificate feed must be an https:// address.") }
+        try Task.checkCancellation()
         let verifying = verify ?? Self.verify(_:now:)   // nil selects the real verifier; no caller can skip it
         let cacheFile = cacheDirectory.appendingPathComponent("install-certificate-\(cacheKey(feed)).json")
-        let cached = (try? Data(contentsOf: cacheFile)).flatMap { try? decode($0, now: now, allowedNames: allowedNames) }
+        let cached = (try? readCache(cacheFile)).flatMap { try? decode($0, now: now, allowedNames: allowedNames) }
             .flatMap { bundle -> CertificateBundle? in      // a cache written by an older build gets the same check as a download
                 return (try? verifying(bundle, now)) == nil ? nil : bundle
             }
@@ -101,16 +102,10 @@ public enum CertificateFeed {
         if let cached, cached.notAfter.timeIntervalSince(now) > renewBefore, now.timeIntervalSince(cachedAt) < refreshAfter { return cached }
         do {
             var request = URLRequest(url: feed); request.timeoutInterval = 20
-            let (bytes, response) = try await session.bytes(for: request)
-            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let (data, code) = try await InstallTransport.send(request, session: session,
+                budget: .init(maxBytes: maxBytes, deadline: bodyDeadline))
             guard code == 200 else { throw Failure(message: "The certificate feed answered HTTP \(code).") }
-            var data = Data()
-            let started = Date()
-            for try await byte in bytes {
-                if Date().timeIntervalSince(started) > bodyDeadline { throw Failure(message: "The certificate feed was too slow to answer.") }      // read at most maxBytes: a hostile feed cannot fill the phone's memory
-                data.append(byte)
-                if data.count > maxBytes { throw Failure(message: "The certificate feed is too large to be a certificate.") }
-            }
+            try Task.checkCancellation()
             let fresh = try decode(data, now: now, allowedNames: allowedNames)
             try verifying(fresh, now)
             guard fresh.notAfter > now else { throw Failure(message: "The published install certificate has expired. It should be renewed soon; use another install host meanwhile.") }
@@ -119,10 +114,22 @@ public enum CertificateFeed {
             try? FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: cacheFile.path)
             return fresh
         } catch {
+            if Task.isCancelled || error is CancellationError { throw CancellationError() }
             if let cached, cached.notAfter > now { return cached }
             if let failure = error as? Failure { throw failure }
             throw Failure(message: "Could not download the install certificate: \(error.localizedDescription)")
         }
+    }
+
+    /// Caches are untrusted too: enforce the cap while reading, not after allocating an arbitrary file.
+    private static func readCache(_ url: URL) throws -> Data {
+        let input = try FileHandle(forReadingFrom: url); defer { try? input.close() }
+        var data = Data()
+        while let chunk = try input.read(upToCount: min(8192, maxBytes + 1 - data.count)), !chunk.isEmpty {
+            data.append(chunk)
+            if data.count > maxBytes { throw Failure(message: "The cached install certificate is too large.") }
+        }
+        return data
     }
 
     /// The certificate inside the file must open with the password, chain to a root iOS trusts, be valid now and be for
