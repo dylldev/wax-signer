@@ -59,10 +59,10 @@ public final class PreparedIPA: @unchecked Sendable {
     let tree: URL
     private let sourceURL: URL
     private let capturedSource: URL
-    private let inventory: IPAExtractionInventory
+    private var inventory: IPAExtractionInventory?
     private let input: IPAMetadata
     private let manifest: IPAArchiveManifest
-    private let plan: SigningPlan
+    private var plan: SigningPlan?
     private let budget: PreparationBudget
     private let lock = NSLock()
     private enum State { case ready, executing, finished }
@@ -171,18 +171,22 @@ public final class PreparedIPA: @unchecked Sendable {
         cancellation.cancel()
         let remove = lock.withLock { () -> Bool in
             guard state == .ready else { return false }
-            state = .finished; return true
+            state = .finished; inventory = nil; plan = nil; return true
         }
         if remove { try? FileManager.default.removeItem(at: work) }
     }
 
     public func execute(identity: CodeSigningIdentity, output: URL, compressChangedFiles: Bool = true,
                         now: Date = Date(), progress: ((SigningProgress) -> Void)? = nil) throws -> IPASigningOutcome {
-        try lock.withLock {
-            guard state == .ready else { throw Failure.consumed }
+        let owned = try lock.withLock { () throws -> (IPAExtractionInventory, SigningPlan) in
+            guard state == .ready, let inventory, let plan else { throw Failure.consumed }
             state = .executing
+            return (inventory, plan)
         }
-        defer { lock.withLock { state = .finished }; try? FileManager.default.removeItem(at: work) }
+        defer {
+            lock.withLock { state = .finished; inventory = nil; plan = nil }
+            try? FileManager.default.removeItem(at: work)
+        }
         // Completed artifacts must not be placed inside the disposable preparation lease.
         guard output.isFileURL else { throw SigningError.io("signed output must be a local file URL") }
         let dest = output.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent(output.lastPathComponent).path
@@ -195,7 +199,7 @@ public final class PreparedIPA: @unchecked Sendable {
               try Self.fingerprint(sourceURL, checkpoint: budget.check) == preview.sourceSHA256 else { throw Failure.sourceChanged }
         try manifest.verifyTree(checkpoint: { try self.budget.check() })
         progress?(SigningProgress(message: "Signing confirmed plan…", fraction: 0.05))
-        let result = try BundleSigner.sign(plan: plan, identity: identity, now: now)
+        let result = try BundleSigner.sign(plan: owned.1, identity: identity, now: now)
         try budget.inspect(tree: tree)
         let expected = try IPAArchiveManifest.capture(directory: tree, checkpoint: { try self.budget.check() })
         progress?(SigningProgress(message: "Checking the signature…", fraction: 0.25))
@@ -205,7 +209,7 @@ public final class PreparedIPA: @unchecked Sendable {
         try budget.check()
         var inspected: IPAMetadata?
         try IPAArchiver.archive(directory: tree, to: output, reusing: capturedSource, compressChangedFiles: compressChangedFiles,
-            byteProgress: { progress?(SigningProgress(message: "Packing…", fraction: 0.35 + 0.65 * $0)) }, reusingExtraction: inventory,
+            byteProgress: { progress?(SigningProgress(message: "Packing…", fraction: 0.35 + 0.65 * $0)) }, reusingExtraction: owned.0,
             verifiedManifest: expected, validateArchive: { staged in
                 inspected = try IPAInspector.inspect(url: staged)
                 guard try Self.fingerprint(self.sourceURL, checkpoint: self.budget.check) == self.preview.sourceSHA256 else { throw Failure.sourceChanged }
