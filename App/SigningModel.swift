@@ -143,6 +143,8 @@ final class SigningModel: ObservableObject {
         catch { errorText = error.localizedDescription; return }
         installing = true; installSession = session
         defer { ota.release(session); if installSession === session { installSession = nil } }
+        let cancellation = SigningCancellation()
+        ota.onRelease(of: session) { cancellation.cancel() }
         let needsSigning = certificateID != nil
         let job = BackgroundJob.shared
         job.askForNotificationPermission()
@@ -153,7 +155,7 @@ final class SigningModel: ObservableObject {
 
         let target: InstallTarget?
         if needsSigning {
-            guard let task = sign(standalone: false, storeBigFiles: session.kind == .phone, backgroundID: backgroundID) else { return }
+            guard let task = sign(standalone: false, storeBigFiles: session.kind == .phone, backgroundID: backgroundID, cancellation: cancellation) else { return }
             await withTaskCancellationHandler(operation: { await task.value }, onCancel: {
                 task.cancel()
                 Task { @MainActor in ota.cancel(session) }
@@ -284,7 +286,7 @@ final class SigningModel: ObservableObject {
     @discardableResult
     /// `storeBigFiles` writes changed big files uncompressed: right for an install that stays on this phone, wrong for
     /// anything uploaded or exported.
-    func sign(standalone: Bool = true, storeBigFiles: Bool = false, backgroundID: UUID? = nil) -> Task<Void, Never>? {
+    func sign(standalone: Bool = true, storeBigFiles: Bool = false, backgroundID: UUID? = nil, cancellation: SigningCancellation? = nil) -> Task<Void, Never>? {
         guard busyMessage == nil, !runningSign, !shelfSaveState.isSaving, let ipaURL, let info = ipaInfo, let certificateID, let store = credentials.store,
               let cert = credentials.certificates.first(where: { $0.id == certificateID }) else { return nil }
         clearResult()
@@ -300,6 +302,7 @@ final class SigningModel: ObservableObject {
         let chosenProfile = profileChoice
         let entitlementsOverride = customEntitlements
         let keep = keepBundleID
+        let cancellation = cancellation ?? SigningCancellation()
         let model = self
         let shelf = library.storage
         ImportLogs.shared.log("sign: start id=\(ipaInfo?.bundleIdentifier ?? "?") rewrite=\(rewrite)")
@@ -308,6 +311,7 @@ final class SigningModel: ObservableObject {
         signStarted = Date()
         let throttle = ProgressThrottle()
         return Task.detached(priority: .userInitiated) {
+          await withTaskCancellationHandler(operation: {
             do {
                 try Task.checkCancellation()
                 let identity = try SecurityFrameworkIdentity(identity: store.identity(for: certificateID))
@@ -321,6 +325,7 @@ final class SigningModel: ObservableObject {
                 }
 
                 var options = SigningOptions()
+                options.cancellation = cancellation
                 options.rewriteBundleIdentifier = rewrite
         options.keepBundleIdentifier = keep
         options.overrideEntitlements = entitlementsOverride
@@ -385,7 +390,8 @@ final class SigningModel: ObservableObject {
                     }
                 }
             } catch {
-                let text = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                let text = error is CancellationError ? "Signing canceled. The original and earlier signed IPAs are kept. Retry when ready."
+                    : ((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
                 ImportLogs.shared.log("sign: failed \(ImportLog.describe(error))")
                 await MainActor.run {
                     model.runningSign = false
@@ -394,6 +400,7 @@ final class SigningModel: ObservableObject {
                     if standalone, let ownedBackgroundID { BackgroundJob.shared.end(ownedBackgroundID, success: false) }
                 }
             }
+          }, onCancel: { cancellation.cancel() })
         }
     }
 
