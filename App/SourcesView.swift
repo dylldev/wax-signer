@@ -204,6 +204,7 @@ struct SourceAppsView: View {
         .scrollIndicators(.hidden)
         .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search apps")
         .sheet(item: $selectedApp) { app in details(app) }
+        .onChange(of: router.tab) { _, tab in if tab != .sources { selectedApp = nil } }
         .background(Wax.bg.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Wax.bg, for: .navigationBar)
