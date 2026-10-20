@@ -25,6 +25,7 @@ final class SourcesModel: ObservableObject {
     @Published private var retainedDownloads: [DownloadKey: URL] = [:]
     @Published private var savingDownloads: Set<DownloadKey> = []
     private var retainedPending: [DownloadKey: UUID] = [:]
+    private var downloadOwners: [DownloadKey: UUID] = [:]
     private func key(_ app: SourceApp, _ source: UUID?) -> DownloadKey {
         DownloadKey(source: source, appID: app.id, bundleID: app.bundleID, version: app.version,
                     address: app.downloadURL.absoluteString, size: app.size, date: app.date)
@@ -38,13 +39,15 @@ final class SourcesModel: ObservableObject {
     }
     private let downloadOverride: ((SourceApp, URL) async throws -> URL)?
     private let announce: (String) -> Void
+    private let background: BackgroundJob
 
     private let store: SourceStore
     private var repos: [UUID: SourceRepo] = [:]
 
     init(sourceStore: SourceStore? = nil, download: ((SourceApp, URL) async throws -> URL)? = nil,
-         announce: @escaping (String) -> Void = { AccessibilityNotification.Announcement($0).post() }) {
-        downloadOverride = download; self.announce = announce
+         announce: @escaping (String) -> Void = { AccessibilityNotification.Announcement($0).post() },
+         background: BackgroundJob? = nil) {
+        downloadOverride = download; self.announce = announce; self.background = background ?? .shared
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         store = sourceStore ?? SourceStore(directory: support.appendingPathComponent("Sources", isDirectory: true))
         sources = store.sources
@@ -121,15 +124,20 @@ final class SourcesModel: ObservableObject {
         let key = self.key(app, sourceID)
         guard downloads[key] == nil else { return nil }
         downloads[key] = 0
+        let owner = UUID(); downloadOwners[key] = owner
         message = nil
         UIImpactFeedbackGenerator(style: .light).impactOccurred()   // the tap on Get, so the download feels answered
-        let backgroundID = BackgroundJob.shared.begin(title: app.name)
+        let backgroundID = background.begin(title: app.name)
         let downloader = IPADownloader()
         let store = store
-        return Task {
+        let task = Task {
             var ok = false
-            defer { BackgroundJob.shared.end(backgroundID, success: ok); downloads[key] = nil; savingDownloads.remove(key) }
+            defer {
+                background.end(backgroundID, success: ok)
+                if downloadOwners[key] == owner { downloadOwners[key] = nil; downloads[key] = nil; savingDownloads.remove(key) }
+            }
             do {
+                try Task.checkCancellation()
                 let storage = library.storage
                 let file: URL
                 if let kept = retainedDownloads[key] { file = kept }
@@ -144,18 +152,22 @@ final class SourcesModel: ObservableObject {
                     return fresh
                 }, progress: { p in
                     Task { @MainActor in
-                        guard self.downloads[key] != nil, !self.savingDownloads.contains(key) else { return }
+                        guard self.downloadOwners[key] == owner, !self.savingDownloads.contains(key) else { return }
                         self.downloads[key] = p
-                        BackgroundJob.shared.update(backgroundID, fraction: p, subtitle: "Downloading")
+                        self.background.update(backgroundID, fraction: p, subtitle: "Downloading")
                     }
                 }) }
                 }
-                savingDownloads.insert(key)
+                // An uncooperative download may finish after expiration. Keep its bytes for Retry,
+                // but do not start a new save or announce success for a canceled operation.
                 retainedDownloads[key] = file
+                try Task.checkCancellation()
+                savingDownloads.insert(key)
                 let saved: LibrarySaveResult
                 if let pending = retainedPending[key] { saved = try await library.finishPending(pending) }
                 else {
                     let info = try await Task.detached { try IPAInspector.inspect(url: file) }.value
+                    try Task.checkCancellation()
                     // A publisher signature marker does not make this a Wax-generated signing result.
                     saved = try await library.fileNow(file, info: info, signed: false, provenance: .sourceDownload)
                 }
@@ -171,9 +183,13 @@ final class SourcesModel: ObservableObject {
                 if signAfter { signing.use(saved.entry); router.tab = .sign }
             } catch {
                 if let pending = (error as? ShelfSaveFailure)?.pendingID { retainedPending[key] = pending }
-                message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                message = Task.isCancelled || error is CancellationError
+                    ? "Download canceled or background time ended. Any completed download is kept; tap Get to retry saving without downloading again."
+                    : ((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
                 ImportLogs.shared.log("sources: get failed \(ImportLog.describe(error))")
             }
         }
+        background.onExpiration(of: backgroundID) { task.cancel() }
+        return task
     }
 }
