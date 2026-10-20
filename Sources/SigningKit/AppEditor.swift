@@ -138,9 +138,14 @@ public enum AppEditor {
 
     /// Notes for each change, and every bundle ID that was changed (old to new), so entitlements named after
     /// those IDs can follow the rename when the app is signed.
-    public static func applyDetailed(_ edits: AppEdits, to app: URL, randomSuffix: () -> String = defaultSuffix,
-                                     scratchDirectory: URL? = nil, checkCancellation: () throws -> Void = {},
-                                     beforeLibraryWrite: (Int) throws -> Void = { _ in }) throws -> (notes: [String], renames: [String: String]) {
+    public static func applyDetailed(_ edits: AppEdits, to app: URL, randomSuffix: () -> String = defaultSuffix) throws -> (notes: [String], renames: [String: String]) {
+        try applyDetailed(edits, to: app, randomSuffix: randomSuffix, scratchDirectory: nil)
+    }
+
+    /// Preparation-only resource hooks. Keep the existing public random-suffix/trailing-closure API intact.
+    static func applyDetailed(_ edits: AppEdits, to app: URL, randomSuffix: () -> String = defaultSuffix,
+                              scratchDirectory: URL?, checkCancellation: () throws -> Void = {},
+                              beforeLibraryWrite: (Int) throws -> Void = { _ in }) throws -> (notes: [String], renames: [String: String]) {
         try checkCancellation()
         var renamed: [String: String] = [:]
         func text(_ s: String?) -> String? {

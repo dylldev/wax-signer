@@ -2,6 +2,7 @@ import CredentialKit
 import InstallKit
 import IPAKit
 import SigningKit
+import Security
 import XCTest
 import UIKit
 @testable import LocalIPASigner
@@ -18,7 +19,7 @@ final class PreparedSigningOutcomeTests: XCTestCase {
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("preview-model-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        store = try CredentialStore(directory: root.appendingPathComponent("credentials"))
+        store = try CredentialStore(directory: root.appendingPathComponent("credentials"), keychain: FixtureIdentities())
         certificate = try store.importCertificates(p12: FixtureData.p12ValidLegacy, password: FixtureData.password)[0].id
         profile = try store.importProfile(FixtureData.profileWildcardAll).id
         library = LibraryModel(library: IPALibrary(root: root.appendingPathComponent("shelf")), announce: { _ in }, load: false)
@@ -126,6 +127,12 @@ final class PreparedSigningOutcomeTests: XCTestCase {
         XCTAssertTrue(model.errorText?.contains("canceled") == true); XCTAssertEqual(background.activeCount, 0)
         XCTAssertEqual(library.unsigned.count, 1)
     }
+    func testOversizedEntitlementInputRefusesBeforeBecomingPreviewConfiguration() throws {
+        let file = root.appendingPathComponent("oversized.entitlements")
+        try Data(repeating: 32, count: 256 * 1024 + 1).write(to: file)
+        XCTAssertThrowsError(try model.setEntitlements(from: file)) { XCTAssertTrue($0.localizedDescription.contains("256 KiB")) }
+        XCTAssertNil(model.customEntitlements); XCTAssertNil(model.preview)
+    }
     func testUnknownProfilePinFailsPreparationAndKeepsUnsignedArtifact() async throws {
         try await select(); model.bundleProfiles["missing.appex"] = profile
         await model.prepareForSigning()?.value
@@ -133,4 +140,19 @@ final class PreparedSigningOutcomeTests: XCTestCase {
         XCTAssertTrue(model.errorText?.contains("unknown bundle path") == true)
         XCTAssertEqual(library.unsigned.count, 1)
     }
+}
+
+/// The unsigned Simulator host has no persistent Keychain access group (-34018). This seam replaces
+/// custody only: PKCS#12 decoding, SecIdentity/SecKey signatures and the complete IPA engine remain real.
+private final class FixtureIdentities: IdentityKeychain, @unchecked Sendable {
+    private let lock = NSLock()
+    private var identities: [UUID: SecIdentity] = [:]
+    func store(identity: SecIdentity, id: UUID) throws { lock.withLock { identities[id] = identity } }
+    func identity(id: UUID) throws -> SecIdentity {
+        try lock.withLock {
+            guard let value = identities[id] else { throw CredentialError.notFound }
+            return value
+        }
+    }
+    func remove(id: UUID) throws { _ = lock.withLock { identities.removeValue(forKey: id) } }
 }

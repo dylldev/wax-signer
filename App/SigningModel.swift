@@ -58,7 +58,14 @@ final class SigningModel: ObservableObject {
         clearResult()
         guard let url else { customEntitlements = nil; customEntitlementsName = nil; return }
         defer { discardPickerCopy(url) }
-        let data = try Data(contentsOf: url)
+        let input = try FileHandle(forReadingFrom: url)
+        defer { try? input.close() }
+        var data = Data()
+        while let chunk = try input.read(upToCount: min(64 * 1024, 256 * 1024 + 1 - data.count)), !chunk.isEmpty {
+            guard chunk.count <= 256 * 1024 - data.count else { throw EntitlementsFileError.tooLarge }
+            data.append(chunk)
+        }
+        try input.close()
         guard let dict = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any], !dict.isEmpty else {
             throw EntitlementsFileError.notEntitlements
         }
@@ -66,9 +73,14 @@ final class SigningModel: ObservableObject {
         customEntitlementsName = url.lastPathComponent
     }
 
-    struct EntitlementsFileError: LocalizedError {
-        static let notEntitlements = EntitlementsFileError()
-        var errorDescription: String? { "That file is not an entitlements property list (a .plist or .entitlements file with keys and values)." }
+    enum EntitlementsFileError: LocalizedError {
+        case notEntitlements, tooLarge
+        var errorDescription: String? {
+            switch self {
+            case .notEntitlements: "That file is not an entitlements property list (a .plist or .entitlements file with keys and values)."
+            case .tooLarge: "Choose an entitlements property list no larger than 256 KiB."
+            }
+        }
     }
 
     @Published private(set) var busyMessage: String?
