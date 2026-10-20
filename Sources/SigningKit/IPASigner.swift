@@ -80,7 +80,7 @@ public enum IPASigner {
                                     // Last safe cancellation point. R2's byte/tree verification and atomic promotion
                                     // then finish as one publication phase; a completed output is returned, never discarded.
                                     try cancellation.beginPublication()
-                                })
+                                }, checkCancellation: { try cancellation.check() })
         guard let after = inspected else { throw IPAError.integrity("packaged archive was not inspected") }
         return IPASigningOutcome(output: output, inputArchive: input, outputArchive: after, signing: result, selfCheck: report, editNotes: editNotes)
     }

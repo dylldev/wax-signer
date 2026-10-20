@@ -4,6 +4,29 @@ import Foundation
 
 /// Writes and validates a staged classic ZIP, then atomically promotes it. ZIP64 sentinels are refused.
 public enum IPAArchiver {
+    public struct Limits: Sendable {
+        public var maximumConcurrentFiles: Int = 4
+        /// Cumulative bytes written to compression scratch and the staged ZIP, not peak live storage.
+        public var maximumTemporaryBytes: Int = 8 * 1024 * 1024 * 1024
+        public var minimumFreeBytes: Int64 = 16 * 1024 * 1024
+        public var deadline: TimeInterval = 1800
+        public init() {}
+    }
+    public enum BudgetError: Error, Equatable, LocalizedError {
+        case invalidLimits
+        case deadline
+        case temporaryBytes(limit: Int)
+        case diskSpace(required: Int64, available: Int64)
+        public var errorDescription: String? {
+            switch self {
+            case .invalidLimits: "The packaging resource limits are invalid."
+            case .deadline: "Packing exceeded its total time limit. Retry with a smaller IPA or a longer configured limit."
+            case .temporaryBytes(let limit): "Packing exceeded its \(limit) byte temporary-write budget. Retry with a larger configured limit."
+            case .diskSpace(let required, let available): "Packing needs at least \(required) free bytes; only \(available) are available. Free storage and retry."
+            }
+        }
+    }
+
     /// Original compressed bytes are reused only after SHA-256 content identity has been established.
     /// An extraction inventory avoids reading/decompressing the original entries a second time.
     /// `compressChangedFiles: false` stores changed files of at least 2 MiB without compression.
@@ -12,9 +35,26 @@ public enum IPAArchiver {
     public static func archive(directory: URL, to output: URL, rootFolder: String = "Payload", reusing original: URL? = nil,
                                compressChangedFiles: Bool = true, progress: ((Int, Int) -> Void)? = nil,
                                byteProgress: ((Double) -> Void)? = nil, reusingExtraction inventory: IPAExtractionInventory? = nil,
-                               verifiedManifest: IPAArchiveManifest? = nil, validateArchive: ((URL) throws -> Void)? = nil) throws {
+                               verifiedManifest: IPAArchiveManifest? = nil, validateArchive: ((URL) throws -> Void)? = nil,
+                               limits: Limits = Limits(),
+                               checkCancellation: @escaping @Sendable () throws -> Void = { try Task.checkCancellation() }) throws {
+        try archive(directory: directory, to: output, rootFolder: rootFolder, reusing: original, compressChangedFiles: compressChangedFiles,
+                    progress: progress, byteProgress: byteProgress, reusingExtraction: inventory, verifiedManifest: verifiedManifest,
+                    validateArchive: validateArchive, limits: limits, checkCancellation: checkCancellation, environment: .live)
+    }
+
+    static func archive(directory: URL, to output: URL, rootFolder: String = "Payload", reusing original: URL? = nil,
+                        compressChangedFiles: Bool = true, progress: ((Int, Int) -> Void)? = nil,
+                        byteProgress: ((Double) -> Void)? = nil, reusingExtraction inventory: IPAExtractionInventory? = nil,
+                        verifiedManifest: IPAArchiveManifest? = nil, validateArchive: ((URL) throws -> Void)? = nil,
+                        limits: Limits = Limits(),
+                        checkCancellation: @escaping @Sendable () throws -> Void = { try Task.checkCancellation() },
+                        environment: ArchivingEnvironment) throws {
+        let parent = output.deletingLastPathComponent()
+        let budget = try ArchivingBudget(limits: limits, directory: parent, environment: environment, cancellation: checkCancellation)
+        try budget.check(probeDisk: true)
         let fm = FileManager.default
-        let manifest = try verifiedManifest ?? IPAArchiveManifest.capture(directory: directory, rootFolder: rootFolder)
+        let manifest = try verifiedManifest ?? IPAArchiveManifest.capture(directory: directory, rootFolder: rootFolder, checkpoint: { try budget.check() })
         guard manifest.directory == directory.standardizedFileURL.resolvingSymlinksInPath(), manifest.rootFolder == rootFolder else {
             throw IPAError.integrity("snapshot belongs to a different working tree")
         }
@@ -34,9 +74,10 @@ public enum IPAArchiver {
         var reuse: [String: (ZipEntry, ZipFingerprint)] = [:]
         var centralBytes = 0
         for item in items {
+            try budget.check()
             centralBytes += 46 + (try ClassicZIP.name(item.name)).count
             if let expected = item.fingerprint, let old = reusable[item.name], old.uncompressedSize == expected.size, let source {
-                let fingerprint = try source.fingerprint(old)
+                let fingerprint = try source.fingerprint(old, checkpoint: { try budget.check() })
                 if fingerprint.file == expected { reuse[item.name] = (old, fingerprint) }
             }
         }
@@ -46,44 +87,56 @@ public enum IPAArchiver {
         guard outputPath != rootPath, !outputPath.hasPrefix(rootPath + "/") else { throw IPAError.integrity("output is inside the archived tree") }
 
         // Only changed large files need parallel compression. SHA-256 is computed during the same reads.
-        let work = fm.temporaryDirectory.appendingPathComponent("archive-\(UUID().uuidString)", isDirectory: true)
-        try fm.createDirectory(at: work, withIntermediateDirectories: true)
+        try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+        try budget.check(probeDisk: true)
+        let work = try createScratch(in: parent)
         defer { try? fm.removeItem(at: work) }
         let bigList = items.filter { ($0.fingerprint?.size ?? 0) >= 2 * 1024 * 1024 && reuse[$0.name] == nil }
         var prepared = [Precompressed?](repeating: nil, count: bigList.count)
         var failure: Error?
         let lock = NSLock()
         if compressChangedFiles {
-            DispatchQueue.concurrentPerform(iterations: bigList.count) { i in
-                do {
-                    let item = bigList[i]
-                    let p = try precompress(manifest.directory.appendingPathComponent(item.name), in: work)
-                    guard p.fingerprint == item.fingerprint else { throw IPAError.integrity("file changed during compression: \(item.name)") }
-                    lock.lock(); prepared[i] = p; lock.unlock()
-                } catch { lock.lock(); failure = failure ?? error; lock.unlock() }
+            let order = bigList.indices.sorted { bigList[$0].fingerprint!.size > bigList[$1].fingerprint!.size }
+            var next = 0
+            DispatchQueue.concurrentPerform(iterations: min(limits.maximumConcurrentFiles, bigList.count)) { _ in
+                while true {
+                    let index: Int? = lock.withLock {
+                        guard failure == nil, next < order.count else { return nil }
+                        defer { next += 1 }
+                        return order[next]
+                    }
+                    guard let i = index else { return }
+                    do {
+                        try budget.check(probeDisk: true)
+                        let item = bigList[i]
+                        let p = try precompress(manifest.directory.appendingPathComponent(item.name), in: work, budget: budget)
+                        guard p.fingerprint == item.fingerprint else { throw IPAError.integrity("file changed during compression: \(item.name)") }
+                        lock.withLock { prepared[i] = p }
+                    } catch { lock.withLock { failure = failure ?? error }; return }
+                }
             }
         }
         if let failure { throw failure }
         var precompressed: [String: Precompressed] = [:]
         for (i, entry) in bigList.enumerated() { if let p = prepared[i] { precompressed[entry.name] = p } }
 
-        let parent = output.deletingLastPathComponent()
-        try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+        try budget.check(probeDisk: true)
         let staged = parent.appendingPathComponent(".wax-archive-\(UUID().uuidString).part")
-        guard fm.createFile(atPath: staged.path, contents: nil) else { throw IPAError.unreadable("creating staged archive") }
+        let out = try createTemporaryFile(at: staged)
         defer { try? fm.removeItem(at: staged) }
-        let out = try FileHandle(forWritingTo: staged)
         var closed = false
         defer { if !closed { try? out.close() } }
         var offset = 0
         func write(_ d: Data) throws {
             guard d.count <= ClassicZIP.maxBytes - offset else { throw IPAError.unsupportedZip("archive exceeds classic ZIP limits") }
+            try budget.beforeWrite(d.count)
             try out.write(contentsOf: d); offset += d.count
         }
         var central: [CentralRecord] = []
         var doneBytes = 0
         let totalBytes = max(1, items.reduce(0) { $0 + ($1.fingerprint?.size ?? 0) })
         for (index, item) in items.enumerated() {
+            try budget.check(probeDisk: true)
             let url = manifest.directory.appendingPathComponent(item.name)
             let attrs = try fm.attributesOfItem(atPath: url.path)
             let (time, date) = dos((attrs[.modificationDate] as? Date) ?? Date())
@@ -103,7 +156,8 @@ public enum IPAArchiver {
                 } else if !compressChangedFiles && expected.size >= 2 * 1024 * 1024 {
                     record = try writeStoredFile(item.name, url, expected: expected, mode: item.mode, time: time, date: date, offset: start, write: write)
                 } else {
-                    record = try writeFile(item.name, url, expected: expected, mode: item.mode, time: time, date: date, offset: start, write: write)
+                    record = try writeFile(item.name, url, expected: expected, mode: item.mode, time: time, date: date, offset: start,
+                                           checkpoint: { try budget.check() }, write: write)
                 }
                 doneBytes += expected.size
             }
@@ -126,10 +180,29 @@ public enum IPAArchiver {
         e.le32(try ClassicZIP.size(offset - cdStart)); e.le32(try ClassicZIP.size(cdStart)); e.le16(0)
         try write(e)
         try out.close(); closed = true
+        // Resource/cancellation checks end before the owner's publication barrier. R2 verification remains mandatory.
+        try budget.check(probeDisk: true)
         try validateArchive?(staged)
         try manifest.verify(archive: staged)
         try manifest.verifyTree()
         try ArchivePromotion.promote(staged, to: output)
+    }
+
+    /// Exclusive creation establishes ownership before any cleanup is registered; never truncate an existing path.
+    static func createTemporaryFile(at url: URL) throws -> FileHandle {
+        let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw IPAError.unreadable("creating packaging temporary file: \(String(cString: strerror(errno)))") }
+        return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    }
+
+    private static func createScratch(in parent: URL) throws -> URL {
+        var template = Array(parent.appendingPathComponent(".wax-archive-work-XXXXXX").path.utf8CString)
+        return try template.withUnsafeMutableBufferPointer { buffer in
+            guard let path = mkdtemp(buffer.baseAddress!) else {
+                throw IPAError.unreadable("creating packaging scratch directory: \(String(cString: strerror(errno)))")
+            }
+            return URL(fileURLWithPath: String(cString: path), isDirectory: true)
+        }
     }
 
     // MARK: entries
@@ -186,11 +259,11 @@ public enum IPAArchiver {
     }
 
     private static func writeFile(_ name: String, _ url: URL, expected: FileFingerprint, mode: UInt32, time: UInt16, date: UInt16, offset: UInt32,
-                                  write: (Data) throws -> Void) throws -> CentralRecord {
+                                  checkpoint: (() throws -> Void)? = nil, write: (Data) throws -> Void) throws -> CentralRecord {
         let nameData = try ClassicZIP.name(name)
         // Sizes and CRC follow the data in a data descriptor (flag bit 3), so the file is read exactly once.
         try write(localHeader(name: nameData, flags: 0x0808, method: 8, time: time, date: date, crc: 0, comp: 0, uncomp: 0))
-        let r = try deflate(url, emit: write)
+        let r = try deflate(url, checkpoint: checkpoint, emit: write)
         guard r.fingerprint == expected else { throw IPAError.integrity("file changed during packing: \(name)") }
         var dd = Data()
         dd.le32(0x08074b50); dd.le32(r.crc); dd.le32(UInt32(r.comp)); dd.le32(UInt32(r.uncomp))
@@ -221,19 +294,21 @@ public enum IPAArchiver {
     }
 
     /// Compresses a file into a temporary file. Safe to call from several threads at once.
-    static func precompress(_ url: URL, in tempDirectory: URL) throws -> Precompressed {
+    static func precompress(_ url: URL, in tempDirectory: URL, budget: ArchivingBudget? = nil) throws -> Precompressed {
         let temp = tempDirectory.appendingPathComponent(UUID().uuidString)
-        guard FileManager.default.createFile(atPath: temp.path, contents: nil) else { throw IPAError.unreadable("creating compression scratch file") }
-        let out = try FileHandle(forWritingTo: temp)
+        let out = try createTemporaryFile(at: temp)
         var complete = false
         defer { if !complete { try? out.close(); try? FileManager.default.removeItem(at: temp) } }
-        let r = try deflate(url, emit: { try out.write(contentsOf: $0) })
+        let r = try deflate(url, checkpoint: { try budget?.check() }, emit: {
+            try budget?.beforeWrite($0.count)
+            try out.write(contentsOf: $0)
+        })
         try out.close(); complete = true
         return Precompressed(temp: temp, crc: r.crc, comp: r.comp, uncomp: r.uncomp, fingerprint: r.fingerprint)
     }
 
     /// Raw deflate of a whole file, streamed in chunks. Returns the CRC32 and both sizes.
-    private static func deflate(_ url: URL, emit write: (Data) throws -> Void) throws -> (crc: UInt32, comp: Int, uncomp: Int, fingerprint: FileFingerprint) {
+    private static func deflate(_ url: URL, checkpoint: (() throws -> Void)? = nil, emit write: (Data) throws -> Void) throws -> (crc: UInt32, comp: Int, uncomp: Int, fingerprint: FileFingerprint) {
         let input = try FileHandle(forReadingFrom: url)
         defer { try? input.close() }
         guard let stream = CompressionStream(COMPRESSION_STREAM_ENCODE, COMPRESSION_ZLIB) else {
@@ -247,6 +322,7 @@ public enum IPAArchiver {
         var finished = false
         var inputDone = false
         while !finished {
+            try checkpoint?()
             let src = inputDone ? Data() : (try input.read(upToCount: chunk) ?? Data())
             if src.isEmpty { inputDone = true }
             crc = CRC32.update(crc, src); hash.update(data: src)
@@ -256,6 +332,7 @@ public enum IPAArchiver {
                 stream.feed(raw.bindMemory(to: UInt8.self).baseAddress, raw.count)
                 var idle = 0
                 repeat {
+                    try checkpoint?()
                     let before = stream.pendingInput
                     let status = dst.withUnsafeMutableBufferPointer { stream.drain(into: $0, finalize: inputDone) }
                     let produced = chunk - stream.pendingOutput

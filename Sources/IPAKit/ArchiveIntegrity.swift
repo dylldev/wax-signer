@@ -40,7 +40,7 @@ struct FileFingerprint: Equatable {
         return FileFingerprint(sha256: Data(hash.finalize()), crc32: CRC32.finish(crc), size: count)
     }
 
-    static func file(_ url: URL) throws -> FileFingerprint {
+    static func file(_ url: URL, checkpoint: (() throws -> Void)? = nil) throws -> FileFingerprint {
         let fd = open(url.path, O_RDONLY | O_NOFOLLOW)
         guard fd >= 0 else { throw IPAError.unreadable("\(url.lastPathComponent): \(String(cString: strerror(errno)))") }
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
@@ -49,7 +49,7 @@ struct FileFingerprint: Equatable {
         var before = stat()
         guard fstat(fd, &before) == 0, before.st_mode & 0o170000 == 0o100000, before.st_size >= 0,
               before.st_size < UInt32.max else { throw IPAError.unsupportedZip("not a regular classic-ZIP file: \(url.lastPathComponent)") }
-        let result = try read(expectedSize: Int(before.st_size), next: { try handle.read(upToCount: $0) })
+        let result = try read(expectedSize: Int(before.st_size), next: { try checkpoint?(); return try handle.read(upToCount: $0) })
         var after = stat()
         guard fstat(fd, &after) == 0, before.st_size == after.st_size, before.st_mode == after.st_mode else {
             throw IPAError.integrity("file changed while hashing: \(url.lastPathComponent)")
@@ -74,7 +74,8 @@ public struct IPAArchiveManifest {
     let rootFolder: String
     let records: [String: Record]
 
-    public static func capture(directory: URL, rootFolder: String = "Payload") throws -> IPAArchiveManifest {
+    public static func capture(directory: URL, rootFolder: String = "Payload", checkpoint: (() throws -> Void)? = nil) throws -> IPAArchiveManifest {
+        try checkpoint?()
         let fm = FileManager.default
         guard !IPAInspector.isUnsafe(rootFolder), !rootFolder.contains("/") else { throw IPAError.unsafePath(rootFolder) }
         let directory = directory.standardizedFileURL.resolvingSymlinksInPath()
@@ -86,11 +87,16 @@ public struct IPAArchiveManifest {
             failure = error; return false
         }) else { throw IPAError.unreadable("cannot enumerate \(rootFolder)") }
         var urls = [base]
-        for case let url as URL in walker { urls.append(url) }
+        for case let url as URL in walker {
+            try checkpoint?()
+            guard urls.count < ClassicZIP.maxEntries else { throw IPAError.unsupportedZip("ZIP64 sentinel entry count (maximum 65,534)") }
+            urls.append(url)
+        }
         if let failure { throw failure }
         try ClassicZIP.entryCount(urls.count)
         var records: [String: Record] = [:], seen = Set<String>()
         for url in urls {
+            try checkpoint?()
             // Resolve the parent only, preserving each symlink's own name. Use the same canonical spelling
             // on both sides: macOS enumeration may return /private/var for a /var temporary-directory URL.
             let full = url.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent(url.lastPathComponent).path
@@ -104,7 +110,7 @@ public struct IPAArchiveManifest {
             switch type {
             case .typeRegular:
                 kind = .file; mode = 0o100000 | (permissions & 0o777)
-                fingerprint = try FileFingerprint.file(url); target = nil
+                fingerprint = try FileFingerprint.file(url, checkpoint: checkpoint); target = nil
             case .typeDirectory:
                 kind = .directory; mode = 0o040000 | (permissions & 0o777)
                 fingerprint = nil; target = nil; name += "/"
