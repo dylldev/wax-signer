@@ -70,9 +70,10 @@ final class ZipArchive {
         return data
     }
 
-    func fingerprint(_ entry: ZipEntry) throws -> ZipFingerprint {
+    func fingerprint(_ entry: ZipEntry, checkpoint: (() throws -> Void)? = nil) throws -> ZipFingerprint {
+        try checkpoint?()
         fingerprintLock.lock(); let cached = observed[entry.name]; fingerprintLock.unlock()
-        return try cached ?? stream(entry, emit: { _ in })
+        return try cached ?? stream(entry, checkpoint: checkpoint, emit: { _ in })
     }
 
     /// A fresh stream is always used for extraction. Previously inspected bytes must agree with this read.
