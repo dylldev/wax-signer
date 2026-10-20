@@ -16,7 +16,19 @@ public final class LoopbackHost: InstallHost, @unchecked Sendable {
     private let hostName: String
     private let lifetime: TimeInterval
     private let queue = DispatchQueue(label: "wax.loopback")
+    private let queueKey = DispatchSpecificKey<Bool>()
     private var listener: NWListener?
+    private var generation = UUID()
+    private final class Transfer {
+        let connection: NWConnection
+        var handle: FileHandle?
+        init(_ connection: NWConnection) { self.connection = connection }
+        func close() { try? handle?.close(); handle = nil; connection.stateUpdateHandler = nil; connection.cancel() }
+    }
+    private var transfers: [ObjectIdentifier: Transfer] = [:]
+    // Queue-owned diagnostics also let lifecycle tests observe actual admission/cleanup.
+    var activeConnectionCount: Int { queue.sync { transfers.count } }
+    var openFileCount: Int { queue.sync { transfers.values.filter { $0.handle != nil }.count } }
     private var ipaFile: URL?
     private var manifest = Data()
     private var id = ""
@@ -46,21 +58,23 @@ public final class LoopbackHost: InstallHost, @unchecked Sendable {
     /// Waits until the last byte of the IPA has gone out (iOS may fetch it in several ranges), the host stops, or
     /// `timeout` passes. True only when the whole file was sent.
     public func waitForTransfer(timeout: TimeInterval) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            let (done, running) = queue.sync { (finished, listener != nil) }
+        guard timeout.isFinite, timeout >= 0, !Task.isCancelled else { return false }
+        let observed = queue.sync { generation }
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            let (done, running) = queue.sync { (generation == observed && finished, generation == observed && listener != nil) }
             if done { return true }
-            if !running { return false }
-            try? await Task.sleep(nanoseconds: 100_000_000)
+            if !running || Task.isCancelled { return false }
+            do { try await Task.sleep(nanoseconds: 100_000_000) } catch { return false }
         }
-        return queue.sync { finished }
+        return queue.sync { generation == observed && finished }
     }
 
     /// What to tell the person when the transfer did not finish. `served` is whether iOS ever fetched the IPA here.
     public static func transferFailureMessage(served: Bool) -> String {
         served
-            ? "The download stopped before the end, so nothing was installed. Try again."
-            : "iOS never asked this phone for the app, so nothing was installed. You may have cancelled the install prompt. "
+            ? "The download stopped before the end. Wax could not confirm installation. Retry delivery or export the signed IPA."
+            : "iOS never asked this phone for the app. The installation outcome is unknown; you may have cancelled the install prompt. "
               + "If not, this network may be redirecting the install name: try another network, switch Install host to My server, "
               + "or Export the signed IPA from the IPA tab."
     }
@@ -79,15 +93,39 @@ public final class LoopbackHost: InstallHost, @unchecked Sendable {
         self.intermediates = Array(((entry[kSecImportItemCertChain as String] as? [SecCertificate]) ?? []).dropFirst())
         self.hostName = host
         self.lifetime = lifetime
+        queue.setSpecific(key: queueKey, value: true)
     }
 
     public func publish(ipa: URL, bundleIdentifier: String, version: String, build: String, title: String,
                         progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
-        stop()
-        queue.sync { served = false }
+        let observed = queue.sync { () -> UUID in stopLocked(); return generation }
+        return try await withTaskCancellationHandler(operation: {
+            do {
+                try Task.checkCancellation()
+                return try await publishSession(ipa: ipa, bundleIdentifier: bundleIdentifier, version: version,
+                    build: build, title: title, progress: progress, generation: observed)
+            } catch {
+                queue.sync { if generation == observed { stopLocked() } }
+                throw error
+            }
+        }, onCancel: { [weak self] in
+            self?.queue.async { [weak self] in
+                guard let self, self.generation == observed else { return }
+                self.stopLocked()
+            }
+        })
+    }
+
+    private func publishSession(ipa: URL, bundleIdentifier: String, version: String, build: String, title: String,
+                                progress: @escaping @Sendable (Double) -> Void, generation observed: UUID) async throws -> URL {
         // The certificate feed is remote input: never let it point the install link anywhere but at this phone.
         guard Self.resolvesOnlyToLoopback(hostName) else {
             throw Failure(message: "The install name “\(hostName)” does not point at this iPhone, so Wax will not use it. Use another install host.")
+        }
+        let attrs = try FileManager.default.attributesOfItem(atPath: ipa.path)
+        guard attrs[.type] as? FileAttributeType == .typeRegular,
+              let size = attrs[.size] as? NSNumber, size.int64Value > 0, size.uint64Value <= UInt64(Int.max) else {
+            throw Failure(message: "The signed IPA is missing or empty. Export it again before preparing installation.")
         }
         let id = try OTASessionID.make()
         let tls = NWProtocolTLS.Options()
@@ -96,34 +134,49 @@ public final class LoopbackHost: InstallHost, @unchecked Sendable {
         }
         sec_protocol_options_set_local_identity(tls.securityProtocolOptions, secIdentity)
         let params = NWParameters(tls: tls)
-        params.requiredInterfaceType = .loopback          // never reachable from the network
+        params.requiredInterfaceType = .loopback
         let listener: NWListener
         do { listener = try NWListener(using: params) } catch { throw Failure(message: "Could not start the install listener: \(error.localizedDescription)") }
-        listener.newConnectionHandler = { [weak self] c in self?.serve(c) }
-
-        let port: UInt16 = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<UInt16, Error>) in
-            var done = false
-            listener.stateUpdateHandler = { state in
-                guard !done else { return }
-                switch state {
-                case .ready:
-                    done = true
-                    if let p = listener.port?.rawValue { cont.resume(returning: p) } else { cont.resume(throwing: Failure(message: "The install listener has no port.")) }
-                case .failed(let e): done = true; cont.resume(throwing: Failure(message: "The install listener failed: \(e.localizedDescription)"))
-                case .cancelled: done = true; cont.resume(throwing: Failure(message: "The install listener was cancelled."))
-                default: break
-                }
-            }
-            listener.start(queue: queue)
+        listener.newConnectionHandler = { [weak self] c in
+            guard let self, self.generation == observed else { c.cancel(); return }
+            self.serve(c, generation: observed)
         }
+        let port: UInt16 = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<UInt16, Error>) in
+            // Own the pending listener before starting it, so stop/cancel during preparation cannot revive it.
+            queue.async {
+                guard self.generation == observed else { listener.cancel(); cont.resume(throwing: CancellationError()); return }
+                var done = false // touched only on the listener's serial queue
+                listener.stateUpdateHandler = { [weak self, weak listener] state in
+                    if done {
+                        if case .failed = state, let self, self.generation == observed { self.stopLocked() }
+                        return
+                    }
+                    switch state {
+                    case .ready:
+                        done = true
+                        if let p = listener?.port?.rawValue { cont.resume(returning: p) }
+                        else { cont.resume(throwing: Failure(message: "The install listener has no port.")) }
+                    case .failed(let e): done = true; cont.resume(throwing: Failure(message: "The install listener failed: \(e.localizedDescription)"))
+                    case .cancelled: done = true; cont.resume(throwing: CancellationError())
+                    default: break
+                    }
+                }
+                self.listener = listener
+                listener.start(queue: self.queue)
+            }
+        }
+        try Task.checkCancellation()
         let base = "https://\(hostName):\(port)/\(id)"
         let xml = OTAManifest.build(bundleIdentifier: bundleIdentifier, bundleVersion: build.isEmpty ? version : build, title: title,
                                     ipaURL: URL(string: "\(base)/app.ipa")!)
-        queue.sync {
-            self.listener = listener; self.ipaFile = ipa; self.id = id; self.manifest = Data(xml.utf8)
-            self.sent = []; self.served = false
-            self.fileSize = (try? FileManager.default.attributesOfItem(atPath: ipa.path)[.size] as? Int) ?? 0
-            let timer = DispatchWorkItem { [weak self] in self?.stopLocked() }
+        try queue.sync {
+            guard generation == observed, self.listener === listener else { throw CancellationError() }
+            self.ipaFile = ipa; self.id = id; self.manifest = Data(xml.utf8)
+            self.sent = []; self.served = false; self.fileSize = size.intValue
+            let timer = DispatchWorkItem { [weak self] in
+                guard let self, self.generation == observed else { return }
+                self.stopLocked()
+            }
             stopTimer = timer
             queue.asyncAfter(deadline: .now() + lifetime, execute: timer)
         }
@@ -157,36 +210,52 @@ public final class LoopbackHost: InstallHost, @unchecked Sendable {
     }
 
     /// Closes the listener. Safe to call more than once.
-    public func stop() { queue.sync { stopLocked() } }
+    public func stop() {
+        if DispatchQueue.getSpecific(key: queueKey) == true { stopLocked() }
+        else { queue.sync { stopLocked() } }
+    }
+    deinit { stop() }
 
     private func stopLocked() {
+        generation = UUID() // invalidates queued callbacks before closing any resource
         stopTimer?.cancel(); stopTimer = nil
         listener?.cancel(); listener = nil
-        ipaFile = nil; sent = []; fileSize = 0
+        let owned = Array(transfers.values); transfers.removeAll()
+        owned.forEach { $0.close() }
+        ipaFile = nil; manifest = Data(); id = ""; sent = []; fileSize = 0
     }
 
     // MARK: Serving
 
-    private func serve(_ c: NWConnection) {
-        c.start(queue: queue)
-        readRequest(c, buffer: Data())
+    private func owns(_ c: NWConnection, _ observed: UUID) -> Bool {
+        generation == observed && listener != nil && transfers[ObjectIdentifier(c)] != nil
     }
-
-    private func readRequest(_ c: NWConnection, buffer: Data) {
-        c.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, isComplete, error in
+    private func finish(_ c: NWConnection) {
+        if let transfer = transfers.removeValue(forKey: ObjectIdentifier(c)) { transfer.close() }
+        else { c.cancel() }
+    }
+    private func serve(_ c: NWConnection, generation observed: UUID) {
+        guard generation == observed, listener != nil else { c.cancel(); return }
+        transfers[ObjectIdentifier(c)] = Transfer(c)
+        c.stateUpdateHandler = { [weak self] state in
             guard let self else { c.cancel(); return }
+            switch state { case .failed, .cancelled: self.finish(c); default: break }
+        }
+        c.start(queue: queue)
+        readRequest(c, buffer: Data(), generation: observed)
+    }
+    private func readRequest(_ c: NWConnection, buffer: Data, generation observed: UUID) {
+        c.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, isComplete, error in
+            guard let self, self.owns(c, observed) else { c.cancel(); return }
             var buf = buffer; if let data { buf.append(data) }
             if let end = buf.range(of: Data("\r\n\r\n".utf8)) {
-                self.respond(c, head: String(decoding: buf[..<end.lowerBound], as: UTF8.self))
-            } else if error != nil || isComplete || buf.count > 16_384 {
-                c.cancel()
-            } else {
-                self.readRequest(c, buffer: buf)
-            }
+                self.respond(c, head: String(decoding: buf[..<end.lowerBound], as: UTF8.self), generation: observed)
+            } else if error != nil || isComplete || buf.count > 16_384 { self.finish(c) }
+            else { self.readRequest(c, buffer: buf, generation: observed) }
         }
     }
-
-    private func respond(_ c: NWConnection, head: String) {
+    private func respond(_ c: NWConnection, head: String, generation observed: UUID) {
+        guard owns(c, observed) else { finish(c); return }
         let lines = head.components(separatedBy: "\r\n")
         let parts = (lines.first ?? "").split(separator: " ").map(String.init)
         guard parts.count >= 2 else { return reply(c, 400, "Bad Request") }
@@ -197,7 +266,7 @@ public final class LoopbackHost: InstallHost, @unchecked Sendable {
             return reply(c, 200, "OK", type: "text/xml", body: isHead ? nil : manifest, length: manifest.count)
         }
         guard path == "/\(id)/app.ipa", let file = ipaFile,
-              let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int) else { return reply(c, 404, "Not Found") }
+              let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int), size > 0 else { return reply(c, 404, "Not Found") }
         if !isHead { served = true }
         var lower = 0, upper = size - 1, partial = false
         if let range = lines.first(where: { $0.lowercased().hasPrefix("range:") }) {
@@ -209,31 +278,34 @@ public final class LoopbackHost: InstallHost, @unchecked Sendable {
         if partial { headers += "Content-Range: bytes \(lower)-\(upper)/\(size)\r\n" }
         let status = partial ? "206 Partial Content" : "200 OK"
         let preface = "HTTP/1.1 \(status)\r\nContent-Type: application/octet-stream\r\nContent-Length: \(length)\r\n\(headers)Connection: close\r\n\r\n"
-        guard !isHead else { return c.send(content: Data(preface.utf8), completion: .contentProcessed { _ in c.cancel() }) }
-        guard let handle = try? FileHandle(forReadingFrom: file) else { return reply(c, 404, "Not Found") }
-        try? handle.seek(toOffset: UInt64(lower))
-        c.send(content: Data(preface.utf8), completion: .contentProcessed { [weak self] e in
-            if e != nil { try? handle.close(); c.cancel() } else { self?.stream(c, handle, remaining: length, range: lower...upper) }
-        })
+        guard !isHead else { return c.send(content: Data(preface.utf8), completion: .contentProcessed { [weak self] _ in self?.finish(c) }) }
+        do {
+            let handle = try FileHandle(forReadingFrom: file)
+            transfers[ObjectIdentifier(c)]?.handle = handle
+            try handle.seek(toOffset: UInt64(lower))
+            c.send(content: Data(preface.utf8), completion: .contentProcessed { [weak self] error in
+                guard let self, self.owns(c, observed), error == nil else { self?.finish(c); return }
+                self.stream(c, handle, remaining: length, range: lower...upper, generation: observed)
+            })
+        } catch { finish(c) }
     }
-
-    private func stream(_ c: NWConnection, _ handle: FileHandle, remaining: Int, range: ClosedRange<Int>) {
-        guard remaining > 0, let chunk = try? handle.read(upToCount: min(256 * 1024, remaining)), !chunk.isEmpty else {
-            try? handle.close(); return c.cancel()
-        }
-        let last = remaining == chunk.count
-        c.send(content: chunk, completion: .contentProcessed { [weak self] e in
-            if e != nil { try? handle.close(); c.cancel(); return }
-            if last, let self { self.sent = Self.merged(self.sent, adding: range) }
-            self?.stream(c, handle, remaining: remaining - chunk.count, range: range)
-        })
+    private func stream(_ c: NWConnection, _ handle: FileHandle, remaining: Int, range: ClosedRange<Int>, generation observed: UUID) {
+        guard owns(c, observed), remaining > 0 else { finish(c); return }
+        do {
+            guard let chunk = try handle.read(upToCount: min(256 * 1024, remaining)), !chunk.isEmpty else { finish(c); return }
+            let last = remaining == chunk.count
+            c.send(content: chunk, completion: .contentProcessed { [weak self] error in
+                guard let self, self.owns(c, observed), error == nil else { self?.finish(c); return }
+                if last { self.sent = Self.merged(self.sent, adding: range); self.finish(c) }
+                else { self.stream(c, handle, remaining: remaining - chunk.count, range: range, generation: observed) }
+            })
+        } catch { finish(c) } // read/seek failures cannot count as a completed range
     }
-
     private func reply(_ c: NWConnection, _ code: Int, _ reason: String, type: String = "text/plain", body: Data? = nil, length: Int? = nil, extra: String = "") {
         let text = Data(reason.utf8)
         let payload = body ?? (length == nil ? text : nil)
         let head = "HTTP/1.1 \(code) \(reason)\r\nContent-Type: \(type)\r\nContent-Length: \(length ?? payload?.count ?? 0)\r\n\(extra)Connection: close\r\n\r\n"
-        c.send(content: Data(head.utf8) + (payload ?? Data()), completion: .contentProcessed { _ in c.cancel() })
+        c.send(content: Data(head.utf8) + (payload ?? Data()), completion: .contentProcessed { [weak self] _ in self?.finish(c) })
     }
 
     /// One `bytes=a-b`, `bytes=a-` or `bytes=-n` range, clipped to the file, or nil when it cannot be satisfied.

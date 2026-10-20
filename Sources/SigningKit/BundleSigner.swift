@@ -288,7 +288,7 @@ public enum BundleSigner {
                 } else {
                     compatible.append(.init(
                         profile: p,
-                        unmet: EntitlementsPolicy.unmet(requested: requested, profile: p.entitlements, teamID: p.info.teamID),
+                        unmet: EntitlementsPolicy.unmet(requested: requested, profile: p.entitlements, teamID: p.info.teamID, applicationIdentifierPrefix: p.info.applicationIdentifierPrefix),
                         specificity: ProfileSelector.specificity(of: p.info)))
                 }
             }
@@ -325,7 +325,7 @@ public enum BundleSigner {
                     < (b.info.name, b.info.bundleIdentifierPattern, b.info.id.uuidString)
             }) else { return nil }
             return ProfileFitness.rewrittenIdentifier(profileApplicationIdentifier: best.info.applicationIdentifier,
-                                                      teamID: best.info.teamID, original: main.original)
+                                                      applicationIdentifierPrefix: best.info.applicationIdentifierPrefix, original: main.original)
         }
 
         /// The app and every application or extension bundle beneath it, main app first.
@@ -396,7 +396,12 @@ public enum BundleSigner {
                 let resolved = EntitlementsPolicy.resolve(
                     requested: plan.requested, profile: plan.profile.entitlements, teamID: plan.profile.info.teamID,
                     resolvedApplicationIdentifier: options.keepBundleIdentifier && !plan.profile.info.bundleIdentifierPattern.contains("*")
-                        ? plan.profile.info.applicationIdentifier : plan.profile.info.teamID + "." + identifier)
+                        ? plan.profile.info.applicationIdentifier : plan.profile.info.applicationIdentifierPrefix + "." + identifier,
+                    applicationIdentifierPrefix: plan.profile.info.applicationIdentifierPrefix)
+                if let previous = plan.requested["application-identifier"] as? String,
+                   String(previous.prefix { $0 != "." }) != plan.profile.info.applicationIdentifierPrefix {
+                    result.warnings.append("\(relative(bundle)): App ID prefix changes to \(plan.profile.info.applicationIdentifierPrefix). Existing keychain data may be inaccessible under the new prefix.")
+                }
                 entitlements = resolved.entitlements
                 for key in resolved.dropped {
                     result.warnings.append("\(relative(bundle)): entitlement \(key) is not granted by profile "

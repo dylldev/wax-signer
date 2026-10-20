@@ -90,11 +90,11 @@ enum ProfileSelector {
         if let why = eligibility(profile, leafSHA1: leafSHA1, certificateTeam: certificateTeam, now: now) { return why }
         let info = profile.info
         if !ignoreApplicationIdentifier, !EntitlementsPolicy.permits(profileApplicationIdentifier: info.applicationIdentifier,
-                                       teamID: info.teamID, bundleIdentifier: bundleIdentifier) {
+                                       teamID: info.applicationIdentifierPrefix, bundleIdentifier: bundleIdentifier) {
             return .applicationIdentifierMismatch(profile: info.applicationIdentifier, bundleIdentifier: bundleIdentifier)
         }
         if policy == .reject {
-            let unmet = EntitlementsPolicy.unmet(requested: requested, profile: profile.entitlements, teamID: info.teamID)
+            let unmet = EntitlementsPolicy.unmet(requested: requested, profile: profile.entitlements, teamID: info.teamID, applicationIdentifierPrefix: info.applicationIdentifierPrefix)
             if !unmet.isEmpty { return .entitlementsNotGranted(unmet) }
         }
         return nil

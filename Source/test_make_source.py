@@ -5,6 +5,8 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from pathlib import Path
+from test_release_integrity import icon
 
 
 class MakeSourceTests(unittest.TestCase):
@@ -21,10 +23,11 @@ class MakeSourceTests(unittest.TestCase):
             with zipfile.ZipFile(ipa, "w") as archive:
                 archive.writestr("Payload/Example.app/Info.plist", plistlib.dumps(info))
 
+            image = Path(directory) / "icon.png"; icon(image)
             base = 'https://example.test/"><script>alert(4)</script><a href="'
             subprocess.run(
                 [sys.executable, os.path.join(os.path.dirname(__file__), "make_source.py"),
-                 "--ipa", ipa, "--base-url", base, "--out", out],
+                 "--ipa", ipa, "--base-url", base, "--out", out, "--icon", str(image), "--capabilities", "signer-export"],
                 check=True, capture_output=True, text=True,
             )
 
