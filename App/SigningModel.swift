@@ -83,13 +83,16 @@ final class SigningModel: ObservableObject {
     private(set) var lastSignSeconds: Double = 0
     private let credentials: CredentialsModel
     private let library: LibraryModel
+    private let background: BackgroundJob
     @Published private(set) var shelfSaveState: LibraryModel.SaveState = .idle
     private var signedPendingID: UUID?
     private var resultGeneration = UUID()
     private var busyOwner = UUID()
     @Published private(set) var runningSign = false
 
-    init(credentials: CredentialsModel, library: LibraryModel? = nil) { self.credentials = credentials; self.library = library ?? .shared }
+    init(credentials: CredentialsModel, library: LibraryModel? = nil, background: BackgroundJob? = nil) {
+        self.credentials = credentials; self.library = library ?? .shared; self.background = background ?? .shared
+    }
 
     /// Weights signing against uploading by how long each took on earlier runs (or sensible defaults).
     func jobProgress(uploadFraction: Double, exportOnly: Bool) -> JobProgress {
@@ -165,7 +168,7 @@ final class SigningModel: ObservableObject {
         let cancellation = prepared?.cancellation ?? SigningCancellation()
         ota.onRelease(of: session) { cancellation.cancel() }
         let needsSigning = certificateID != nil
-        let job = BackgroundJob.shared
+        let job = background
         job.askForNotificationPermission()
         let backgroundID = job.begin(title: ipaInfo?.displayName ?? "Wax", onExpiration: {
             cancellation.cancel()
@@ -317,7 +320,7 @@ final class SigningModel: ObservableObject {
         let token = SigningCancellation(); activeCancellation = token
         let appEdits = edits, chosen = profileChoice, pins = bundleProfiles
         let override = customEntitlements, rewrite = rewriteBundleID, keep = keepBundleID, strict = strictEntitlements
-        let background = BackgroundJob.shared.begin(title: ipaInfo?.displayName ?? "Wax", onExpiration: { token.cancel() })
+        let backgroundID = background.begin(title: ipaInfo?.displayName ?? "Wax", onExpiration: { token.cancel() })
         let task = Task.detached(priority: .userInitiated) {
             await withTaskCancellationHandler(operation: {
                 do {
@@ -334,7 +337,7 @@ final class SigningModel: ObservableObject {
                         Task { @MainActor in
                             guard self.resultGeneration == generation, self.runningSign, self.preview == nil else { return }
                             self.busyMessage = progress.message; self.signFraction = progress.fraction
-                            BackgroundJob.shared.update(background, fraction: progress.fraction, subtitle: progress.message)
+                            self.background.update(backgroundID, fraction: progress.fraction, subtitle: progress.message)
                         }
                     }
                     await self.acceptPreparation(lease, credentials: raw, generation: generation, installAfter: installAfter)
@@ -346,7 +349,7 @@ final class SigningModel: ObservableObject {
                     }
                 }
                 await MainActor.run {
-                    BackgroundJob.shared.end(background, success: false) // a preview is not a completed signed/save outcome
+                    self.background.end(backgroundID, success: false) // a preview is not a completed signed/save outcome
                     if self.busyOwner == generation { self.runningSign = false; self.busyMessage = nil }
                 }
             }, onCancel: { token.cancel() })
@@ -396,11 +399,11 @@ final class SigningModel: ObservableObject {
         busyOwner = generation; runningSign = true
         busyMessage = "Signing confirmed plan…"
         let title = info.displayName.isEmpty ? "Wax" : info.displayName
-        if standalone { BackgroundJob.shared.askForNotificationPermission() }
+        if standalone { background.askForNotificationPermission() }
         // OTA/background cancellation must address the exact owner created during preparation.
         let cancellation = lease.cancellation
         activeCancellation = cancellation
-        let ownedBackgroundID = standalone ? BackgroundJob.shared.begin(title: title, onExpiration: { cancellation.cancel() }) : backgroundID
+        let ownedBackgroundID = standalone ? background.begin(title: title, onExpiration: { cancellation.cancel() }) : backgroundID
         let weights = jobProgress(uploadFraction: 0, exportOnly: standalone)
         let rewrite = rewriteBundleID
         let keep = keepBundleID
@@ -432,7 +435,7 @@ final class SigningModel: ObservableObject {
                     Task { @MainActor in
                         guard model.runningSign, model.report == nil, model.resultGeneration == generation else { return }
                         model.busyMessage = p.message; model.signFraction = p.fraction
-                        if let ownedBackgroundID { BackgroundJob.shared.update(ownedBackgroundID, fraction: weights.overall(sign: p.fraction, upload: 0), subtitle: p.message) }
+                        if let ownedBackgroundID { model.background.update(ownedBackgroundID, fraction: weights.overall(sign: p.fraction, upload: 0), subtitle: p.message) }
                     }
                 }
 
@@ -471,8 +474,8 @@ final class SigningModel: ObservableObject {
                     if model.resultGeneration == generation { model.lastSignSeconds = Date().timeIntervalSince(model.signStarted ?? Date()) }
                     if standalone {
                         let saved = model.resultGeneration == generation && model.shelfSaveState.confirmedSaved
-                        if let ownedBackgroundID { BackgroundJob.shared.end(ownedBackgroundID, success: saved) }
-                        if saved { BackgroundJob.shared.notifyIfInBackground(InstallNotification.signed(appTitle: title)) }
+                        if let ownedBackgroundID { model.background.end(ownedBackgroundID, success: saved) }
+                        if saved { model.background.notifyIfInBackground(InstallNotification.signed(appTitle: title)) }
                     }
                 }
             } catch {
@@ -484,7 +487,7 @@ final class SigningModel: ObservableObject {
                     model.runningSign = false
                     if model.resultGeneration == generation { model.errorText = text }
                     if model.busyOwner == generation { model.busyMessage = nil }
-                    if standalone, let ownedBackgroundID { BackgroundJob.shared.end(ownedBackgroundID, success: false) }
+                    if standalone, let ownedBackgroundID { model.background.end(ownedBackgroundID, success: false) }
                 }
             }
           }, onCancel: { cancellation.cancel() })

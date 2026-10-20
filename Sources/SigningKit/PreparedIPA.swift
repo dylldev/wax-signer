@@ -13,6 +13,8 @@ public final class PreparedIPA: @unchecked Sendable {
         /// Includes injected code and individual Mach-O buffers used by the existing engine.
         public var maximumCodeFileBytes = 512 * 1024 * 1024
         public var lifetime: TimeInterval = 900
+        // Deterministic clock seam, internal to this module and its tests.
+        var uptime: @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }
         public init() {}
     }
     public struct AppIdentity: Equatable, Sendable {
@@ -228,14 +230,18 @@ private final class PreparationBudget: @unchecked Sendable {
     let limits: PreparedIPA.Limits
     let cancellation: SigningCancellation
     var chargedBytes = 0 // editor is synchronous; never accessed by extraction workers
-    private let started = DispatchTime.now().uptimeNanoseconds
+    private let started: UInt64
     init(limits: PreparedIPA.Limits, cancellation: SigningCancellation) throws {
         guard limits.lifetime.isFinite, limits.lifetime > 0, limits.lifetime <= 3600,
               limits.maximumPreparedBytes > 0, limits.maximumPreparedBytes <= 8 * 1024 * 1024 * 1024,
               limits.maximumCodeFileBytes > 0, limits.maximumCodeFileBytes <= 512 * 1024 * 1024 else { throw PreparedIPA.Failure.invalidLimits }
-        self.limits = limits; self.cancellation = cancellation
+        self.limits = limits; self.cancellation = cancellation; started = limits.uptime()
     }
-    var remaining: TimeInterval { max(0, limits.lifetime - Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000_000) }
+    var remaining: TimeInterval {
+        let current = limits.uptime()
+        guard current >= started else { return 0 }
+        return max(0, limits.lifetime - Double(current - started) / 1_000_000_000)
+    }
     func check() throws {
         try cancellation.check()
         guard remaining > 0 else { throw PreparedIPA.Failure.expired }

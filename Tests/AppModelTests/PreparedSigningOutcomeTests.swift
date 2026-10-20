@@ -3,6 +3,7 @@ import InstallKit
 import IPAKit
 import SigningKit
 import XCTest
+import UIKit
 @testable import LocalIPASigner
 
 @MainActor
@@ -114,6 +115,16 @@ final class PreparedSigningOutcomeTests: XCTestCase {
         try await select(); try await prepare(installAfter: true)
         XCTAssertTrue(model.previewInstalls); XCTAssertFalse(model.installing)
         XCTAssertNil(model.readyLink); XCTAssertNil(model.report)
+    }
+    func testBackgroundExpirationCancelsOwnedPreparationAndNeverAnnouncesSaved() async throws {
+        let background = BackgroundJob(system: .init(beginGrace: { _, expired in expired(); return UIBackgroundTaskIdentifier(rawValue: 1) },
+            endGrace: { _ in }, requestContinued: { _ in }, cancelContinued: {}, isInBackground: { true }))
+        model = SigningModel(credentials: CredentialsModel(store: store), library: library, background: background)
+        try await select()
+        await model.prepareForSigning()?.value
+        XCTAssertNil(model.preview); XCTAssertNil(model.report); XCTAssertFalse(model.shelfSaveState.confirmedSaved)
+        XCTAssertTrue(model.errorText?.contains("canceled") == true); XCTAssertEqual(background.activeCount, 0)
+        XCTAssertEqual(library.unsigned.count, 1)
     }
     func testUnknownProfilePinFailsPreparationAndKeepsUnsignedArtifact() async throws {
         try await select(); model.bundleProfiles["missing.appex"] = profile

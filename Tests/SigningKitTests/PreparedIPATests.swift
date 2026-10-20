@@ -250,6 +250,21 @@ final class PreparedIPATests: XCTestCase {
         })) { XCTAssertTrue($0 is CancellationError) }
         XCTAssertTrue(reached); XCTAssertEqual(try Data(contentsOf: output), old)
     }
+    func testPreviewExpirationAndClockRollbackRejectBeforeSigning() throws {
+        final class Clock: @unchecked Sendable {
+            let lock = NSLock(); var value: UInt64 = 10
+            func now() -> UInt64 { lock.withLock { value } }
+            func set(_ next: UInt64) { lock.withLock { value = next } }
+        }
+        for rollback in [false, true] {
+            let clock = Clock(); var limits = PreparedIPA.Limits()
+            limits.lifetime = 1; limits.uptime = { clock.now() }
+            let lease = try prepare(limits: limits)
+            clock.set(rollback ? 9 : 1_000_000_010)
+            XCTAssertThrowsError(try lease.execute(identity: credentials.signer, output: output)) { XCTAssertEqual($0 as? PreparedIPA.Failure, .expired) }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: lease.work.path))
+        }
+    }
     #if os(macOS)
     func testPreparedRepackedOutputPassesIndependentAppleCodesign() throws {
         let lease = try prepare(); let start = DispatchTime.now().uptimeNanoseconds
