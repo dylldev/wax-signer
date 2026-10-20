@@ -123,12 +123,12 @@ final class SourcesModel: ObservableObject {
         downloads[key] = 0
         message = nil
         UIImpactFeedbackGenerator(style: .light).impactOccurred()   // the tap on Get, so the download feels answered
-        BackgroundJob.shared.begin(title: app.name)
+        let backgroundID = BackgroundJob.shared.begin(title: app.name)
         let downloader = IPADownloader()
         let store = store
         return Task {
             var ok = false
-            defer { BackgroundJob.shared.end(success: ok); downloads[key] = nil; savingDownloads.remove(key) }
+            defer { BackgroundJob.shared.end(backgroundID, success: ok); downloads[key] = nil; savingDownloads.remove(key) }
             do {
                 let storage = library.storage
                 let file: URL
@@ -146,7 +146,7 @@ final class SourcesModel: ObservableObject {
                     Task { @MainActor in
                         guard self.downloads[key] != nil, !self.savingDownloads.contains(key) else { return }
                         self.downloads[key] = p
-                        BackgroundJob.shared.update(fraction: p, subtitle: "Downloading")
+                        BackgroundJob.shared.update(backgroundID, fraction: p, subtitle: "Downloading")
                     }
                 }) }
                 }
