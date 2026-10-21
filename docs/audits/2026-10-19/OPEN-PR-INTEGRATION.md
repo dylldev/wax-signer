@@ -1,3 +1,11 @@
+# R7 / R15 continuation — 2026-10-20
+
+PR #28 was squash-merged with explicit user authorization after its unchanged reviewed head `11aada4954cf8cab17a807b2fc08e08f3f2b09fe`, successful CI 39495578350, empty unresolved review threads and clean merge/protection checks. Merge: `b4214fe592f4d391a3851cd19d2c0ea21a94c4d2`. Actual-main push verification: [39503390099](https://github.com/dylldev/wax-signer/actions/runs/39503390099), **SUCCESS**: 713 package/366 Simulator tests, 13/11 skips and zero failures, unsigned build plus Python/shell/codesign/CMS. R1/R2 ancestry and exact R7 tree equality were checked after merge.
+
+Only open source PR now: [#29](https://github.com/dylldev/wax-signer/pull/29), `codex/r15-prepared-ipa-preview`, based on that main. It contains the prepared-IPA/app confirmation completion, not a composite replay of the original PR tree. It depends on merged R3/R6/R7/R8/R14 foundations. SigningModel, SignView, BundleSigner and archive manifest checkpoint APIs require combined package, app-model, build and Simulator testing; exact-head CI is mandatory. Leave #29 open for independent review. No other merge is authorized by the latest feature request.
+
+All earlier integration milestones and original scope below are history; remaining incomplete roadmap items are not marked complete by this continuation.
+
 # Existing-PR integration — current checkpoint
 
 Updated2026-10-20. This section supersedes historical old-main and no-merge statements below. User explicitly authorized integration of the original24 source PRs. **All24 merged individually** through supported GitHub operations, exact-head checks, live review/protection checks and incremental merge-tree validation. No Phase7 feature is included. No force-push, admin bypass, release, deployment, production credential or distribution-repository mutation occurred.

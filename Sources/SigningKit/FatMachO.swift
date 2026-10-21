@@ -60,15 +60,17 @@ enum FatMachO {
     }
 
     /// Replaces every universal binary under `root` with its arm64 slice. Returns one note per file changed.
-    static func thinTree(at root: URL) throws -> [String] {
+    static func thinTree(at root: URL, scratchDirectory: URL? = nil, checkpoint: () throws -> Void = {}, beforeWrite: (Int) throws -> Void = { _ in }) throws -> [String] {
+        try checkpoint()
         let fm = FileManager.default
         guard let walker = fm.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else { return [] }
         let base = root.resolvingSymlinksInPath().path
-        let staging = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let staging = (scratchDirectory ?? fm.temporaryDirectory).appendingPathComponent(UUID().uuidString)
         try fm.createDirectory(at: staging, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: staging) }
         var validated: [(source: URL, staged: URL, attributes: [FileAttributeKey: Any])] = []
         for case let url as URL in walker {
+            try checkpoint()
             let v = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
             guard v.isRegularFile == true, v.isSymbolicLink != true else { continue }
             let handle = try FileHandle(forReadingFrom: url)
@@ -79,13 +81,18 @@ enum FatMachO {
             guard isFat(head) else { continue }
             let output = try thin(Data(contentsOf: url, options: .mappedIfSafe))
             let staged = staging.appendingPathComponent(String(validated.count))
+            try checkpoint()
+            try beforeWrite(output.count)
             try output.write(to: staged)
             validated.append((url, staged, try fm.attributesOfItem(atPath: url.path)))
         }
         var notes: [String] = []
         for item in validated {
+            try checkpoint()
             let url = item.source
-            try Data(contentsOf: item.staged, options: .mappedIfSafe).write(to: url, options: .atomic)
+            let bytes = try Data(contentsOf: item.staged, options: .mappedIfSafe)
+            try beforeWrite(bytes.count)
+            try bytes.write(to: url, options: .atomic)
             if let mode = item.attributes[.posixPermissions] { try fm.setAttributes([.posixPermissions: mode], ofItemAtPath: url.path) }
             let full = url.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent(url.lastPathComponent).path
             notes.append("Removed unused architectures from \(full.hasPrefix(base + "/") ? String(full.dropFirst(base.count + 1)) : url.lastPathComponent)")

@@ -145,6 +145,7 @@ targets:
     platform: iOS
     sources:
       - path: Tests/AppModelTests
+      - path: Tests/SigningKitTests/FixtureData.swift
       - path: Tests/SigningKitTests/Fixtures/TestApp.ipa
         buildPhase: resources
     dependencies:

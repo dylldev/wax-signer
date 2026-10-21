@@ -51,6 +51,23 @@ final class FatMachOTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent("a-good")), good, "nothing is rewritten when the scan is going to refuse")
     }
 
+    func testOwnedThinningScratchIsRemovedAfterBudgetOrCancellationRefusal() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("owned-thinning-\(UUID())")
+        let tree = root.appendingPathComponent("tree"), scratch = root.appendingPathComponent("scratch")
+        try FileManager.default.createDirectory(at: tree, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = fat([(0, try thinBinary())]), file = tree.appendingPathComponent("code")
+        try original.write(to: file)
+        for canceled in [false, true] {
+            XCTAssertThrowsError(try FatMachO.thinTree(at: tree, scratchDirectory: scratch, checkpoint: {
+                if canceled { throw CancellationError() }
+            }, beforeWrite: { _ in throw SigningError.io("scratch budget refused") }))
+            XCTAssertEqual(try Data(contentsOf: file), original)
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: scratch.path).isEmpty)
+        }
+    }
+
     private func thinBinary() throws -> Data {
         let app = try makeWorkingApp()
         let exe = try XCTUnwrap(try PropertyListSerialization.propertyList(from: Data(contentsOf: app.appendingPathComponent("Info.plist")), format: nil)

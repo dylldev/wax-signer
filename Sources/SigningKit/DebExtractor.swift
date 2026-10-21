@@ -9,18 +9,23 @@ enum DebExtractor {
     static let maxDecompressed = DebArchive.maxDecompressed      // 1 GiB of tar data
     static let maxFile = DebArchive.maxFile            // 512 MiB per library
 
-    static func dylibs(inDeb deb: URL, to directory: URL) throws -> [URL] {
+    static func dylibs(inDeb deb: URL, to directory: URL, checkCancellation: () throws -> Void = {},
+                       beforeWrite: (Int) throws -> Void = { _ in }) throws -> [URL] {
+        try checkCancellation()
         let bytes = try Data(contentsOf: deb, options: .mappedIfSafe)
         let members = try arMembers(bytes)
         guard let data = members.first(where: { $0.name.hasPrefix("data.tar") }) else {
             throw SigningError.bundle("\(deb.lastPathComponent) is not a tweak package (no data archive inside).")
         }
         let tar = try decompress(data.bytes, name: data.name)
+        try checkCancellation()
         let files = try DebArchive.tarFiles(tar).filter { $0.name.lowercased().hasSuffix(".dylib") && !$0.name.hasSuffix("/") }
         guard !files.isEmpty else { throw SigningError.bundle("\(deb.lastPathComponent) contains no .dylib files.") }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         var written: [URL] = []
         for f in files {
+            try checkCancellation()
+            try beforeWrite(f.bytes.count)
             let bare = (f.name as NSString).lastPathComponent        // never a path: no way to leave the folder
             guard !bare.isEmpty, bare != ".", bare != ".." else { continue }
             let url = directory.appendingPathComponent(bare)

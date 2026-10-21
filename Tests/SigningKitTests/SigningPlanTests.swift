@@ -1,5 +1,6 @@
-import CredentialKit
+@testable import CredentialKit
 import IPAKit
+import Security
 import XCTest
 @testable import SigningKit
 
@@ -180,6 +181,23 @@ final class SigningPlanTests: XCTestCase {
         XCTAssertThrowsError(try BundleSigner.plan(appDirectory: app, certificateChainDER: credentials.signer.certificateChainDER,
             certificateTeamID: credentials.loaded.teamID, profiles: profiles)) { XCTAssertTrue($0.localizedDescription.contains("CMS signature invalid")) }
         try before.verifyTree()
+    }
+    func testAppleChainClassificationCannotTrustASubjectDisplayName() throws {
+        let status = ProfileTrust.classifyVerifiedCMS(trusted: true, rootDER: FixtureData.certADER, chain: ["Apple Root CA"], reason: "fixture")
+        guard case .signatureValidButUntrusted = status else { return XCTFail("trusted custom root name must never establish Apple identity") }
+        let roots = AppleCertificateAuthorities.all.filter { der in
+            guard let c = SecCertificateCreateWithData(nil, der as CFData) else { return false }
+            return (SecCertificateCopySubjectSummary(c) as String? ?? "").hasPrefix("Apple Root CA")
+        }
+        XCTAssertEqual(roots.count, 3)
+        for root in roots {
+            guard case .appleChainVerified = ProfileTrust.classifyVerifiedCMS(trusted: true, rootDER: root, chain: ["name does not authorize trust"], reason: "fixture") else {
+                return XCTFail("the independently checked Apple public roots must match their pins")
+            }
+            guard case .signatureValidButUntrusted = ProfileTrust.classifyVerifiedCMS(trusted: false, rootDER: root, chain: ["Apple Root CA"], reason: "untrusted") else {
+                return XCTFail("a known anchor does not override failed system chain validation")
+            }
+        }
     }
     #if os(macOS)
     func testPlannedOutputPassesIndependentAppleCodesign() throws {

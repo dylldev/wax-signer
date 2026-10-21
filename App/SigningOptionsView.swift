@@ -43,6 +43,10 @@ struct SigningOptionsView: View {
                     profileRow
                     WaxDivider()
                     entitlementsRow
+                    WaxDivider()
+                    Toggle("Require every requested capability", isOn: $model.strictEntitlements)
+                        .tint(Wax.link).padding(.vertical, 10)
+                    Text("Strict mode refuses signing when a profile cannot grant requested entitlements. Per-bundle profiles can be changed in the signing preview; any change requires preparing again.").font(.footnote).foregroundStyle(Wax.sub)
                 }
                 if let fileProblem { note(fileProblem).foregroundStyle(Wax.bad) }
 
