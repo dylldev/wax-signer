@@ -9,6 +9,15 @@
 Everything below is retained historical evidence and original scope; earlier next-action instructions do not override this checkpoint.
 
 # Historical checkpoint — R7 packaging before authorized merge
+## Independent R16 source-details continuation
+
+Base `b4214fe592f4d391a3851cd19d2c0ea21a94c4d2`; R7 is merged and its exact-main CI 39503390099 passed 713 package/366 Simulator tests (13/11 skips, zero failures). R15 full prepared signing/app confirmation is in open PR #29, source/doc head `c6a7bcb85452a503537a1afcee19aebcfa93defa`, exact-head CI 39506848402 running at this checkpoint. Do not merge it without independent review.
+
+Independent [PR #30](https://github.com/dylldev/wax-signer/pull/30), branch `codex/r16-source-details`, implements only source-reported app details and comparison with an actually committed download association. Six new deterministic app-model tests; initial source head `748fe39688dd32c83274eb1fb00e8f6516f0e77c`, CI 39507380067 running; final macOS head verification pending. See `R16-SOURCE-DETAILS.md`. It does not contain R15 production changes, avoids SigningModel/SignView/BundleSigner overlaps, and is based directly on main. A non-destructive merge-tree assessment confirms only the master documentation headers conflict and need ordinary forward resolution when the two PRs are integrated; preserve both final evidence records. No new PR auto-merge authorized.
+
+Next action: finish exact-head CI and independent review readiness for PR #29 and this R16 milestone, correct real failures without skips, record PR/run IDs. Then original unfinished R7 artwork/provider/cache/whole-engine budgets, deeper R8/probe retention, R10 context/history, R14 migrations, remaining R16 accessibility/localization and R17–R20. This partial R16 milestone does not complete original R16. Overall program remains PARTIALLY COMPLETE; no device installation/launch verified. Earlier checkpoints below are historical.
+
+# Current Phase7 checkpoint — R7 packaging milestone
 
 Base actual main `9243a9d97a54bc27fb963b0b8a10322bcc4cc52a`, [CI39493120425](https://github.com/dylldev/wax-signer/actions/runs/39493120425) SUCCESS:695 package tests/13 skips;366 Simulator tests/11 skips;0 failures; unsigned iOS build;55 server/26 source-release/6 probe tests; both shell suites and independent codesign/CMS fixture checks. All24 original source PRs and narrow regression/docs #27 merged through supported operations. None closed as superseded. Exact original merge SHAs are in INTEGRATION-LEDGER.json; #27 merge SHA is `9243a9d97a54bc27fb963b0b8a10322bcc4cc52a`. Final-head proof/cleanup is also recorded in [PR27](https://github.com/dylldev/wax-signer/pull/27).
 
