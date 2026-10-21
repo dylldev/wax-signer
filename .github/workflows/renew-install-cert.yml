@@ -1,0 +1,52 @@
+# Keeps the certificate for Wax's "This iPhone" install host fresh. Free: GitHub Actions + GitHub Pages + Let's Encrypt.
+# One-time setup (repository owner): Settings > Pages > Source: GitHub Actions; Settings > Secrets > DUCKDNS_TOKEN;
+# Settings > Variables > INSTALL_DOMAIN (a DuckDNS name set to 127.0.0.1, for example wax-install.duckdns.org);
+# Settings > Variables > CERT_FEED_URL (the Pages URL where cert.json is served). CERT_FEED_URL and INSTALL_DOMAIN
+# are the single source of truth for where the feed lives and which name it may publish; neither is derived from
+# the repository path, so a fork or repo rename cannot make Wax renew a feed it does not own.
+name: Renew install certificate
+on:
+  schedule: [{ cron: "17 5 * * *" }]      # daily; a run only issues when fewer than 30 days remain (works for 90- and 64-day certificates)
+  workflow_dispatch:
+    inputs:
+      force: { description: "Issue even if the published certificate is fresh", type: boolean, default: false }
+permissions: { contents: read, pages: write, id-token: write }
+concurrency: { group: install-cert, cancel-in-progress: false }
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    environment: { name: github-pages, url: "${{ steps.deploy.outputs.page_url }}" }
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - name: Decide whether to renew
+        id: need
+        env: { RAW_DOMAIN: "${{ vars.INSTALL_DOMAIN }}", CERT_FEED_URL: "${{ vars.CERT_FEED_URL }}", FORCE: "${{ inputs.force }}" }
+        run: |
+          [ -n "$CERT_FEED_URL" ] || { echo "Set the CERT_FEED_URL variable (the Pages URL serving cert.json)"; exit 1; }
+          [ -n "$RAW_DOMAIN" ] || { echo "Set the INSTALL_DOMAIN variable"; exit 1; }
+          INSTALL_DOMAIN=$(printf '%s' "$RAW_DOMAIN" | tr 'A-Z' 'a-z')   # DuckDNS and the app's allow-list compare lowercase
+          url="$CERT_FEED_URL"
+          days=$(curl -fsS "$url" 2>/dev/null | python3 -c "import sys,json,datetime;d=json.load(sys.stdin);print((datetime.datetime.strptime(d['notAfter'],'%Y-%m-%dT%H:%M:%SZ')-datetime.datetime.utcnow()).days)" 2>/dev/null || echo -1)
+          echo "published certificate has $days days left"
+          echo "domain=$INSTALL_DOMAIN" >> "$GITHUB_OUTPUT"
+          if [ "$FORCE" = "true" ] || [ "$days" -lt 30 ]; then echo "renew=true" >> "$GITHUB_OUTPUT"; else echo "renew=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Issue certificate
+        if: steps.need.outputs.renew == 'true'
+        env:
+          DuckDNS_Token: "${{ secrets.DUCKDNS_TOKEN }}"
+          INSTALL_DOMAIN: "${{ steps.need.outputs.domain }}"
+          ACME_HOME: "${{ github.workspace }}/wax-acme-home"
+        run: |
+          git clone https://github.com/acmesh-official/acme.sh "$RUNNER_TEMP/acme"
+          git -C "$RUNNER_TEMP/acme" checkout --quiet 807da6498377ee5e0cf43a78091f46f12dc59a89   # v3.1.6, pinned to the commit
+          ACME_SH="$RUNNER_TEMP/acme/acme.sh" scripts/make-install-cert.sh "$INSTALL_DOMAIN" site
+          printf '<!doctype html><meta charset="utf-8"><title>Wax install certificate</title><p>This file is used by Wax so an iPhone can install apps from itself. It is public on purpose.</p>' > site/index.html
+      - uses: actions/configure-pages@v5
+        if: steps.need.outputs.renew == 'true'
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.need.outputs.renew == 'true'
+        with: { path: site }
+      - id: deploy
+        if: steps.need.outputs.renew == 'true'
+        uses: actions/deploy-pages@v4
