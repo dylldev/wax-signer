@@ -1,0 +1,42 @@
+name: CI
+on:
+  push: { branches: [main, master] }
+  pull_request:
+permissions: { contents: read }
+jobs:
+  test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package tests
+        run: |
+          set -o pipefail
+          swift test 2>&1 | tee package-tests.log
+      - name: Server and script tests
+        run: |
+          python3 -m unittest discover -s Server/wax-ota -p 'test_*.py'
+          bash scripts/test_make_install_cert.sh
+          bash scripts/test_publish_prep.sh
+          python3 -m unittest discover -s Source -p 'test_*.py'
+          python3 -m unittest discover -s scripts -p 'test_package_probe.py'
+      - name: Build the app (unsigned)
+        run: |
+          brew install xcodegen
+          xcodegen generate
+          xcodebuild -project LocalIPASigner.xcodeproj -scheme LocalIPASigner -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
+      - name: App tests on the iOS Simulator
+        run: |
+          # first available iPhone simulator on this runner
+          ID=$(xcrun simctl list devices available -j | python3 -c "import sys,json;d=json.load(sys.stdin)['devices'];print(next((x['udid'] for r,v in d.items() if 'iOS' in r for x in v if 'iPhone' in x['name']), ''))")
+          [ -n "$ID" ] || { echo "no iPhone simulator on this runner"; exit 1; }
+          xcodebuild test -project LocalIPASigner.xcodeproj -scheme LocalIPASigner -destination "id=$ID" -resultBundlePath "$RUNNER_TEMP/WaxTests.xcresult" CODE_SIGNING_ALLOWED=NO
+      - name: Retain verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-${{ github.sha }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            package-tests.log
+            ${{ runner.temp }}/WaxTests.xcresult
