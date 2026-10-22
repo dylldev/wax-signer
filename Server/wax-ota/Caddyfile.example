@@ -1,0 +1,29 @@
+# Wax install server (install.sh puts your domain in the line below). Caddy fetches and renews the HTTPS certificate itself.
+# Only two paths exist; everything else is a 404. There is no access log: file paths contain the secret id.
+{{DOMAIN}} {
+	handle /ota-up/* {
+		uri strip_prefix /ota-up
+		request_body {
+			max_size 2GB
+		}
+		reverse_proxy 127.0.0.1:8091 {
+			# Caddy APPENDS to a client-supplied X-Forwarded-For by default; overwrite it so the header
+			# names the real peer instead of anything the caller chose to claim.
+			header_up X-Forwarded-For {remote_host}
+		}
+	}
+	handle /ota/* {
+		root * /var/www/signed-www
+		header Cache-Control no-store
+		@ipa path *.ipa
+		header @ipa Content-Type application/octet-stream
+		@plist path *.plist
+		header @plist Content-Type text/xml
+		file_server {
+			hide .sha256 .*.part
+		}
+	}
+	handle {
+		respond 404
+	}
+}
