@@ -1,0 +1,78 @@
+import XCTest
+@testable import InstallKit
+
+final class ExpiryPolicyTests: XCTestCase {
+    private let cal: Calendar = { var c = Calendar(identifier: .gregorian); c.timeZone = TimeZone(identifier: "UTC")!; return c }()
+    private func date(_ y: Int, _ m: Int, _ d: Int, _ h: Int = 0) -> Date {
+        cal.date(from: DateComponents(timeZone: TimeZone(identifier: "UTC"), year: y, month: m, day: d, hour: h))!
+    }
+
+    func testReminderIsOneDayBeforeExpiryAtNineLocal() {
+        let expiry = date(2026, 10, 24, 12)
+        let r = ExpiryPolicy.reminderDate(profileExpiry: expiry, now: date(2026, 10, 17), calendar: cal)
+        XCTAssertEqual(r.map { cal.component(.hour, from: $0) }, 9)
+        let days = cal.dateComponents([.day], from: r!, to: expiry).day
+        XCTAssertEqual(days, 1)
+        XCTAssertLessThan(r!, expiry)
+    }
+
+    func testNoReminderWhenAlreadyWithinADay() {
+        XCTAssertNil(ExpiryPolicy.reminderDate(profileExpiry: date(2026, 10, 18, 3), now: date(2026, 10, 17, 12), calendar: cal))
+    }
+
+    func testNoReminderForAnExpiredProfile() {
+        XCTAssertNil(ExpiryPolicy.reminderDate(profileExpiry: date(2026, 10, 1), now: date(2026, 10, 17), calendar: cal))
+    }
+
+    func testMessageNamesTheProfileAndTheDay() {
+        let m = ExpiryPolicy.message(profileName: "Dev Profile", expiry: date(2026, 10, 24, 12))
+        XCTAssertTrue(m.contains("Dev Profile"))
+        XCTAssertTrue(m.lowercased().contains("expire"))
+    }
+
+    func testLongLivedEnterpriseProfilesRemindAWeekBefore() {
+        let created = date(2026, 1, 1), expiry = date(2027, 1, 1, 12)
+        let r = ExpiryPolicy.reminderDate(profileExpiry: expiry, created: created, now: date(2026, 11, 1), calendar: cal)
+        XCTAssertEqual(r.map { cal.component(.hour, from: $0) }, 9)
+        XCTAssertEqual(cal.dateComponents([.day], from: r!, to: expiry).day, 7, "a year-long profile needs time to get a replacement")
+    }
+
+    func testSevenDayProfilesStillRemindTheDayBefore() {
+        let expiry = date(2026, 10, 24, 12)
+        let r = ExpiryPolicy.reminderDate(profileExpiry: expiry, created: date(2026, 10, 17, 12), now: date(2026, 10, 17, 13), calendar: cal)
+        XCTAssertEqual(cal.dateComponents([.day], from: r!, to: expiry).day, 1)
+    }
+
+    func testAWeekBeforeThatHasPassedFallsBackToTheDayBeforeThenNil() {
+        let created = date(2026, 1, 1), expiry = date(2027, 1, 1, 12)
+        let late = ExpiryPolicy.reminderDate(profileExpiry: expiry, created: created, now: date(2026, 12, 28), calendar: cal)
+        XCTAssertEqual(late.map { cal.dateComponents([.day], from: $0, to: expiry).day }, 1)
+        XCTAssertNil(ExpiryPolicy.reminderDate(profileExpiry: expiry, created: created, now: date(2027, 1, 1, 10), calendar: cal))
+    }
+
+    func testMissingCreationDateKeepsTheOldBehavior() {
+        let expiry = date(2026, 10, 24, 12)
+        let r = ExpiryPolicy.reminderDate(profileExpiry: expiry, created: nil, now: date(2026, 10, 17), calendar: cal)
+        XCTAssertEqual(cal.dateComponents([.day], from: r!, to: expiry).day, 1)
+    }
+
+    func testTheMessageCountsTheShelfAppsTheProfileSigned() {
+        let expiry = date(2026, 10, 24, 12)
+        XCTAssertTrue(ExpiryPolicy.message(profileName: "P", expiry: expiry, affectedApps: 2).contains("2 apps on your Wax shelf"))
+        XCTAssertTrue(ExpiryPolicy.message(profileName: "P", expiry: expiry, affectedApps: 1).contains("1 app on your Wax shelf"))
+        XCTAssertFalse(ExpiryPolicy.message(profileName: "P", expiry: expiry, affectedApps: 0).contains("shelf"))
+        XCTAssertEqual(ExpiryPolicy.message(profileName: "P", expiry: expiry), ExpiryPolicy.message(profileName: "P", expiry: expiry, affectedApps: 0))
+    }
+
+    func testAffectedAppsAreTheSignedShelfEntriesWhoseRecordUsedTheProfile() {
+        let used = UUID(), other = UUID()
+        func entry(_ profiles: [UUID]?) -> LibraryEntry {
+            LibraryEntry(id: UUID(), kind: .signed, name: "A", version: "1", bundleID: "a", size: 1, added: Date(), fileName: "a.ipa",
+                         sha256: nil, build: nil, provenance: .waxSigned,
+                         record: profiles.map { ids in SigningRecord(signedAt: Date(), originalBundleID: "a", finalBundleID: "a", teamID: nil,
+                                                                     appIDPrefix: nil, certificateSHA1: nil, certificateExpires: nil,
+                                                                     profiles: ids.map { .init(id: $0, name: "p", kind: "k", expires: Date()) }) })
+        }
+        XCTAssertEqual(ExpiryPolicy.affectedApps(profileID: used, in: [entry([used]), entry([other, used]), entry([other]), entry(nil)]), 2)
+    }
+}
