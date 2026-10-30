@@ -190,6 +190,17 @@ targets:
       base:
         GENERATE_INFOPLIST_FILE: YES
 
+  WaxUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [Tests/UITests]
+    dependencies:
+      - target: LocalIPASigner
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.dylldev.wax.uitests
+
   IdentityProbeTests:
     type: bundle.unit-test
     platform: iOS
@@ -205,6 +216,13 @@ targets:
       base:
         GENERATE_INFOPLIST_FILE: YES
 schemes:
+  WaxUITests:
+    build:
+      targets:
+        WaxUITests: [test]
+    test:
+      config: Release
+      targets: [WaxUITests]
   LocalIPASigner:
     build:
       targets:

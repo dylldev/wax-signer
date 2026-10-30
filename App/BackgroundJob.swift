@@ -165,10 +165,6 @@ final class BackgroundJob {
 
     // MARK: Notifications
 
-    func askForNotificationPermission() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
-    }
-
     /// Posts the notification only when Wax is not the app on screen (the install prompt opens by itself then).
     func notifyIfInBackground(_ content: InstallNotification.Content, sound: Bool = true) {
         guard UIApplication.shared.applicationState != .active else { return }

@@ -69,8 +69,16 @@ public final class CredentialStore: @unchecked Sendable {
 
     /// The identity (certificate + private key) for a future signing step. Returns a Keychain reference.
     public func identity(for certificateID: UUID) throws -> SecIdentity {
-        guard locked({ index.certificates.contains { $0.id == certificateID } }) else { throw CredentialError.notFound }
-        return try keychain.identity(id: certificateID)
+        guard let expected = locked({ index.certificates.first { $0.id == certificateID } }) else { throw CredentialError.notFound }
+        let identity = try keychain.identity(id: certificateID)
+        var certificate: SecCertificate?
+        guard SecIdentityCopyCertificate(identity, &certificate) == errSecSuccess, let certificate else {
+            throw CredentialError.certificateUnreadable
+        }
+        guard X509Summary.sha1Hex(SecCertificateCopyData(certificate) as Data) == expected.sha1Fingerprint else {
+            throw CredentialError.identityMismatch
+        }
+        return identity
     }
 
     /// The original profile bytes, for embedding by a future signing step.

@@ -46,6 +46,19 @@ final class SystemKeychainTests: XCTestCase {
         XCTAssertThrowsError(try keychain.identity(id: id)) { XCTAssertEqual($0 as? CredentialError, .notFound) }
     }
 
+    func testDistinctCertificatesResolveToTheirOwnImport() throws {
+        let first = try storeFixture()
+        let second = UUID()
+        ids.append(second)
+        let parsed = try PKCS12Reader.read(FixtureData.p12SecondIdentity, password: FixtureData.password)
+        try keychain.store(identity: parsed.identity, id: second)
+        for (id, expected) in [(first, FixtureData.certADER), (second, parsed.certificateDER)] {
+            var certificate: SecCertificate?
+            XCTAssertEqual(SecIdentityCopyCertificate(try keychain.identity(id: id), &certificate), errSecSuccess)
+            XCTAssertEqual(SecCertificateCopyData(try XCTUnwrap(certificate)) as Data, expected)
+        }
+    }
+
     func testRemoveIsIdempotent() throws {
         let id = try storeFixture()
         try keychain.remove(id: id)

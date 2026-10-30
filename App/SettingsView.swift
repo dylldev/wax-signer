@@ -1,6 +1,5 @@
 import InstallKit
 import SwiftUI
-import UserNotifications
 
 /// Everything that is set once: install server, signing choices, notifications, storage, about.
 struct SettingsView: View {
@@ -9,13 +8,12 @@ struct SettingsView: View {
     @EnvironmentObject private var library: LibraryModel
     @EnvironmentObject private var router: Router
     @EnvironmentObject private var credentials: CredentialsModel
-    @Environment(\.openURL) private var openURL
+    @EnvironmentObject private var permissions: NotificationPermissionModel
+    @EnvironmentObject private var guide: FirstRunGuideModel
+    @EnvironmentObject private var shake: ShakeReporter
     @AppStorage("signAfterDownload") private var signAfterDownload = false
     @AppStorage("expiryReminders") private var remindersEnabled = true
-    @AppStorage("storeUncompressed") private var storeUncompressed = false
-    @AppStorage("fastDeflate") private var fastDeflate = true
     @State private var showServer = false
-    @State private var notifications: UNAuthorizationStatus = .notDetermined
     @State private var confirmClear: LibraryEntry.Kind?
 
     var body: some View {
@@ -25,151 +23,96 @@ struct SettingsView: View {
                 VStack(spacing: 10) {
                     WaxHeader(title: "Settings", subtitle: "Set once, then forget.").id("top")
 
-                    WaxSectionLabel(text: "Signing identities")
-                    NavigationLink(value: Router.SettingsRoute.credentials) {
-                        WaxRow(icon: "key", title: "Certificates & profiles",
-                               subtitle: "\(credentials.certificates.count) identit\(credentials.certificates.count == 1 ? "y" : "ies") · \(credentials.profiles.count) profile\(credentials.profiles.count == 1 ? "" : "s")") {
-                            Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(Wax.sub)
+                    WaxSectionLabel(text: "Setup")
+                    WaxPanel {
+                        NavigationLink(value: Router.SettingsRoute.credentials) {
+                            WaxListRow(icon: "key", title: "Certificates & profiles", detail: credentialSummary) { WaxChevron() }
                         }
-                    }
-                    .buttonStyle(.plain)
-
-                    WaxSectionLabel(text: "Install")
-                    Button { showServer = true } label: {
-                        WaxRow(icon: "icloud.and.arrow.up", title: "Install host",
-                               subtitle: ota.isConfigured ? ota.hostSummary : "Not set up yet") {
-                            WaxLinkText(text: ota.isConfigured ? "Edit" : "Set up")
+                        .buttonStyle(WaxRowButtonStyle())
+                        WaxRowDivider()
+                        Button { showServer = true } label: {
+                            WaxListRow(icon: "icloud.and.arrow.up", title: "Install host") {
+                                WaxRowValue(text: ota.isConfigured ? ota.hostSummary : "Not set up")
+                                WaxChevron()
+                            }
                         }
+                        .buttonStyle(WaxRowButtonStyle())
                     }
-                    .buttonStyle(.plain)
 
                     WaxSectionLabel(text: "Signing")
                     WaxPanel {
                         BundleIDModePicker(mode: $signing.bundleIDMode)
-                            .padding(.vertical, 12)
-                        WaxDivider()
+                        WaxRowDivider()
                         NavigationLink(value: Router.SettingsRoute.signingOptions) {
-                            HStack {
-                                Text("Signing options").font(.subheadline.weight(.semibold)).foregroundStyle(Wax.text)
-                                Spacer()
+                            WaxListRow(icon: "slider.horizontal.3", title: "Signing options") {
                                 if !signing.edits.isEmpty { WaxPill(text: "Changed", tone: .ok) }
-                                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(Wax.sub)
-                            }
-                            .frame(minHeight: 52)
-                            .contentShape(Rectangle())
-                        }
-                    }
-
-                    WaxSectionLabel(text: "Sources")
-                    WaxPanel {
-                        Toggle(isOn: $signAfterDownload) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Sign right after download").font(.subheadline.weight(.semibold)).foregroundStyle(Wax.text)
-                                Text("Opens the app on the Sign tab as soon as it is downloaded.").font(.footnote).foregroundStyle(Wax.sub)
+                                WaxChevron()
                             }
                         }
-                        .tint(Wax.accent)
-                        .padding(.vertical, 10)
-                    }
-
-                    #if WAX_DEVELOPMENT
-                    WaxSectionLabel(text: "Speed")
-                    WaxPanel {
-                        Toggle(isOn: $storeUncompressed) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Skip compression for installs").font(.subheadline.weight(.semibold)).foregroundStyle(Wax.text)
-                                Text("Signs faster when installing from this iPhone, but sends a larger file to iOS. Exports are always compressed.").font(.footnote).foregroundStyle(Wax.sub)
-                            }
+                        .buttonStyle(WaxRowButtonStyle())
+                        WaxRowDivider()
+                        WaxListRow(icon: "arrow.down.circle", title: "Sign after download") {
+                            Toggle("Sign after download", isOn: $signAfterDownload).labelsHidden().tint(Wax.accent)
                         }
-                        .tint(Wax.accent)
-                        .padding(.vertical, 10)
                     }
-
-                    WaxPanel {
-                        Toggle(isOn: $fastDeflate) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Fast compression for installs").font(.subheadline.weight(.semibold)).foregroundStyle(Wax.text)
-                                Text("Compresses the re-signed program files at a lower level when installing from this iPhone: a little faster to sign, a slightly bigger file.").font(.footnote).foregroundStyle(Wax.sub)
-                            }
-                        }
-                        .tint(Wax.accent)
-                        .padding(.vertical, 10)
-                    }
-
-                    #endif
 
                     WaxSectionLabel(text: "Notifications")
                     WaxPanel {
-                        HStack {
-                            Text("Ready to install").font(.subheadline.weight(.semibold)).foregroundStyle(Wax.text)
-                            Spacer()
-                            switch notifications {
-                            case .authorized, .provisional, .ephemeral: WaxPill(text: "On", tone: .ok)
-                            case .denied: WaxPill(text: "Off", tone: .warn)
-                            default: Text("Asked on first sign").font(.footnote).foregroundStyle(Wax.sub)
-                            }
-                        }
-                        .frame(minHeight: 52)
-                        WaxDivider()
-                        Toggle(isOn: $remindersEnabled) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Profile expiry reminder").font(.subheadline.weight(.semibold)).foregroundStyle(Wax.text)
-                                Text("A nudge before a signing profile expires: the day before for 7-day profiles, a week before for year-long ones.").font(.footnote).foregroundStyle(Wax.sub)
-                            }
-                        }
-                        .tint(Wax.accent)
-                        .padding(.vertical, 10)
-                        if notifications == .denied {
-                            WaxDivider()
-                            Button("Turn on in iOS Settings") {
-                                if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
-                            }
-                            .buttonStyle(WaxSecondaryButtonStyle())
+                        NotificationPermissionControls(model: permissions)
+                        WaxRowDivider()
+                        WaxListRow(icon: "calendar.badge.clock", title: "Expiry reminders",
+                                   detail: remindersEnabled && !permissions.canNotify ? "Needs notifications on." : nil) {
+                            Toggle("Expiry reminders", isOn: $remindersEnabled).labelsHidden().tint(Wax.accent)
                         }
                     }
 
                     WaxSectionLabel(text: "Storage")
                     if let message = library.message { WaxFeedbackCard(tone: .bad, text: message) }
                     WaxPanel {
-                        storageRow("Unsigned", kind: .unsigned, count: library.unsigned.count)
-                        WaxDivider()
-                        storageRow("Signed", kind: .signed, count: library.signed.count)
+                        storageRow("Unsigned", icon: "shippingbox", kind: .unsigned, count: library.unsigned.count)
+                        WaxRowDivider()
+                        storageRow("Signed", icon: "checkmark.seal", kind: .signed, count: library.signed.count)
                     }
 
-                    #if WAX_DEVELOPMENT
                     WaxSectionLabel(text: "Help")
                     WaxPanel {
-                        NavigationLink(value: Router.SettingsRoute.importLog) {
-                            HStack {
-                                Text("Import log").font(.subheadline.weight(.semibold)).foregroundStyle(Wax.text)
-                                Spacer()
-                                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(Wax.sub)
-                            }
-                            .frame(minHeight: 52)
-                            .contentShape(Rectangle())
+                        Button { guide.replay() } label: {
+                            WaxListRow(icon: "play.rectangle", title: "Replay guide") { WaxChevron() }
                         }
-                    }
-
-                    #endif
-
-                    WaxSectionLabel(text: "About")
-                    WaxPanel {
-                        WaxKV(key: "Version", value: aboutVersion)
-                        WaxDivider()
-                        #if WAX_DEVELOPMENT
-                        WaxKV(key: "Bundle ID", value: Bundle.main.bundleIdentifier ?? "—")
-                        WaxDivider()
-                        #endif
+                        .buttonStyle(WaxRowButtonStyle())
+                        WaxRowDivider()
+                        Button { shake.present() } label: {
+                            WaxListRow(icon: "exclamationmark.bubble", title: "Report a problem") { WaxChevron() }
+                        }
+                        .buttonStyle(WaxRowButtonStyle())
+                        WaxRowDivider()
+                        WaxListRow(icon: "iphone.radiowaves.left.and.right", title: "Shake to report") {
+                            Toggle("Shake to report", isOn: $shake.shakeEnabled).labelsHidden().tint(Wax.accent)
+                        }
+                        WaxRowDivider()
                         Link(destination: URL(string: "https://github.com/dylldev/wax-signer")!) {
-                            Label("Wax on GitHub", systemImage: "arrow.up.right.square")
-                                .font(.subheadline.weight(.semibold)).foregroundStyle(Wax.link)
-                                .frame(maxWidth: .infinity, minHeight: Wax.touch, alignment: .leading)
+                            WaxListRow(icon: "chevron.left.forwardslash.chevron.right", title: "Wax on GitHub") { externalMark }
                         }
+                        .buttonStyle(WaxRowButtonStyle())
+                        #if WAX_DEVELOPMENT
+                        WaxRowDivider()
+                        NavigationLink(value: Router.SettingsRoute.importLog) {
+                            WaxListRow(icon: "doc.text.magnifyingglass", title: "Import log") { WaxChevron() }
+                        }
+                        .buttonStyle(WaxRowButtonStyle())
+                        WaxRowDivider()
+                        WaxListRow(icon: "barcode", title: "Bundle ID") { WaxRowValue(text: Bundle.main.bundleIdentifier ?? "—") }
+                        #endif
+                        WaxRowDivider()
+                        WaxListRow(icon: "info.circle", title: "Version") { WaxRowValue(text: aboutVersion) }
+                            .accessibilityElement(children: .combine)
                     }
-                    Text("Wax is free and open source (Apache-2.0). Signing happens on this phone.")
+                    Text("Free and open source. Signing happens on this iPhone.")
                         .font(.footnote).foregroundStyle(Wax.sub)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.bottom, 24)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .multilineTextAlignment(.center)
+                        .padding(.top, Wax.Space.s)
+                        .padding(.bottom, Wax.Space.xl)
                 }
                 .padding(.horizontal, Wax.inset)
             }
@@ -194,10 +137,14 @@ struct SettingsView: View {
                             titleVisibility: .visible) {
             Button("Delete", role: .destructive) { if let k = confirmClear { Task { await library.clear(k) } } }
         }
-        .task { await refreshNotifications() }
-        .onChange(of: showServer) { _, _ in Task { await refreshNotifications() } }
     }
 
+
+    private var credentialSummary: String {
+        let c = credentials.certificates.count, p = credentials.profiles.count
+        if c == 0 && p == 0 { return "None yet" }
+        return "\(c) certificate\(c == 1 ? "" : "s") · \(p) profile\(p == 1 ? "" : "s")"
+    }
 
     private var aboutVersion: String {
         let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
@@ -205,19 +152,17 @@ struct SettingsView: View {
         return "\(v) (\(b))"
     }
 
-    private func storageRow(_ title: String, kind: LibraryEntry.Kind, count: Int) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(Wax.text)
-                Text("\(count) app\(count == 1 ? "" : "s") · \(Self.size(library.bytes(kind)))")
-                    .font(.footnote).foregroundStyle(Wax.sub)
-            }
-            Spacer()
+    private func storageRow(_ title: String, icon: String, kind: LibraryEntry.Kind, count: Int) -> some View {
+        WaxListRow(icon: icon, title: title, detail: "\(count) app\(count == 1 ? "" : "s") · \(Self.size(library.bytes(kind)))") {
             Button("Clear") { confirmClear = kind }
                 .font(.subheadline.weight(.semibold)).foregroundStyle(count == 0 ? Wax.sub : Wax.bad)
+                .frame(minHeight: Wax.touch)
                 .disabled(count == 0)
         }
-        .frame(minHeight: 60)
+    }
+
+    private var externalMark: some View {
+        Image(systemName: "arrow.up.right").font(.footnote.weight(.bold)).foregroundStyle(Wax.sub).accessibilityHidden(true)
     }
 
     private static func size(_ bytes: Int) -> String {
@@ -225,10 +170,6 @@ struct SettingsView: View {
         f.countStyle = .file
         f.allowsNonnumericFormatting = false
         return f.string(fromByteCount: Int64(bytes))
-    }
-
-    private func refreshNotifications() async {
-        notifications = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
     }
 
     private var serverSheet: some View {
