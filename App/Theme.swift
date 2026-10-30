@@ -160,7 +160,7 @@ struct WaxPill: View {
         Text(text)
             .font(.footnote.weight(.semibold))
             .foregroundStyle(tone == .ok ? Wax.ok : (tone == .bad ? Wax.bad : Wax.warn))
-            .padding(.horizontal, 10).frame(height: 26)
+            .padding(.horizontal, 10).frame(minHeight: 26)
             .background(tone == .ok ? Wax.okBg : (tone == .bad ? Wax.badBg : Wax.warnBg), in: Capsule())
     }
 }
@@ -169,6 +169,7 @@ struct WaxPill: View {
 struct WaxPrimaryButtonStyle: ButtonStyle {
     var loading = false
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.headline.weight(.bold))
@@ -179,8 +180,8 @@ struct WaxPrimaryButtonStyle: ButtonStyle {
             .background(configuration.isPressed ? Wax.accentPressed : Wax.accent,
                         in: RoundedRectangle(cornerRadius: Wax.radius, style: .continuous))
             .opacity(isEnabled ? 1 : 0.45)
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
             .allowsHitTesting(!loading)
     }
 }
@@ -449,6 +450,7 @@ struct WaxFeedbackCard: View {
 /// One row of a grouped card: a 32-point symbol tile, the title (and an optional short value under it), then the control.
 /// Every grouped row in Settings uses it, so icons, text and controls line up on the same columns.
 struct WaxListRow<Trailing: View>: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let icon: String
     let title: String
     var detail: String? = nil
@@ -458,7 +460,10 @@ struct WaxListRow<Trailing: View>: View {
     static var iconSize: CGFloat { 32 }
 
     var body: some View {
-        HStack(spacing: Wax.Space.m) {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: Wax.Space.s))
+            : AnyLayout(HStackLayout(spacing: Wax.Space.m))
+        return layout {
             Image(systemName: icon)
                 .symbolRenderingMode(.monochrome)
                 .font(.system(size: 15, weight: .semibold))
