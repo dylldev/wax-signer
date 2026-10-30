@@ -91,3 +91,7 @@ the workflow in the Actions tab. Phones keep working meanwhile: they hold a cert
 
 ## License
 Apache-2.0. See `LICENSE`, `NOTICE` and `THIRD_PARTY_NOTICES.md`.
+
+## Maintainer publishing
+
+Main updates use reviewed pull requests. Do not use the former orphan/force-push publishing route. See [protected publishing](docs/PROTECTED-PUBLISHING.md). Repository protections do not publish app releases.

@@ -7,7 +7,8 @@ jobs:
   test:
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
       - name: Install XcodeGen
         run: |
           brew install xcodegen
@@ -38,7 +39,7 @@ jobs:
           xcodebuild test -project LocalIPASigner.xcodeproj -scheme PassportTests -configuration Development -destination "id=$ID" -resultBundlePath "$RUNNER_TEMP/PassportTests.xcresult" CODE_SIGNING_ALLOWED=NO
       - name: Retain verification evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: verification-${{ github.sha }}
           retention-days: 7
