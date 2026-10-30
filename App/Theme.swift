@@ -443,3 +443,78 @@ struct WaxFeedbackCard: View {
         .accessibilityElement(children: .combine)
     }
 }
+
+// MARK: Grouped list rows
+
+/// One row of a grouped card: a 32-point symbol tile, the title (and an optional short value under it), then the control.
+/// Every grouped row in Settings uses it, so icons, text and controls line up on the same columns.
+struct WaxListRow<Trailing: View>: View {
+    let icon: String
+    let title: String
+    var detail: String? = nil
+    var tone: WaxPill.Tone? = nil
+    @ViewBuilder var trailing: Trailing
+
+    static var iconSize: CGFloat { 32 }
+
+    var body: some View {
+        HStack(spacing: Wax.Space.m) {
+            Image(systemName: icon)
+                .symbolRenderingMode(.monochrome)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(tone == .bad ? Wax.bad : Wax.link)
+                .frame(width: Self.iconSize, height: Self.iconSize)
+                .background(tone == .bad ? Wax.badBg : Wax.chip, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(tone == .bad ? Wax.bad : Wax.text)
+                if let detail {
+                    Text(detail).font(.footnote).foregroundStyle(Wax.sub).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            trailing
+        }
+        .padding(.vertical, Wax.Space.s)
+        .frame(minHeight: 56)
+        .contentShape(Rectangle())
+    }
+}
+
+extension WaxListRow where Trailing == EmptyView {
+    init(icon: String, title: String, detail: String? = nil, tone: WaxPill.Tone? = nil) {
+        self.init(icon: icon, title: title, detail: detail, tone: tone) { EmptyView() }
+    }
+}
+
+/// The divider between grouped rows, starting where the row titles start.
+struct WaxRowDivider: View {
+    var body: some View { WaxDivider().padding(.leading, WaxListRow<EmptyView>.iconSize + Wax.Space.m) }
+}
+
+/// The trailing arrow of a row that opens another screen.
+struct WaxChevron: View {
+    var body: some View {
+        Image(systemName: "chevron.right").font(.footnote.weight(.bold)).foregroundStyle(Wax.sub).accessibilityHidden(true)
+    }
+}
+
+/// A short value on the right of a row, such as a count or a version.
+struct WaxRowValue: View {
+    let text: String
+    var body: some View { Text(text).font(.subheadline).foregroundStyle(Wax.sub).lineLimit(1) }
+}
+
+/// Rows that are buttons get a soft highlight behind them while pressed, like a native list row.
+struct WaxRowButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background {
+                RoundedRectangle(cornerRadius: Wax.radiusSmall, style: .continuous)
+                    .fill(Wax.chip)
+                    .padding(.horizontal, -Wax.Space.s)
+                    .opacity(configuration.isPressed ? 1 : 0)
+            }
+            .animation(.easeOut(duration: configuration.isPressed ? 0.05 : 0.25), value: configuration.isPressed)
+    }
+}

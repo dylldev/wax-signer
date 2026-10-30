@@ -196,7 +196,7 @@ final class SigningModel: ObservableObject {
     func signAndInstall(ota: OTAInstallModel, open: @escaping (URL) -> Void) async {
         guard !installing, !Task.isCancelled else { return }
         if certificateID != nil, preparedSigning == nil {
-            if let task = sign(standalone: false, storeBigFiles: ota.hostKind == .phone && Self.storeUncompressed, fastDeflate: ota.hostKind == .phone && Self.fastDeflateForInstalls) { await task.value }
+            if let task = sign(standalone: false, compression: SigningCompression.Preference().flags(phoneInstall: ota.hostKind == .phone)) { await task.value }
             return
         }
         if let preparedSigning, !preparedSigning.preflight.canContinue { return }
@@ -226,7 +226,6 @@ final class SigningModel: ObservableObject {
         installing = true; installSession = session
         defer { ota.release(session); if installSession === session { installSession = nil } }
         let job = background
-        job.askForNotificationPermission()
         var signingTask: Task<Void, Never>?
         var snapshotTask: Task<(LibraryEntry, IPAMetadata), Error>?
         let backgroundID = job.begin(title: saved?.name ?? ipaInfo?.displayName ?? "Wax", onExpiration: {
@@ -276,7 +275,7 @@ final class SigningModel: ObservableObject {
                 return
             }
         } else if certificateID != nil {
-            guard let task = sign(standalone: false, storeBigFiles: session.kind == .phone && Self.storeUncompressed, fastDeflate: session.kind == .phone && Self.fastDeflateForInstalls, backgroundID: backgroundID) else { return }
+            guard let task = sign(standalone: false, compression: SigningCompression.Preference().flags(phoneInstall: session.kind == .phone), backgroundID: backgroundID) else { return }
             signingTask = task
             await task.value
             guard !Task.isCancelled, ota.owns(session), let r = report, r.checkFailures.isEmpty else { return }
@@ -390,18 +389,14 @@ final class SigningModel: ObservableObject {
 
     // MARK: Signing
 
-    /// Settings ▸ Speed. Off by default: phone timings (Chess, 322 MB) showed no gain from storing, and stored copies are about 165 MB bigger.
-    /// Settings ▸ Speed ▸ Fast compression for installs. On by default.
-    static var fastDeflateForInstalls: Bool { UserDefaults.standard.object(forKey: "fastDeflate") as? Bool ?? true }
-    static var storeUncompressed: Bool { UserDefaults.standard.object(forKey: "storeUncompressed") as? Bool ?? false }
-
     @discardableResult
-    /// `storeBigFiles` writes changed big files uncompressed: right for an install that stays on this phone, wrong for
-    /// anything uploaded or exported.
-    func sign(standalone: Bool = true, storeBigFiles: Bool = false, fastDeflate: Bool = false, backgroundID: UUID? = nil, cancellation: SigningCancellation? = nil) -> Task<Void, Never>? {
+    /// `compression` is read once, here, so changing Signing options ▸ File compression cannot alter a run under way.
+    /// Left out, it is the saved choice for an export (Signing options ▸ File compression).
+    func sign(standalone: Bool = true, compression: SigningCompression.Flags? = nil, backgroundID: UUID? = nil, cancellation: SigningCancellation? = nil) -> Task<Void, Never>? {
         guard busyMessage == nil, !runningSign, !shelfSaveState.isSaving, let ipaURL, let info = ipaInfo, let certificateID, let store = credentials.store,
               let cert = credentials.certificates.first(where: { $0.id == certificateID }) else { return nil }
         let revision = inputRevision
+        let packing = compression ?? SigningCompression.Preference().flags(phoneInstall: false)
         let strictForRun = strictEntitlements
         let profileInfos = credentials.profiles
         let run = UUID()
@@ -422,7 +417,6 @@ final class SigningModel: ObservableObject {
         // This run's own job: never read from shared state later, so a replacement run's job cannot be ended by mistake.
         var ownedJobID: UUID? = backgroundID
         if backgroundJob {
-            background.askForNotificationPermission()
             ownedJobID = background.begin(title: title)
         }
         let jobForRun = ownedJobID
@@ -494,7 +488,7 @@ final class SigningModel: ObservableObject {
                 let shelf = model.library.storage
                 let pending = try shelf.reserve(kind: .signed, name: title, provenance: .waxSigned)
                 let output = try shelf.pendingURL(pending.id)
-                let outcome = try IPASigner.sign(prepared: prepared, output: output, compressChangedFiles: !storeBigFiles, fastDeflate: fastDeflate) { p in
+                let outcome = try IPASigner.sign(prepared: prepared, output: output, compressChangedFiles: packing.compressChangedFiles, fastDeflate: packing.fastDeflate) { p in
                     // The engine reports often; only pass on a visible change.
                     guard throttle.shouldPublish(p) else { return }
                     Task { @MainActor in

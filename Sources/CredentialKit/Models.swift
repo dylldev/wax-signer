@@ -81,6 +81,7 @@ public enum CredentialError: Error, Equatable, LocalizedError {
     case unsupportedPKCS12(status: Int32)
     case noPrivateKey
     case certificateUnreadable
+    case identityMismatch
     case certificateExpired(Date)
     case certificateNotYetValid(Date)
     case profileNotCMS
@@ -105,6 +106,9 @@ public enum CredentialError: Error, Equatable, LocalizedError {
         case .noPrivateKey:
             return "The .p12 contains no private key. A signing certificate needs its private key."
         case .certificateUnreadable: return "The certificate in this file could not be read."
+        case .identityMismatch:
+            return "The stored signing certificate does not match the one you selected. Your saved apps are safe. "
+                + "Keep your original .p12 file and password, then remove and import this certificate again in Credentials."
         case .certificateExpired(let d): return "Certificate expired on \(Self.format(d))."
         case .certificateNotYetValid(let d): return "Certificate is not valid until \(Self.format(d))."
         case .profileNotCMS: return "Not a provisioning profile (not a signed CMS container)."

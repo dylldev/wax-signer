@@ -186,7 +186,7 @@ struct SignView: View {
             } else if let cert = certificate {
                 setupRow(icon: SignSetupChecklist.identity.icon, title: cert.organization ?? cert.commonName,
                          subtitle: identitySubtitle(cert)) {
-                    let status = IdentityReadiness.status(for: cert, profiles: credentials.profiles)
+                    let status = credentials.identityStatus(for: cert)
                     if dynamicTypeSize.isAccessibilitySize {
                         Text(status.label).font(.footnote.weight(.semibold)).foregroundStyle(Wax.sub)
                     } else { status.pill }
@@ -565,31 +565,28 @@ struct SignView: View {
     private var detailsSheet: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    if let info = model.ipaInfo {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("App's bundle ID").font(.subheadline.weight(.semibold)).foregroundStyle(Wax.text)
-                            Text(info.bundleIdentifier).font(.footnote).foregroundStyle(Wax.sub)
-                                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 10) {
+                    WaxPanel {
+                        if let info = model.ipaInfo {
+                            WaxListRow(icon: "app", title: "App's bundle ID", detail: info.bundleIdentifier)
+                                .textSelection(.enabled)
+                            WaxRowDivider()
                         }
-                    }
-                    BundleIDModePicker(mode: $model.bundleIDMode)
-                    HStack {
-                        Text("Profile").font(.subheadline.weight(.semibold)).foregroundStyle(Wax.text)
-                        Spacer()
-                        Text("\(credentials.profiles.count) imported · automatic").font(.footnote).foregroundStyle(Wax.sub)
-                    }
-                    if let r = model.report { reportDetails(r) }
-                    NavigationLink { SigningOptionsView(model: model) } label: {
-                        HStack {
-                            Text("Signing options").font(.subheadline.weight(.semibold))
-                            Spacer()
-                            if !model.edits.isEmpty { WaxPill(text: "Changed", tone: .ok) }
-                            Image(systemName: "chevron.right").font(.footnote.weight(.semibold))
+                        BundleIDModePicker(mode: $model.bundleIDMode)
+                        WaxRowDivider()
+                        WaxListRow(icon: "doc.text", title: "Profile") {
+                            WaxRowValue(text: "\(credentials.profiles.count) imported · automatic")
                         }
-                        .foregroundStyle(Wax.link)
-                        .frame(minHeight: 44)
+                        WaxRowDivider()
+                        NavigationLink { SigningOptionsView(model: model) } label: {
+                            WaxListRow(icon: "slider.horizontal.3", title: "Signing options") {
+                                if !model.edits.isEmpty { WaxPill(text: "Changed", tone: .ok) }
+                                WaxChevron()
+                            }
+                        }
+                        .buttonStyle(WaxRowButtonStyle())
                     }
+                    if let r = model.report { WaxPanel { reportDetails(r).padding(.vertical, Wax.Space.m) } }
                 }
                 .padding(Wax.inset)
             }

@@ -14,7 +14,10 @@ enum IdentityReadiness {
         return compatible?.kind.title
     }
 
-    static func status(for cert: CertificateInfo, profiles: [ProfileInfo], store: InstallTestStore = InstallTestStore()) -> IdentityStatus {
+    static func status(for cert: CertificateInfo, profiles: [ProfileInfo], identityCheck: String? = nil,
+                       store: InstallTestStore = InstallTestStore()) -> IdentityStatus {
+        guard let identityCheck else { return .needsAttention("Checking the stored signing certificate…") }
+        if !identityCheck.isEmpty { return .needsAttention(identityCheck) }
         let now = Date()
         let compatible = profiles.first { !CompatibilityReport.evaluate(certificate: cert, profile: $0, now: now).hasFailures }
         let kind: IdentityFacts.ProfileKind = switch compatible?.kind {
