@@ -61,4 +61,15 @@ Manual VoiceOver, Bold Text, Increase Contrast, Differentiate Without Color, dis
 
 ## Publication
 
-Public main is older than the local audit baseline. The review branch must preserve the existing local feature work while avoiding publication of private local Git history. Use a sanitized commit chain whose first parent is the fetched public main, scan the final tree with the existing private denylist, and open a draft PR. The commit IDs and PR link are recorded after publication in the evidence summary.
+[Draft PR33](https://github.com/dylldev/wax-signer/pull/33) is open on `codex/wax-ui-audit-review`. The public branch starts from fetched public main; private local Git history is not an ancestor. A scan of the final tracked tree found zero matches against the existing private denylist. The original working checkout remains at518156f with its existing uncommitted work preserved.
+
+Initial public commit groups:
+
+- `6de9d0fe3905`: Bring existing tested Wax feature work into the UI audit baseline
+- `87af4ad1e09b`: Fix save feedback, deletion safety and accessible Wax controls
+- `cd85618fc779`: Test real Wax navigation, deletion and large-text rendering
+- `d7313b6a65da`: Document the Wax UI audit, scorecard and remaining validation gaps
+
+The PR remains draft because the accessibility audit and full free-only review are incomplete. GitHub CI is separate from the recorded local simulator results; inspect the live PR checks for its current status. No merge or release occurred.
+
+The two deletion UI tests require prepared disposable simulator entries named Wax UI Cancel and Wax UI Delete; they skip with an explicit fixture message on a fresh unprepared simulator. The recorded successful run used only synthetic copies of the repository test IPA. The existing navigation and adaptive tests run without that fixture. No production test hooks or developer switches were added to normal Wax.
