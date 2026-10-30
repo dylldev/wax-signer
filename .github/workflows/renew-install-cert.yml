@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: { name: github-pages, url: "${{ steps.deploy.outputs.page_url }}" }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: { persist-credentials: false }
       - name: Decide whether to renew
         id: need
@@ -42,11 +42,11 @@ jobs:
           git -C "$RUNNER_TEMP/acme" checkout --quiet 807da6498377ee5e0cf43a78091f46f12dc59a89   # v3.1.6, pinned to the commit
           ACME_SH="$RUNNER_TEMP/acme/acme.sh" scripts/make-install-cert.sh "$INSTALL_DOMAIN" site
           printf '<!doctype html><meta charset="utf-8"><title>Wax install certificate</title><p>This file is used by Wax so an iPhone can install apps from itself. It is public on purpose.</p>' > site/index.html
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
         if: steps.need.outputs.renew == 'true'
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         if: steps.need.outputs.renew == 'true'
         with: { path: site }
       - id: deploy
         if: steps.need.outputs.renew == 'true'
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
