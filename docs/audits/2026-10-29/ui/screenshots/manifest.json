@@ -1,0 +1,50 @@
+[
+  {
+    "file": "screenshots/before-small-ax-sign.png",
+    "source_capture": "before-small-ax/AEF389EC-10A6-4885-9CCB-70ED925FD3A5.png",
+    "source_sha256": "8acbf91af471e61145670b6d3cbc3e787dcd4449141fd7d26e97541cec063720",
+    "published_sha256": "3043bd978b81cb03a9ef1689c02049031a62c38559c8eb1177e8b7838cdc639d",
+    "device": "Wax QA iPhone SE",
+    "operation": "Resize only, maximum1440pixels; no compositing or content edits"
+  },
+  {
+    "file": "screenshots/after-small-ax-sign.png",
+    "source_capture": "final-small-ax/9BE78E84-81AA-43C5-95AA-867F2E23B6D2.png",
+    "source_sha256": "96bb56ac3f6319852b86fd5186ecc905962301c000fa6de1891d419d77acbe87",
+    "published_sha256": "bb30505e6111263626f94f14a367c24730ac04b3e5ff13132fb05d4f333c76c6",
+    "device": "Wax QA iPhone SE",
+    "operation": "Resize only, maximum1440pixels; no compositing or content edits"
+  },
+  {
+    "file": "screenshots/before-small-ax-settings.png",
+    "source_capture": "before-small-ax/43D1F7E5-1EE4-46EE-9041-45520DE3ABAE.png",
+    "source_sha256": "88239745848a4b85b1d3b49363f07059c9201d9fc4ca8c9816f4b0cf8d501077",
+    "published_sha256": "5cc6594df0897ad5d04c84ef2715725abef30dbee6389d319d1088137e8fbcfa",
+    "device": "Wax QA iPhone SE",
+    "operation": "Resize only, maximum1440pixels; no compositing or content edits"
+  },
+  {
+    "file": "screenshots/after-small-ax-settings.png",
+    "source_capture": "final-small-ax/759EAFA0-FCB5-483A-96AA-AF5002BFF40E.png",
+    "source_sha256": "43a873d1d56bd8101e3dd4edad5c3cd85cb51c6b2f27e886e2daca86b38a0f24",
+    "published_sha256": "883404b243eb8aff276cda6625982627555f08073b0dc48ce3f5dcf751e77cb3",
+    "device": "Wax QA iPhone SE",
+    "operation": "Resize only, maximum1440pixels; no compositing or content edits"
+  },
+  {
+    "file": "screenshots/large-dark-sign.png",
+    "source_capture": "after-large-dark/F020719A-A217-4E50-8882-33BE733175DA.png",
+    "source_sha256": "9c8dfed6c731fb865ab673df03b2b4b785f849d7bf109effb74de77e1338426f",
+    "published_sha256": "b66712179fa664cb486f4cdc364d1c8a7e09a4838bc8bcfbab635bb7337c9605",
+    "device": "iPhone 18 Pro Max",
+    "operation": "Resize only, maximum1440pixels; no compositing or content edits"
+  },
+  {
+    "file": "screenshots/delete-confirmation.png",
+    "source_capture": "final-standard/A43CACE4-45A5-4F35-8AD0-D2BC9C8152CF.png",
+    "source_sha256": "3dc52fc9f97ace8269b200272279ab9468e95b02aae72f5256205b068fac15c2",
+    "published_sha256": "631b5f1993551eea90f0516d612037071983bfdab345b94a42aa4415eaac17ac",
+    "device": "iPhone 17",
+    "operation": "Resize only, maximum1440pixels; no compositing or content edits"
+  }
+]

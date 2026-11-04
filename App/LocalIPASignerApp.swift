@@ -41,12 +41,19 @@ struct LocalIPASignerApp: App {
     @StateObject private var sources = SourcesModel()
     @StateObject private var router = Router()
     @StateObject private var ota = OTAInstallModel()
+    @StateObject private var guide: FirstRunGuideModel
+    @StateObject private var permissions = NotificationPermissionModel.shared
+    @StateObject private var shake = ShakeReporter()
+    @StateObject private var keyboard = KeyboardWatch()
     #if WAX_DEVELOPMENT
     @StateObject private var tester = IdentityTester()
     #endif
     @AppStorage("expiryReminders") private var remindersEnabled = true
 
     init() {
+        // Must run before any model below creates its storage folder, or every installation would look old.
+        let guide = FirstRunGuideModel.live()
+        _guide = StateObject(wrappedValue: guide)
         // Older builds stored the signing keys and the install token "when unlocked"; background work needs "after first unlock".
         SystemIdentityKeychain().migrateAccessibility()
         KeychainSecretStore().migrateAccessibility()
@@ -84,14 +91,19 @@ struct LocalIPASignerApp: App {
     }
 
     private var appRoot: some View {
-        // The three screens stay alive so each keeps its state; only the selected one is shown.
-        ZStack {
-            screen(.sources) { SourcesView() }
-            screen(.ipa) { ContentView() }
-            screen(.sign) { SignView() }
-            screen(.settings) { SettingsView() }
+        // The screens stay alive so each keeps its state; only the selected one is shown.
+        // The bar sits below the screens, not over them, so it can never cover the end of a page.
+        // It steps aside while the keyboard is up.
+        VStack(spacing: 0) {
+            ZStack {
+                screen(.sources) { SourcesView() }
+                screen(.ipa) { ContentView() }
+                screen(.sign) { SignView() }
+                screen(.settings) { SettingsView() }
+            }
+            .frame(maxHeight: .infinity)
+            if !keyboard.isVisible { WaxTabBar(selection: $router.tab, onReselect: router.reselect) }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) { WaxTabBar(selection: $router.tab, onReselect: router.reselect).ignoresSafeArea(.keyboard) }
         .background(Wax.bg.ignoresSafeArea())
         .tint(Wax.link)
         .environmentObject(credentials)
@@ -100,6 +112,23 @@ struct LocalIPASignerApp: App {
         .environmentObject(sources)
         .environmentObject(router)
         .environmentObject(ota)
+        .environmentObject(guide)
+        .environmentObject(permissions)
+        .environmentObject(shake)
+        .fullScreenCover(isPresented: Binding(get: { guide.isPresented }, set: { if !$0 { guide.skip() } })) {
+            FirstRunGuideView(model: guide, permissions: permissions)
+        }
+        .sheet(isPresented: $shake.isPresenting, onDismiss: { shake.dismiss() }) {
+            BugReportView().environmentObject(shake)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .waxDeviceShaken)) { _ in
+            shake.shaken(busy: signing.busyMessage != nil || signing.runningSign || signing.installing,
+                         guideShowing: guide.isPresented, editingText: keyboard.isVisible)
+        }
+        .task(id: credentials.certificates) { await credentials.refreshIdentityChecks() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            Task { await credentials.refreshIdentityChecks() }
+        }
         #if WAX_DEVELOPMENT
         .environmentObject(tester)
         #endif

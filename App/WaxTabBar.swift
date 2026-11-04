@@ -77,11 +77,13 @@ struct WaxTabBar: View {
                             .stroke(style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                             .frame(width: 24, height: 24)
                             .scaleEffect(selected ? 1.08 : 1)
-                        if !dynamicTypeSize.isAccessibilitySize {
-                            Text(item.title).font(.caption2.weight(.semibold)).lineLimit(1)
-                        }
+                        Text(item.title).font(.caption2.weight(.semibold))
+                            .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     .foregroundStyle(selected ? Wax.onAccent : Wax.sub)
+                    .padding(.vertical, dynamicTypeSize.isAccessibilitySize ? Wax.Space.s : 0)
                     .frame(maxWidth: .infinity, minHeight: 52)
                     .background {
                         if selected {
@@ -106,9 +108,10 @@ struct WaxTabBar: View {
 }
 
 private struct TabPressStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.94 : 1)
-            .animation(.spring(response: 0.25, dampingFraction: 0.6), value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.94 : 1)
+            .animation(reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 0.6), value: configuration.isPressed)
     }
 }

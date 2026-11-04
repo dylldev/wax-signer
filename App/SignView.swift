@@ -186,7 +186,7 @@ struct SignView: View {
             } else if let cert = certificate {
                 setupRow(icon: SignSetupChecklist.identity.icon, title: cert.organization ?? cert.commonName,
                          subtitle: identitySubtitle(cert)) {
-                    let status = IdentityReadiness.status(for: cert, profiles: credentials.profiles)
+                    let status = credentials.identityStatus(for: cert)
                     if dynamicTypeSize.isAccessibilitySize {
                         Text(status.label).font(.footnote.weight(.semibold)).foregroundStyle(Wax.sub)
                     } else { status.pill }
@@ -205,7 +205,7 @@ struct SignView: View {
         Button { router.tab = .settings } label: {
             if ota.isConfigured {
                 setupRow(icon: SignSetupChecklist.host.icon, title: "Install host", subtitle: ota.hostSummary) {
-                    WaxPill(text: "Ready", tone: .ok)
+                    WaxPill(text: "Configured", tone: .ok)
                 }
             } else {
                 setupRow(icon: SignSetupChecklist.host.icon, title: SignSetupChecklist.host.title,
@@ -225,7 +225,9 @@ struct SignView: View {
         return layout {
             WaxIconTile(symbol: icon)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.callout.weight(.semibold)).foregroundStyle(Wax.text).lineLimit(2)
+                Text(title).font(.callout.weight(.semibold)).foregroundStyle(Wax.text)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(subtitle).font(.footnote).foregroundStyle(Wax.sub).lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -415,7 +417,7 @@ struct SignView: View {
         let percent = Int(jobFraction * 100)
         let message = progressMessage
         return VStack(spacing: Wax.Space.m) {
-            WaxMelt(progress: jobFraction, height: 230)
+            WaxMelt(progress: jobFraction, height: 230, isVisible: router.tab == .sign)
             Text("\(percent)%")
                 .font(.system(size: 46, weight: .bold, design: .rounded).monospacedDigit())
                 .foregroundStyle(Wax.text)
@@ -471,7 +473,7 @@ struct SignView: View {
         let failed = !r.checkFailures.isEmpty
         return VStack(spacing: 8) {
             resultHeader(failed)
-            if !failed { signedShelfLink }
+            if !failed { shelfSaveFeedback }
             if let link = model.readyLink {
                 Button { openURL(link) } label: { Label("Install", systemImage: "arrow.down.app") }
                     .buttonStyle(WaxPrimaryButtonStyle())
@@ -521,6 +523,23 @@ struct SignView: View {
         return "Wax checked the file. Export it or sign again."
     }
 
+    @ViewBuilder private var shelfSaveFeedback: some View {
+        switch model.shelfSaveState {
+        case .idle:
+            Text("Signed file ready to export.")
+                .font(.footnote).foregroundStyle(Wax.sub)
+        case .saving:
+            ProgressView("Saving signed IPA…")
+                .font(.footnote).foregroundStyle(Wax.sub)
+        case .saved:
+            signedShelfLink
+        case .failed(let failure):
+            WaxFeedbackCard(tone: .bad, text: failure.localizedDescription)
+            Button("Retry Save") { Task { await model.retrySignedSave() } }
+                .buttonStyle(WaxSecondaryButtonStyle())
+        }
+    }
+
     /// The copy is already on the shelf; the line takes the person there instead of only saying so.
     private var signedShelfLink: some View {
         Button {
@@ -565,31 +584,28 @@ struct SignView: View {
     private var detailsSheet: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    if let info = model.ipaInfo {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("App's bundle ID").font(.subheadline.weight(.semibold)).foregroundStyle(Wax.text)
-                            Text(info.bundleIdentifier).font(.footnote).foregroundStyle(Wax.sub)
-                                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 10) {
+                    WaxPanel {
+                        if let info = model.ipaInfo {
+                            WaxListRow(icon: "app", title: "App's bundle ID", detail: info.bundleIdentifier)
+                                .textSelection(.enabled)
+                            WaxRowDivider()
                         }
-                    }
-                    BundleIDModePicker(mode: $model.bundleIDMode)
-                    HStack {
-                        Text("Profile").font(.subheadline.weight(.semibold)).foregroundStyle(Wax.text)
-                        Spacer()
-                        Text("\(credentials.profiles.count) imported · automatic").font(.footnote).foregroundStyle(Wax.sub)
-                    }
-                    if let r = model.report { reportDetails(r) }
-                    NavigationLink { SigningOptionsView(model: model) } label: {
-                        HStack {
-                            Text("Signing options").font(.subheadline.weight(.semibold))
-                            Spacer()
-                            if !model.edits.isEmpty { WaxPill(text: "Changed", tone: .ok) }
-                            Image(systemName: "chevron.right").font(.footnote.weight(.semibold))
+                        BundleIDModePicker(mode: $model.bundleIDMode)
+                        WaxRowDivider()
+                        WaxListRow(icon: "doc.text", title: "Profile") {
+                            WaxRowValue(text: "\(credentials.profiles.count) imported · automatic")
                         }
-                        .foregroundStyle(Wax.link)
-                        .frame(minHeight: 44)
+                        WaxRowDivider()
+                        NavigationLink { SigningOptionsView(model: model) } label: {
+                            WaxListRow(icon: "slider.horizontal.3", title: "Signing options") {
+                                if !model.edits.isEmpty { WaxPill(text: "Changed", tone: .ok) }
+                                WaxChevron()
+                            }
+                        }
+                        .buttonStyle(WaxRowButtonStyle())
                     }
+                    if let r = model.report { WaxPanel { reportDetails(r).padding(.vertical, Wax.Space.m) } }
                 }
                 .padding(Wax.inset)
             }

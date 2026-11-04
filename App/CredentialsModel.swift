@@ -1,5 +1,6 @@
 import CredentialKit
 import Foundation
+import InstallKit
 import IPAKit
 import SwiftUI
 
@@ -8,6 +9,9 @@ import SwiftUI
 final class CredentialsModel: ObservableObject {
     @Published private(set) var certificates: [CertificateInfo] = []
     @Published private(set) var profiles: [ProfileInfo] = []
+    /// Empty text means this certificate passed runtime validation; a missing entry is still checking.
+    @Published private(set) var identityChecks: [UUID: String] = [:]
+    private var identityCheckToken = UUID()
     @Published var message: String?
     @Published var awaitingPassword = false
     @Published private(set) var busyMessage: String?
@@ -37,6 +41,33 @@ final class CredentialsModel: ObservableObject {
             } catch { message = "Credential storage is unavailable. " + Self.describe(error) }
         }
         certificates = self.store?.certificates() ?? []; profiles = self.store?.profiles() ?? []
+    }
+
+    func identityStatus(for certificate: CertificateInfo) -> IdentityStatus {
+        IdentityReadiness.status(for: certificate, profiles: profiles, identityCheck: identityChecks[certificate.id])
+    }
+
+    func refreshIdentityChecks() async {
+        let generation = UUID(); identityCheckToken = generation
+        identityChecks = [:]
+        let snapshot = certificates
+        guard let store else { return }
+        let results = await Task.detached { () -> [UUID: String] in
+            var results: [UUID: String] = [:]
+            for certificate in snapshot {
+                do { _ = try store.identity(for: certificate.id); results[certificate.id] = "" }
+                catch CredentialError.notFound {
+                    results[certificate.id] = "The signing certificate is unavailable. Unlock this iPhone and reopen Wax. "
+                        + "If it stays unavailable, keep your original .p12 file and password before importing it again."
+                } catch {
+                    results[certificate.id] = (error as? CredentialError)?.errorDescription
+                        ?? "The signing certificate could not be checked. Reopen Wax and try again."
+                }
+            }
+            return results
+        }.value
+        guard !Task.isCancelled, identityCheckToken == generation, certificates == snapshot else { return }
+        identityChecks = results
     }
 
     @discardableResult func picked(p12 result: Result<URL, Error>) -> Task<Void, Never>? {

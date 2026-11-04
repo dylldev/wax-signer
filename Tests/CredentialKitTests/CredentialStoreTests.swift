@@ -83,6 +83,22 @@ final class CredentialStoreTests: XCTestCase {
         XCTAssertTrue(SecKeyIsAlgorithmSupported(try XCTUnwrap(key), .sign, .rsaSignatureMessagePKCS1v15SHA256))
     }
 
+    func testIdentityRejectsDifferentRuntimeCertificateWithoutChangingStoredCredentials() throws {
+        let store = try makeStore()
+        let info = try store.importCertificate(p12: FixtureData.p12ValidLegacy, password: FixtureData.password)
+        let other = try PKCS12Reader.read(FixtureData.p12SecondIdentity, password: FixtureData.password)
+        try keychain.store(identity: other.identity, id: info.id)
+        let before = try Data(contentsOf: dir.appendingPathComponent("index.json"))
+
+        XCTAssertThrowsError(try store.identity(for: info.id)) { error in
+            XCTAssertEqual(error as? CredentialError, .identityMismatch)
+        }
+
+        XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent("index.json")), before)
+        XCTAssertEqual(keychain.count, 1)
+        XCTAssertEqual(store.certificates(), [info])
+    }
+
     func testFailedImportsWriteNothing() throws {
         let store = try makeStore()
         let cases: [(Data, String, CredentialError)] = [
