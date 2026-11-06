@@ -17,6 +17,8 @@ from pathlib import Path, PurePosixPath
 
 from source_artifact import base_url, digest, metadata
 
+CHANNEL_IDS = {'standard': 'io.github.dylldev.wax', 'dev': 'io.github.dylldev.wax.dev'}
+
 
 def git(repo, *args):
     return subprocess.check_output(['git', '-C', str(repo), *args], stderr=subprocess.DEVNULL).decode().strip()
@@ -45,13 +47,19 @@ def public_entries(archive):
             raise ValueError('private configuration or credential file in release payload')
 
 
-def probe_evidence(ipa, source):
+def probe_evidence(ipa, source, channel='dev'):
     """Check actual nested bytes and bind the source-built probe manifest to exported public sources."""
     with zipfile.ZipFile(ipa) as z:
         public_entries(z)
         if len(z.namelist()) != len(set(z.namelist())): raise ValueError('duplicate release archive paths')
         app = [n.rsplit('/', 1)[0] for n in z.namelist() if n.startswith('Payload/') and n.count('/') == 2 and n.endswith('.app/Info.plist')]
         if len(app) != 1: raise ValueError('ambiguous release app')
+        resources = {PurePosixPath(name).name for name in z.namelist()}
+        if channel == 'standard':
+            if resources & {'probe-build.json', 'WaxProbe.ipa'}: raise ValueError('standard candidate contains Dev probe resources')
+            return None
+        if not {app[0]+'/probe-build.json', app[0]+'/WaxProbe.ipa'} <= set(z.namelist()):
+            raise ValueError('Dev candidate requires source-built probe evidence')
         manifest = json.loads(read_member(z, app[0]+'/probe-build.json', 65536))
         probe = read_member(z, app[0]+'/WaxProbe.ipa', 32*1024*1024)
     if (manifest.get('schemaVersion'), manifest.get('probeVersion'), manifest.get('bundleIdentifier'), manifest.get('version'), manifest.get('build'), manifest.get('scheme')) != (1,1,'io.github.dylldev.wax.probe','1.0','1','waxprobe'):
@@ -93,19 +101,20 @@ def public_configuration(info, flavor):
     return dict(flavor=flavor, feed=feed, domain=domain)
 
 
-def live_build(source, output, flavor, feed, domain):
+def live_build(source, output, flavor, feed, domain, channel):
     # Fresh exported sources exclude local ignored configuration and private/untracked files.
     env = {k: v for k, v in os.environ.items() if k in ('PATH','HOME','TMPDIR','LANG','LC_ALL','DEVELOPER_DIR')}
     env['WAX_DEFAULT_FEED'] = feed; env['WAX_INSTALL_DOMAIN'] = domain
-    subprocess.run(['bash', str(source/'scripts/build-release-ipa.sh'), str(output)], env=env, check=True)
+    subprocess.run(['bash', str(source/'scripts/build-release-ipa.sh'), str(output), channel], env=env, check=True)
     return dict(xcode=subprocess.check_output(['xcodebuild','-version'], env=env).decode().strip(),
                 swift=subprocess.check_output(['xcrun','swift','--version'], env=env).decode().strip(),
                 sdk=subprocess.check_output(['xcrun','--sdk','iphoneos','--show-sdk-version'], env=env).decode().strip(),
                 xcodegen=subprocess.check_output(['xcodegen','--version'], env=env).decode().strip())
 
 
-def prepare(repo, tag, output, icon, base, date, expected_build, flavor, feed='', domain='', builder=live_build, history=None):
+def prepare(repo, tag, output, icon, base, date, expected_build, flavor, feed='', domain='', builder=live_build, history=None, channel='standard'):
     repo=Path(repo).resolve(); output=Path(output).absolute(); icon=Path(icon).resolve(); base=base_url(base)
+    if channel not in CHANNEL_IDS: raise ValueError('unknown application channel')
     origin=tagged_source(repo,tag)
     if os.path.lexists(output): raise ValueError('candidate output already exists; refusing replacement')
     # Validate public arguments before a build. Reject unknown/local credential-bearing URLs.
@@ -118,16 +127,16 @@ def prepare(repo, tag, output, icon, base, date, expected_build, flavor, feed=''
         source_hash=digest(archive)
         with tarfile.open(archive) as tar: tar.extractall(source,filter='data')
         built=work/'built';built.mkdir()
-        toolchain=builder(source,built,flavor,feed,domain)
+        toolchain=builder(source,built,flavor,feed,domain,channel)
         if not isinstance(toolchain,dict) or set(toolchain) != {'xcode','swift','sdk','xcodegen'} or any(not isinstance(v,str) or not v.strip() for v in toolchain.values()): raise ValueError('missing build toolchain evidence')
         ipas=list(built.glob('*.ipa'))
         if len(ipas)!=1 or ipas[0].is_symlink(): raise ValueError('build must produce exactly one regular IPA')
         ipa=ipas[0];info=metadata(ipa)
         if info.get('CFBundleSupportedPlatforms')!=['iPhoneOS']: raise ValueError('candidate is not a physical iOS build')
-        if info['CFBundleIdentifier']!='io.github.dylldev.wax' or tag!='v'+info['CFBundleShortVersionString'] or info['CFBundleVersion']!=expected_build:
+        if info['CFBundleIdentifier']!=CHANNEL_IDS[channel] or tag!='v'+info['CFBundleShortVersionString'] or info['CFBundleVersion']!=expected_build:
             raise ValueError('tag/build/bundle metadata disagrees with the built IPA')
         if public_configuration(info,flavor)!=config: raise ValueError('requested public configuration did not reach the artifact')
-        probe=probe_evidence(ipa,source)
+        probe=probe_evidence(ipa,source,channel)
         candidate=work/'candidate'; candidate.mkdir(); stage=candidate/'stage'
         generate=[sys.executable,str(Path(__file__).with_name('make_source.py')),'--ipa',str(ipa),'--icon',str(icon),
             '--capabilities','signer-export','--date',date,'--base-url',base,'--out',str(stage),
@@ -137,7 +146,7 @@ def prepare(repo, tag, output, icon, base, date, expected_build, flavor, feed=''
         subprocess.run([sys.executable,str(Path(__file__).with_name('validate_source.py')),'--dir',str(stage),'--expect-base',base],check=True,stdout=subprocess.DEVNULL)
         # Hash the staged copy, not just the pre-stage input. Stage validator independently checked its bytes.
         staged=stage/ipa.name
-        report=dict(schemaVersion=1,source=origin,sourceArchiveSHA256=source_hash,toolchain=toolchain,configuration=config,
+        report=dict(schemaVersion=2,channel=channel,source=origin,sourceArchiveSHA256=source_hash,toolchain=toolchain,configuration=config,
                     artifact=dict(filename=ipa.name,sha256=digest(staged),size=staged.stat().st_size,bundleIdentifier=info['CFBundleIdentifier'],
                                   version=info['CFBundleShortVersionString'],build=info['CFBundleVersion']),probe=probe,
                     toolingSHA256=digest(Path(__file__)),baseURL=base,releaseDate=date,
@@ -155,10 +164,11 @@ def main():
     p.add_argument('--repo',type=Path,default=Path(__file__).resolve().parents[1]);p.add_argument('--tag',required=True)
     p.add_argument('--out',type=Path,required=True);p.add_argument('--icon',type=Path,required=True);p.add_argument('--base-url',required=True)
     p.add_argument('--date',required=True);p.add_argument('--build',required=True);p.add_argument('--flavor',choices=['no-feed','configured-feed'],required=True)
+    p.add_argument('--channel',choices=list(CHANNEL_IDS),default='standard')
     p.add_argument('--feed',default='');p.add_argument('--domain',default='')
     retained=p.add_mutually_exclusive_group(required=True);retained.add_argument('--history',type=Path);retained.add_argument('--no-history',action='store_true')
     a=p.parse_args()
-    try: prepare(a.repo,a.tag,a.out,a.icon,a.base_url,a.date,a.build,a.flavor,a.feed,a.domain,history=a.history)
+    try: prepare(a.repo,a.tag,a.out,a.icon,a.base_url,a.date,a.build,a.flavor,a.feed,a.domain,history=a.history,channel=a.channel)
     except (ValueError,OSError,KeyError,subprocess.CalledProcessError,zipfile.BadZipFile,tarfile.TarError): p.error('candidate preparation failed; check the tag, build evidence, public configuration and available tools; existing outputs preserved')
     print('Candidate prepared for review. No release or deployment performed.')
 if __name__=='__main__':main()
