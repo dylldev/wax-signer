@@ -44,6 +44,8 @@ xcodebuild -list -project LocalIPASigner.xcodeproj
 
 Expected evidence is an exact SHA/tag relationship, channel-contract test exit 0, scheme list and a ledger that distinguishes source, draft and private changes. If a branch advanced, record the new SHA and reassess affected claims. Inspect the dirty checkout read-only.
 
+T01 verification and inclusion decisions are recorded in the [candidate ledger](T01-CANDIDATE-LEDGER.md). It pins the starting source, not a qualified release artifact.
+
 ## T02 · Repair standard candidate provenance
 
 **Prompt.** “Own Source/prepare_release.py, its tests and channel-contract explanation. Make a standard-shaped synthetic IPA without Dev files and show the current reader fails. Add explicit standard/Dev channel selection independent of feed flavor. Thread it through the production prepare entry point and build call. Validate io.github.dylldev.wax for standard and io.github.dylldev.wax.dev for Dev. Exercise production prepare with actual-shaped synthetic archives for both channels and both feed flavors, including wrong-channel controls. Keep Dev probe validation, metadata and secret scanning. Revert the repair temporarily to prove the failing test, restore and rerun. Do not publish or alter a real tag.”
