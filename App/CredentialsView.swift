@@ -188,7 +188,7 @@ struct CredentialsView: View {
                         .font(.footnote).foregroundStyle(Wax.sub).lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                IdentityReadiness.status(for: cert, profiles: model.profiles).pill
+                model.identityStatus(for: cert).pill
             }
             .padding(.vertical, 14)
             WaxDivider()
@@ -211,7 +211,7 @@ struct CredentialsView: View {
 
     #if WAX_DEVELOPMENT
     private func installTestRow(_ cert: CertificateInfo) -> some View {
-        let status = IdentityReadiness.status(for: cert, profiles: model.profiles)
+        let status = model.identityStatus(for: cert)
         let mine = tester.testing == cert.id
         return VStack(alignment: .leading, spacing: 8) {
             Text(status.detail).font(.footnote).foregroundStyle(Wax.sub).fixedSize(horizontal: false, vertical: true)

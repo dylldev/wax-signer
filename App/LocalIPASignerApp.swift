@@ -44,6 +44,7 @@ struct LocalIPASignerApp: App {
     #if WAX_DEVELOPMENT
     @StateObject private var tester = IdentityTester()
     #endif
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("expiryReminders") private var remindersEnabled = true
 
     init() {
@@ -103,6 +104,9 @@ struct LocalIPASignerApp: App {
         #if WAX_DEVELOPMENT
         .environmentObject(tester)
         #endif
+        .task(id: scenePhase == .active ? credentials.certificates.map(\.id) : []) {
+            if scenePhase == .active { await credentials.refreshIdentityChecks() }
+        }
         .task { ExpiryReminder.reschedule(profiles: credentials.profiles, signed: library.signed, enabled: remindersEnabled) }
         .onChange(of: credentials.profiles) { _, new in ExpiryReminder.reschedule(profiles: new, signed: library.signed, enabled: remindersEnabled) }
         .onChange(of: library.signed) { _, new in ExpiryReminder.reschedule(profiles: credentials.profiles, signed: new, enabled: remindersEnabled) }
