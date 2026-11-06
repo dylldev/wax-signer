@@ -186,7 +186,7 @@ struct SignView: View {
             } else if let cert = certificate {
                 setupRow(icon: SignSetupChecklist.identity.icon, title: cert.organization ?? cert.commonName,
                          subtitle: identitySubtitle(cert)) {
-                    let status = IdentityReadiness.status(for: cert, profiles: credentials.profiles)
+                    let status = credentials.identityStatus(for: cert)
                     if dynamicTypeSize.isAccessibilitySize {
                         Text(status.label).font(.footnote.weight(.semibold)).foregroundStyle(Wax.sub)
                     } else { status.pill }

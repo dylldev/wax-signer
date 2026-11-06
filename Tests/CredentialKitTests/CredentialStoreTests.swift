@@ -83,6 +83,50 @@ final class CredentialStoreTests: XCTestCase {
         XCTAssertTrue(SecKeyIsAlgorithmSupported(try XCTUnwrap(key), .sign, .rsaSignatureMessagePKCS1v15SHA256))
     }
 
+    func testIdentityRejectsDifferentRuntimeCertificateWithoutChangingStoredCredentials() throws {
+        let store = try makeStore()
+        let selected = try store.importCertificate(p12: FixtureData.p12ValidLegacy, password: FixtureData.password)
+        let other = try store.importCertificate(p12: FixtureData.p12SecondIdentity, password: FixtureData.password)
+        let replacement = try keychain.identity(id: other.id)
+        try keychain.store(identity: replacement, id: selected.id)
+        let before = try Data(contentsOf: dir.appendingPathComponent("index.json"))
+
+        XCTAssertThrowsError(try store.identity(for: selected.id)) { error in
+            XCTAssertEqual(error as? CredentialError, .identityMismatch)
+        }
+
+        XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent("index.json")), before)
+        XCTAssertEqual(keychain.count, 2)
+        XCTAssertEqual(store.certificates(), [selected, other])
+        XCTAssertNoThrow(try store.identity(for: other.id))
+    }
+
+    func testExistingIndexReloadKeepsMatchingIdentityUsable() throws {
+        let first = try makeStore()
+        let info = try first.importCertificate(p12: FixtureData.p12ValidLegacy, password: FixtureData.password)
+        let before = try Data(contentsOf: dir.appendingPathComponent("index.json"))
+        let reloaded = try makeStore()
+        XCTAssertNoThrow(try reloaded.identity(for: info.id))
+        XCTAssertEqual(reloaded.certificates(), [info])
+        XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent("index.json")), before)
+        XCTAssertThrowsError(try reloaded.identity(for: UUID())) { XCTAssertEqual($0 as? CredentialError, .notFound) }
+        XCTAssertEqual(keychain.count, 1)
+    }
+
+    func testMissingLegacyFingerprintFailsWithoutResettingIndexOrKeys() throws {
+        let store = try makeStore()
+        let info = try store.importCertificate(p12: FixtureData.p12ValidLegacy, password: FixtureData.password)
+        let url = dir.appendingPathComponent("index.json")
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        var certificates = try XCTUnwrap(json["certificates"] as? [[String: Any]])
+        certificates[0].removeValue(forKey: "sha1Fingerprint"); json["certificates"] = certificates
+        let before = try JSONSerialization.data(withJSONObject: json); try before.write(to: url)
+        XCTAssertThrowsError(try makeStore()) { XCTAssertEqual($0 as? CredentialError, .storage("index is unreadable")) }
+        XCTAssertEqual(try Data(contentsOf: url), before)
+        XCTAssertEqual(keychain.count, 1)
+        XCTAssertNoThrow(try keychain.identity(id: info.id))
+    }
+
     func testFailedImportsWriteNothing() throws {
         let store = try makeStore()
         let cases: [(Data, String, CredentialError)] = [
