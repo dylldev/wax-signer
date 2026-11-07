@@ -41,6 +41,10 @@ struct LocalIPASignerApp: App {
     @StateObject private var sources = SourcesModel()
     @StateObject private var router = Router()
     @StateObject private var ota = OTAInstallModel()
+    @StateObject private var guide: FirstRunGuideModel
+    @StateObject private var permissions = NotificationPermissionModel.shared
+    @StateObject private var shake = ShakeReporter()
+    @StateObject private var keyboard = KeyboardWatch()
     #if WAX_DEVELOPMENT
     @StateObject private var tester = IdentityTester()
     #endif
@@ -48,6 +52,9 @@ struct LocalIPASignerApp: App {
     @AppStorage("expiryReminders") private var remindersEnabled = true
 
     init() {
+        // Must run before any model below creates its storage folder, or every installation would look old.
+        let guide = FirstRunGuideModel.live()
+        _guide = StateObject(wrappedValue: guide)
         // Older builds stored the signing keys and the install token "when unlocked"; background work needs "after first unlock".
         SystemIdentityKeychain().migrateAccessibility()
         KeychainSecretStore().migrateAccessibility()
@@ -102,6 +109,19 @@ struct LocalIPASignerApp: App {
         .environmentObject(sources)
         .environmentObject(router)
         .environmentObject(ota)
+        .environmentObject(guide)
+        .environmentObject(permissions)
+        .environmentObject(shake)
+        .fullScreenCover(isPresented: Binding(get: { guide.isPresented }, set: { if !$0 { guide.skip() } })) {
+            FirstRunGuideView(model: guide, permissions: permissions)
+        }
+        .sheet(isPresented: $shake.isPresenting, onDismiss: { shake.dismiss() }) {
+            BugReportView().environmentObject(shake)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .waxDeviceShaken)) { _ in
+            shake.shaken(busy: signing.busyMessage != nil || signing.runningSign || signing.installing,
+                         guideShowing: guide.isPresented, editingText: keyboard.isVisible)
+        }
         #if WAX_DEVELOPMENT
         .environmentObject(tester)
         #endif

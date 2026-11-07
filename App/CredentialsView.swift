@@ -123,7 +123,10 @@ struct CredentialsView: View {
                     Text(busy).font(.footnote).foregroundStyle(Wax.text)
                     if model.canCancelReading { Button("Cancel opening") { password = ""; model.cancelPassword() } }
                 }
-                .padding(16).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                .padding(Wax.Space.l)
+                .background(Wax.card, in: RoundedRectangle(cornerRadius: Wax.radius, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Wax.radius, style: .continuous).stroke(Wax.line, lineWidth: 1))
+                .shadow(color: .black.opacity(0.10), radius: 12, y: 4)
             }
         }
         .alert("Password for \(model.pendingFileName)", isPresented: $model.awaitingPassword) {
@@ -191,6 +194,10 @@ struct CredentialsView: View {
                 model.identityStatus(for: cert).pill
             }
             .padding(.vertical, 14)
+            if case .needsAttention(let detail) = model.identityStatus(for: cert) {
+                Text(detail).font(.footnote).foregroundStyle(Wax.sub).fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 12)
+            }
             WaxDivider()
             WaxKV(key: "Expires", value: cert.notAfter.formatted(date: .abbreviated, time: .omitted))
             WaxDivider()

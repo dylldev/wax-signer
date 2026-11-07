@@ -1,6 +1,7 @@
 import CoreTransferable
 import UniformTypeIdentifiers
 import CredentialKit
+import InstallKit
 import PhotosUI
 import SigningKit
 import SwiftUI
@@ -18,6 +19,9 @@ struct SigningOptionsView: View {
     @State private var pickingLibrary = false
     @State private var fileProblem: String?
     @State private var baseline: AppEdits?
+    @State private var compression = SigningCompression.Preference().selection
+    @State private var moreOpen = false
+    @State private var compressionNote = SigningCompression.Preference().note
 
     var body: some View {
         ScrollView {
@@ -34,9 +38,8 @@ struct SigningOptionsView: View {
                     WaxDivider()
                     field("Minimum iOS", text: binding(\.minimumOSVersion), placeholder: model.ipaInfo?.minimumOSVersion ?? "Keep")
                 }
-                note("These apply to this app only and are not saved as defaults. A custom bundle ID replaces the app's own one, so it only makes sense with a profile that allows it.")
+                note("For this app only. Leave a field empty to keep the app's own value.")
 
-                WaxSectionLabel(text: "More for this app")
                 WaxPanel {
                     iconRow
                     WaxDivider()
@@ -52,10 +55,14 @@ struct SigningOptionsView: View {
                 }
                 if let fileProblem { note(fileProblem).foregroundStyle(Wax.bad) }
 
-                DisclosureGroup("More options") {
+                WaxSectionLabel(text: "File compression")
+                compressionPanel
+                note(compressionNote)
+
+                DisclosureGroup(isExpanded: $moreOpen.animation(Wax.spring)) {
                     WaxSectionLabel(text: "Libraries")
                     libraryPanel
-                    note("Adds .dylib files, or the .dylib files inside a .deb, to this app. They load when the app starts. Only apps that are not App Store encrypted, and only if the app's header has room.")
+                    note("Loads when the app starts. Apps that are App Store encrypted cannot take them.")
 
                     WaxSectionLabel(text: "Changes to every app")
                     WaxPanel {
@@ -79,8 +86,20 @@ struct SigningOptionsView: View {
                         WaxDivider()
                         appearancePicker
                     }
+                } label: {
+                    HStack(spacing: Wax.Space.m) {
+                        Image(systemName: "ellipsis.circle")
+                            .font(.system(size: 15, weight: .semibold)).foregroundStyle(Wax.link)
+                            .frame(width: 32, height: 32)
+                            .background(Wax.chip, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        Text("More options").font(.subheadline.weight(.semibold)).foregroundStyle(Wax.text)
+                    }
+                    .frame(minHeight: 56)
                 }
-                .tint(Wax.link)
+                .tint(Wax.sub)
+                .padding(.horizontal, 14)
+                .background(Wax.card, in: RoundedRectangle(cornerRadius: Wax.radius, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Wax.radius, style: .continuous).stroke(Wax.line, lineWidth: 1))
 
                 #if WAX_DEVELOPMENT
                 WaxSectionLabel(text: "Advanced: app settings file (Info.plist)")
@@ -90,10 +109,16 @@ struct SigningOptionsView: View {
                 #endif
 
                 VStack(spacing: 4) {
+                    // In the page rather than pinned to the bottom: a pinned button ended up hidden behind the tab bar.
+                    Button { model.saveEditsAsDefaults(); saved = true; baseline = model.edits } label: {
+                        Label(saved ? "Saved" : "Save as defaults", systemImage: saved ? "checkmark" : "tray.and.arrow.down")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(WaxPrimaryButtonStyle())
+                    .disabled(!hasChanges || saved)
                     Button("Reset to defaults") { cancelIconRead(); model.resetEditsToDefaults(); saved = false }.buttonStyle(WaxSecondaryButtonStyle())
                 }
                 .padding(.top, 8)
-                note("Defaults are used for every app you sign. Switches you change here apply to the next signing even if you do not save them.")
             }
             .padding(.horizontal, Wax.inset)
             .padding(.bottom, 24)
@@ -106,22 +131,33 @@ struct SigningOptionsView: View {
         .toolbar(.visible, for: .navigationBar)
         .toolbarBackground(Wax.bg, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            Button { model.saveEditsAsDefaults(); saved = true; baseline = model.edits } label: {
-                Label(saved ? "Saved" : "Save as defaults", systemImage: saved ? "checkmark" : "tray.and.arrow.down")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(WaxPrimaryButtonStyle())
-            .disabled(!hasChanges || saved)
-            .padding(.horizontal, Wax.inset).padding(.vertical, 8)
-            .background(Wax.bg.opacity(0.96))
-        }
         .onAppear { baseline = model.edits }
         .onDisappear { cancelIconRead() }
         .onChange(of: model.edits) { _, _ in saved = false }
     }
 
     // MARK: pieces
+
+    /// Only the files Wax changed are packed again; unchanged files keep their original compressed bytes, whatever is chosen here.
+    private var compressionPanel: some View {
+        WaxPanel {
+            ForEach(Array(SigningCompression.allCases.enumerated()), id: \.element) { i, mode in
+                if i > 0 { WaxRowDivider() }
+                Button {
+                    SigningCompression.Preference().choose(mode); compression = mode; compressionNote = SigningCompression.Preference().note
+                } label: {
+                    WaxListRow(icon: mode.symbol, title: mode.title, detail: mode.detail) {
+                        Image(systemName: compression == mode ? "checkmark.circle.fill" : "circle")
+                            .font(.title3).foregroundStyle(compression == mode ? Wax.link : Wax.sub)
+                            .contentTransition(.symbolEffect(.replace))
+                    }
+                }
+                .buttonStyle(WaxRowButtonStyle())
+                .animation(Wax.spring, value: compression)
+                .accessibilityAddTraits(compression == mode ? [.isButton, .isSelected] : .isButton)
+            }
+        }
+    }
 
     private var hasChanges: Bool { baseline.map { $0 != model.edits } ?? false }
 
@@ -336,7 +372,7 @@ private struct PlistEditRow: View {
                 TextField("Key, for example UIFileSharingEnabled", text: $edit.key)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                     .font(.footnote.monospaced()).foregroundStyle(Wax.text)
-                Button(role: .destructive, action: remove) { Image(systemName: "trash") }.foregroundStyle(Wax.bad)
+                Button(role: .destructive, action: remove) { Image(systemName: "trash") }.foregroundStyle(Wax.bad).accessibilityLabel("Remove this key")
             }
             HStack {
                 Picker("Kind", selection: Binding(get: { kind }, set: setKind)) {
@@ -378,6 +414,16 @@ private struct PreparedIcon: Transferable {
             let worker = Task.detached { try BoundedIcon.prepare(file: file) }
             let data = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
             return PreparedIcon(data: data)
+        }
+    }
+}
+
+private extension SigningCompression {
+    var symbol: String {
+        switch self {
+        case .standard: "archivebox"
+        case .faster: "hare"
+        case .largerFile: "bolt"
         }
     }
 }

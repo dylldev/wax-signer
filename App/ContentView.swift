@@ -150,7 +150,7 @@ struct ContentView: View {
     @ViewBuilder private var emptyState: some View {
         if shelf == .unsigned {
             WaxEmptyState(title: "No unsigned apps yet",
-                          message: "Add an IPA from Files, or sign one from the Sign tab. It lands here.",
+                          message: "Add an IPA from Files, or choose one on the Sign tab. Originals appear here; signed copies go under Signed.",
                           actionTitle: "Go to Sign") { router.tab = .sign }
         } else {
             WaxEmptyState(title: "Nothing signed yet",

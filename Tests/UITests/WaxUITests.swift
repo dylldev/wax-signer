@@ -181,6 +181,55 @@ final class WaxUITests: XCTestCase {
         tap("Back"); tap("Sign"); capture("06-sign-return")
     }
 
+    func testNavigationAndReportPreview() throws {
+        capture("01-sign-empty")
+        tap("Sources")
+        capture("02-sources-empty")
+        tap("IPA")
+        capture("03-library-empty")
+        tap("Settings")
+        capture("04-settings-top")
+        tap("Signing options")
+        app.swipeUp()
+        capture("05-signing-options")
+        tap("Back")
+        app.swipeUp()
+        capture("06-settings-bottom")
+        tap("Report a problem")
+        capture("07-report-empty")
+        let field = app.textFields.matching(NSPredicate(format: "placeholderValue == %@", "Describe the problem")).firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        field.typeText("Synthetic audit report")
+        capture("08-report-keyboard")
+        tap("Cancel")
+        tap("Report a problem")
+        XCTAssertEqual(field.value as? String, "")
+        capture("09-report-reset")
+        tap("Cancel")
+        tap("Replay guide")
+        capture("10-guide-replay")
+        tap("Skip")
+        tap("Settings")
+        tap("Certificates & profiles, None yet")
+        capture("11-credentials-empty")
+    }
+
+    func testAdaptiveScreens() throws {
+        capture("adaptive-sign")
+        tap("IPA")
+        capture("adaptive-library")
+        tap("Settings")
+        capture("adaptive-settings-top")
+        for _ in 0..<16 {
+            if app.buttons["Report a problem"].firstMatch.isHittable { break }
+            app.swipeUp()
+        }
+        capture("adaptive-settings-help")
+        tap("Report a problem")
+        capture("adaptive-report")
+    }
+
     func testTabTitlesRemainVisibleAtAccessibilitySizes() throws {
         app.terminate()
         app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
