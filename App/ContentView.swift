@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var adding = false
     @State private var problem: String?
     @State private var detail: LibraryEntry?
+    @State private var entryToDelete: LibraryEntry?
     @State private var retryImport: URL?
     @State private var retryPending: UUID?
     @State private var confirmRepair = false
@@ -79,6 +80,17 @@ struct ContentView: View {
             }
             .waxMotion(value: shelf)
         }
+        .alert("Delete “\(entryToDelete?.name ?? "this IPA")”?",
+               isPresented: Binding(get: { entryToDelete != nil }, set: { if !$0 { entryToDelete = nil } }),
+               presenting: entryToDelete) { entry in
+            Button("Delete IPA", role: .destructive) {
+                Task { await library.remove(entry) }
+                entryToDelete = nil
+            }
+            Button("Cancel", role: .cancel) { entryToDelete = nil }
+        } message: { _ in
+            Text("This removes Wax's saved IPA file. It does not remove an app installed on your iPhone.")
+        }
         .confirmationDialog("Recover the library index?", isPresented: $confirmRepair, titleVisibility: .visible) {
             Button("Recover Library Index") { Task { await library.repairIndex() } }
         } message: { Text("Wax keeps a copy of the damaged index and all IPA files. Unrecognized artifacts are recovered with unknown provenance; nothing is deleted.") }
@@ -119,7 +131,7 @@ struct ContentView: View {
             list.append(WaxAction(icon: "square.and.arrow.up", title: "Export", share: library.url(for: entry)))
         }
         list.append(WaxAction(icon: "info.circle", title: "Details") { detail = entry })
-        list.append(WaxAction(icon: "trash", title: "Delete", destructive: true) { Task { await library.remove(entry) } })
+        list.append(WaxAction(icon: "trash", title: "Delete", destructive: true) { entryToDelete = entry })
         return list
     }
 
