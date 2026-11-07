@@ -56,7 +56,7 @@ struct CredentialsView: View {
                     }
                     ForEach(model.profiles) { profile in profileCard(profile).id("credential-\(profile.id)") }
 
-                    Text("Private keys are held in the iOS Keychain. Passwords are never stored. Profile signatures and certificate revocation are not verified.")
+                    Text("Private keys are held in the iOS Keychain. Passwords are never stored. Before signing, Wax checks profile signatures and their certificate chains. An intact signature alone does not establish Apple trust. Revocation is not checked, and iOS makes the final installation decision.")
                         .font(.footnote).foregroundStyle(Wax.sub)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .fixedSize(horizontal: false, vertical: true)
@@ -188,7 +188,7 @@ struct CredentialsView: View {
                         .font(.footnote).foregroundStyle(Wax.sub).lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                IdentityReadiness.status(for: cert, profiles: model.profiles).pill
+                model.identityStatus(for: cert).pill
             }
             .padding(.vertical, 14)
             WaxDivider()
@@ -211,7 +211,7 @@ struct CredentialsView: View {
 
     #if WAX_DEVELOPMENT
     private func installTestRow(_ cert: CertificateInfo) -> some View {
-        let status = IdentityReadiness.status(for: cert, profiles: model.profiles)
+        let status = model.identityStatus(for: cert)
         let mine = tester.testing == cert.id
         return VStack(alignment: .leading, spacing: 8) {
             Text(status.detail).font(.footnote).foregroundStyle(Wax.sub).fixedSize(horizontal: false, vertical: true)
