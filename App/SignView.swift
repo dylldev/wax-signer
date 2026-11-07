@@ -225,8 +225,9 @@ struct SignView: View {
         return layout {
             WaxIconTile(symbol: icon)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.callout.weight(.semibold)).foregroundStyle(Wax.text).lineLimit(2)
-                Text(subtitle).font(.footnote).foregroundStyle(Wax.sub).lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                Text(title).font(.callout.weight(.semibold)).foregroundStyle(Wax.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(subtitle).font(.footnote).foregroundStyle(Wax.sub)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -257,9 +258,12 @@ struct SignView: View {
 
     private var optionsRow: some View {
         Button { showDetails = true } label: {
-            WaxRow(icon: "slider.horizontal.3", title: "Options",
-                   subtitle: model.edits.isEmpty ? "Names, versions and app edits" : "App edits changed") {
-                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(Wax.sub)
+            WaxPanel {
+                setupRow(icon: "slider.horizontal.3", title: "Options",
+                         subtitle: model.edits.isEmpty ? "Names, versions and app edits" : "App edits changed") {
+                    Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(Wax.sub)
+                }
+                .padding(.vertical, 4)
             }
         }
         .buttonStyle(.plain)

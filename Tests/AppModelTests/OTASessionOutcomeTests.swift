@@ -45,6 +45,20 @@ private actor SuspendedPublisher: InstallHost {
     func finish() async { await gate.release() }
 }
 
+private struct NotificationTabs: View {
+    @ObservedObject var router: Router
+    let inbox: InstallInbox
+    let signAppeared: () -> Void
+    let otherAppeared: () -> Void
+    var body: some View {
+        TabView(selection: $router.tab) {
+            SignView(inbox: inbox).onAppear(perform: signAppeared).tag(Router.Tab.sign)
+            Text("Other tab").onAppear(perform: otherAppeared).tag(Router.Tab.settings)
+        }
+        .toolbar(.hidden, for: .tabBar)
+    }
+}
+
 @MainActor
 final class OTASessionOutcomeTests: XCTestCase {
     private var root: URL!
@@ -242,6 +256,32 @@ final class OTASessionOutcomeTests: XCTestCase {
         await fulfillment(of: [opened], timeout: 5)
         XCTAssertNil(inbox.pendingLink)
     }
+    func testInactiveSignTabStillHandlesInstallNotification() async throws {
+        let credentials = CredentialsModel(store: try CredentialStore(directory: root.appendingPathComponent("tab-credentials")))
+        let library = LibraryModel(library: IPALibrary(root: root.appendingPathComponent("tab-shelf")), load: false)
+        let signing = SigningModel(credentials: credentials, library: library)
+        let router = Router(), inbox = InstallInbox(), ota = model()
+        let signVisible = expectation(description: "initial Sign tab appeared")
+        let otherVisible = expectation(description: "other tab appeared")
+        signVisible.assertForOverFulfill = false
+        let opened = expectation(description: "notification handled from inactive Sign")
+        let link = URL(string: "itms-services://?action=download-manifest&url=https://fixture.example/tab-notification")!
+        let view = NotificationTabs(router: router, inbox: inbox, signAppeared: { signVisible.fulfill() }, otherAppeared: { otherVisible.fulfill() })
+            .environmentObject(signing).environmentObject(credentials).environmentObject(router).environmentObject(ota)
+            .environment(\.openURL, OpenURLAction { url in XCTAssertEqual(url, link); opened.fulfill(); return .handled })
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = UIHostingController(rootView: view); window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil }
+        await fulfillment(of: [signVisible], timeout: 5)
+        router.tab = .settings
+        await fulfillment(of: [otherVisible], timeout: 5)
+        inbox.pendingLink = link
+        await fulfillment(of: [opened], timeout: 5)
+        XCTAssertEqual(router.tab, .sign)
+        XCTAssertNil(inbox.pendingLink)
+    }
+
     func testSignScreenDoesNotOpenOldNotificationDuringAnotherInstallation() async throws {
         let ota = model(), newer = try ota.reserve()
         defer { ota.release(newer) }
