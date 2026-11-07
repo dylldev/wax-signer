@@ -56,7 +56,7 @@ struct CredentialsView: View {
                     }
                     ForEach(model.profiles) { profile in profileCard(profile).id("credential-\(profile.id)") }
 
-                    Text("Private keys are held in the iOS Keychain. Passwords are never stored. Profile signatures and certificate revocation are not verified.")
+                    Text("Private keys are held in the iOS Keychain. Passwords are never stored. Before signing, Wax checks profile signatures and their certificate chains. An intact signature alone does not establish Apple trust. Revocation is not checked, and iOS makes the final installation decision.")
                         .font(.footnote).foregroundStyle(Wax.sub)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .fixedSize(horizontal: false, vertical: true)
