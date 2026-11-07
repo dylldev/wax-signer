@@ -44,5 +44,5 @@ check "a new key is still made each run" "different" "$([ "$MOD1" != "$MOD2" ] &
 
 ACME_HOME=/ ACME_SH="$T/fake-acme.sh" bash "$HERE/make-install-cert.sh" wax.example.test "$T/out2" >/dev/null 2>&1; check "an ACME_HOME of / is refused" 1 $?
 run "bad domain;x" "$T/out2" >/dev/null 2>&1; check "bad domain refused" 1 $?
-ACME_HOME="$T/acme-home" ACME_SH=/bin/false bash "$HERE/make-install-cert.sh" wax.example.test "$T/out3" >/dev/null 2>&1; check "issue failure fails the script" 1 $?
+ACME_HOME="$T/acme-home" ACME_SH=false bash "$HERE/make-install-cert.sh" wax.example.test "$T/out3" >/dev/null 2>&1; check "issue failure fails the script" 1 $?
 exit $fail
