@@ -56,7 +56,6 @@ struct WaxTabBar: View {
     @Binding var selection: Router.Tab
     var onReselect: (Router.Tab) -> Void = { _ in }
     @Namespace private var pill
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let items: [(tab: Router.Tab, title: String, glyph: WaxGlyph.Kind)] = [
@@ -77,9 +76,8 @@ struct WaxTabBar: View {
                             .stroke(style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                             .frame(width: 24, height: 24)
                             .scaleEffect(selected ? 1.08 : 1)
-                        if !dynamicTypeSize.isAccessibilitySize {
-                            Text(item.title).font(.caption2.weight(.semibold)).lineLimit(1)
-                        }
+                        Text(item.title).font(.caption2.weight(.semibold)).lineLimit(1)
+                            .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                     }
                     .foregroundStyle(selected ? Wax.onAccent : Wax.sub)
                     .frame(maxWidth: .infinity, minHeight: 52)
@@ -106,9 +104,10 @@ struct WaxTabBar: View {
 }
 
 private struct TabPressStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.94 : 1)
-            .animation(.spring(response: 0.25, dampingFraction: 0.6), value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.94 : 1)
+            .animation(reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 0.6), value: configuration.isPressed)
     }
 }

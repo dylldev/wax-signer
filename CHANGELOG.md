@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.17.0 (phone-test prerelease, build 109)
+- Adds an optional first-run guide, notification controls, local problem reports, and compression choices.
+- Keeps signing-certificate checks off the screen-rendering thread and verifies the stored certificate before signing.
+- Adds saved-IPA deletion confirmation, save retry feedback, and visible tab labels at larger text sizes.
+- This prerelease is for phone testing. Installation, launch, and update on a physical iPhone remain unverified for this build. The largest-text accessibility audit still has an unresolved contrast report; accessibility validation is incomplete.
+
 ## 0.16.3
 - Standard Wax focuses on importing, signing and installing apps. It excludes the bundled test app, test actions, import-log screens, compression tuning and raw entitlement/plist editors. Additional app edits start collapsed under More options.
 - Wax Dev retains diagnostic tools and uses a separate app identity so both versions can be installed together. Import signing files into each copy you use. Both release IPAs are unsigned.
