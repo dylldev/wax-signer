@@ -97,11 +97,11 @@ final class WaxUITests: XCTestCase {
 
     func testInactiveTabsStayOutOfAccessibilityTree() throws {
         capture("inactive-settings-baseline")
-        XCTAssertFalse(app.staticTexts["Install"].exists, "The inactive Settings Install heading must not appear on Sign")
+        XCTAssertFalse(app.staticTexts["Setup"].exists, "The inactive Settings Setup heading must not appear on Sign")
         tap("Settings")
-        XCTAssertTrue(app.staticTexts["Install"].exists)
+        XCTAssertTrue(app.staticTexts["Setup"].exists)
         tap("Sign")
-        XCTAssertFalse(app.staticTexts["Install"].exists)
+        XCTAssertFalse(app.staticTexts["Setup"].exists)
     }
 
     func testTabSwitchKeepsSettingsNavigationState() throws {
