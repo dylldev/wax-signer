@@ -61,10 +61,6 @@ struct SignView: View {
                                  uploading: uploading)
     }
 
-    private var firstRun: Bool {
-        SignSetupChecklist.isFirstRun(hasApp: model.ipaInfo != nil, hasIdentity: certificate != nil, hostReady: ota.isConfigured)
-    }
-
     // MARK: Body
 
     var body: some View {
@@ -136,7 +132,6 @@ struct SignView: View {
     /// Nothing to do but say what is missing: the setup card, any problem, the one button, and the options.
     private var idleScreen: some View {
         Group {
-            if firstRun { WaxSectionLabel(text: "Before you can sign") }
             summaryCard
             if let error = errorText { errorCard(error) }
             idleActions
@@ -200,7 +195,7 @@ struct SignView: View {
         Button { router.openInstallHost() } label: {
             if ota.isConfigured {
                 setupRow(icon: SignSetupChecklist.host.icon, title: "Install host", subtitle: ota.hostSummary) {
-                    WaxPill(text: "Configured", tone: .ok)
+                    WaxChevron()
                 }
             } else {
                 setupRow(icon: SignSetupChecklist.host.icon, title: SignSetupChecklist.host.title,
@@ -255,7 +250,7 @@ struct SignView: View {
         Button { showDetails = true } label: {
             WaxPanel {
                 setupRow(icon: "slider.horizontal.3", title: "Options",
-                         subtitle: model.edits.isEmpty ? "Names, versions and app edits" : "App edits changed") {
+                         subtitle: model.edits.isEmpty ? "Compression and app edits" : "App edits changed") {
                     Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(Wax.sub)
                 }
                 .padding(.vertical, 4)

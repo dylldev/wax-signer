@@ -122,6 +122,15 @@ final class WaxUITests: XCTestCase {
         capture("single-wax-tab-bar")
     }
 
+    func testSignSetupAvoidsRedundantHeading() {
+        app.terminate()
+        app.launchArguments += ["-installHost", "server", "-otaServer", ""]
+        app.launch()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Set up an install host")).firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Before you can sign"].exists)
+        capture("sign-without-redundant-setup-heading")
+    }
+
     func testInstallHostOpensDirectlyFromSign() {
         let host = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Install host")).firstMatch
         XCTAssertTrue(host.waitForExistence(timeout: 5))
