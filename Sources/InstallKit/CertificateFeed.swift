@@ -15,14 +15,19 @@ public struct CertificateBundle: Codable, Equatable, Sendable {
 }
 
 public enum LoopbackConfig {
-    /// The official install host is NOT in this repo: the build injects it from two Info.plist keys,
+    /// The build supplies the public install configuration through two Info.plist keys,
     /// `WAX_DEFAULT_FEED` (the certificate feed URL) and `WAX_INSTALL_DOMAIN` (the domain names the
-    /// feed may publish, comma-separated; lowercased at load). A checkout built without them ships
-    /// with no official feed — Settings starts empty, every feed the person enters is person-chosen
-    /// (still chain-checked), and a leak of this repo reveals nothing about where the owner's feed
-    /// lives or what it is allowed to publish.
+    /// feed may publish, comma-separated; lowercased at load). Project defaults include the official
+    /// feed. Builders can replace both settings or clear both for a no-feed build. Person-chosen
+    /// feeds remain chain-checked.
     public static let defaultFeed = Bundle.main.object(forInfoDictionaryKey: "WAX_DEFAULT_FEED") as? String ?? ""
     public static let officialNames: Set<String> = officialNames(from: Bundle.main.object(forInfoDictionaryKey: "WAX_INSTALL_DOMAIN") as? String)
+
+    /// A missing or blank saved address uses this build's default; a custom address is preserved.
+    public static func initialFeed(saved: String?, bundled: String = defaultFeed) -> String {
+        guard let saved, !saved.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return bundled }
+        return saved
+    }
 
     /// One official-feed decision: the allow-list names and the feed URL they go with. Production uses the
     /// build-injected `LoopbackConfig` values; tests inject a stub pair instead of shipping literals.
@@ -32,7 +37,7 @@ public enum LoopbackConfig {
     }
 
     /// The build-supplied allow-list: lowercase names, trimmed, empty for an injected-nothing build.
-    /// Exposed domain histories are irrelevant here by design: nothing in this repo may contain them.
+    /// Custom builds can replace or clear the public project defaults.
     static func officialNames(from rawDomain: String?) -> Set<String> {
         let names = (rawDomain ?? "").lowercased().split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }

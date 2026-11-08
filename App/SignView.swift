@@ -33,14 +33,10 @@ struct SignView: View {
 
     private var isReading: Bool { model.busyMessage?.hasPrefix("Reading") == true }
 
-    #if WAX_DEVELOPMENT
-    private var testResult: InstallTestResult? { certificate.flatMap { InstallTestStore().result(for: $0.sha1Fingerprint) } }
-    #endif
-
     private var primary: SignPrimary {
         SignPrimary.resolve(hasApp: model.ipaInfo != nil, hasCertificates: !credentials.certificates.isEmpty,
                             certificateChosen: certificate != nil, inputIsInstallable: model.signedInputTarget != nil,
-                            serverReady: ota.isConfigured)
+                            serverReady: ota.isConfigured, hasProfiles: !credentials.profiles.isEmpty)
     }
 
     private var phase: SignPhase {
@@ -59,11 +55,10 @@ struct SignView: View {
 
     /// The step Wax is on while it works, or nil when it is waiting for the person.
     private var stage: SignStage? {
-        SignStage.resolve(reading: isReading, signing: model.busyMessage != nil && !isReading, uploading: uploading)
-    }
-
-    private var firstRun: Bool {
-        SignSetupChecklist.isFirstRun(hasApp: model.ipaInfo != nil, hasIdentity: certificate != nil, hostReady: ota.isConfigured)
+        let waitingForDelivery = model.installing && !handedToiOS && !uploading
+        return SignStage.resolve(reading: isReading,
+                                 signing: (model.busyMessage != nil && !isReading) || waitingForDelivery,
+                                 uploading: uploading)
     }
 
     // MARK: Body
@@ -107,9 +102,6 @@ struct SignView: View {
         .onChange(of: phase) { _, new in if new == .done { stamp() } else { stamped = false } }
         .onChange(of: model.busyMessage) { _, busy in if busy != nil { announced = false } }   // a new run earns its own feedback
         .onChange(of: model.ipaInfo != nil) { _, ready in if ready { announceRead() } }
-        .onChange(of: model.passportReport != nil) { _, ready in
-            if ready { AccessibilityNotification.Announcement("Installability check ready. Review the results before continuing.").post() }
-        }
         .onChange(of: model.report != nil) { _, done in if done { announceOutcome(success: true) } }
         .onChange(of: model.errorText) { _, text in if let text { announceOutcome(success: false, message: text) } }
         .onChange(of: credentials.certificates) { _, _ in model.discardPreflight() }
@@ -140,9 +132,7 @@ struct SignView: View {
     /// Nothing to do but say what is missing: the setup card, any problem, the one button, and the options.
     private var idleScreen: some View {
         Group {
-            if firstRun { WaxSectionLabel(text: "Before you can sign") }
             summaryCard
-            if model.passportReport != nil { passportCard }
             if let error = errorText { errorCard(error) }
             idleActions
             optionsRow
@@ -202,10 +192,10 @@ struct SignView: View {
     }
 
     private var hostRow: some View {
-        Button { router.tab = .settings } label: {
+        Button { router.openInstallHost() } label: {
             if ota.isConfigured {
                 setupRow(icon: SignSetupChecklist.host.icon, title: "Install host", subtitle: ota.hostSummary) {
-                    WaxPill(text: "Configured", tone: .ok)
+                    WaxChevron()
                 }
             } else {
                 setupRow(icon: SignSetupChecklist.host.icon, title: SignSetupChecklist.host.title,
@@ -260,7 +250,7 @@ struct SignView: View {
         Button { showDetails = true } label: {
             WaxPanel {
                 setupRow(icon: "slider.horizontal.3", title: "Options",
-                         subtitle: model.edits.isEmpty ? "Names, versions and app edits" : "App edits changed") {
+                         subtitle: model.edits.isEmpty ? "Compression and app edits" : "App edits changed") {
                     Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(Wax.sub)
                 }
                 .padding(.vertical, 4)
@@ -276,123 +266,30 @@ struct SignView: View {
     private var idleActions: some View {
         VStack(spacing: 8) {
             Button { runPrimary() } label: {
-                Label(primaryTitle, systemImage: primaryIcon)
+                Label(primary.title, systemImage: primaryIcon)
             }
             .buttonStyle(WaxPrimaryButtonStyle())
-            .disabled(model.installing || model.passportReport?.canContinue == false)
+            .disabled(model.installing)
             .padding(.top, 4)
-            Text(primary.reason)
-                .font(.footnote).foregroundStyle(Wax.sub).multilineTextAlignment(.center)
-                .frame(maxWidth: .infinity)
-            #if WAX_DEVELOPMENT
-            if primary == .install && testResult == .failed {
-                Text("A test install with this identity didn't complete. You can still try.")
-                    .font(.footnote.weight(.semibold)).foregroundStyle(Wax.warn).multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity)
-            }
-            #endif
             if primary.isSigning && model.bundleIDMode == .rename {
                 Text("The app will be renamed to fit the profile.")
                     .font(.footnote.weight(.semibold)).foregroundStyle(Wax.warn).multilineTextAlignment(.center)
                     .frame(maxWidth: .infinity)
             }
             if model.canSign {
-                Button(model.passportReport == nil ? "Sign only and export" : "Continue signing and export") {
+                Button("Sign only and export") {
                     exportRun = true; model.sign()
                 }
                 .buttonStyle(WaxSecondaryButtonStyle())
-                .disabled(model.passportReport?.canContinue == false)
             }
-            if model.passportReport?.canContinue == false {
-                Text("Fix the blocked item or change the signing options before continuing.")
-                    .font(.footnote).foregroundStyle(Wax.bad).multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity)
-            }
-        }
-    }
 
-    private var primaryTitle: String {
-        model.passportReport != nil && primary == .install ? "Continue to install" : primary.title
-    }
-
-    private var passportFindings: [PreflightFinding] {
-        guard let report = model.passportReport else { return [] }
-        let route = PreflightFinding(
-            id: "install-host", status: ota.isConfigured ? .pass : .warning,
-            title: ota.isConfigured ? "Install host is configured" : "Install host needs setup",
-            detail: ota.isConfigured ? "Wax is set up to use \(ota.hostSummary)." : "Set up an install host before installing from Wax.",
-            evidence: "This checks setup only. It does not prove the host is reachable or that iOS will accept the app."
-        )
-        let reachability = PreflightFinding(id: "host-reachability", status: .unknown,
-                                           title: "Install host reachability is unknown",
-                                           detail: "Run the host check in Settings to test the connection. A connection does not prove iOS will accept the app.")
-        return report.findings + [route, reachability]
-    }
-
-    private var passportCard: some View {
-        WaxPanel {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Installability Passport")
-                    .font(.headline).foregroundStyle(Wax.text)
-                Text("Wax checks these inputs before signing. Only iOS can make the final install decision.")
-                    .font(.footnote).foregroundStyle(Wax.sub).fixedSize(horizontal: false, vertical: true)
-                ForEach(passportFindings) { finding in
-                    DisclosureGroup {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(finding.detail).foregroundStyle(Wax.sub)
-                            if !finding.evidence.isEmpty {
-                                Text(finding.evidence).foregroundStyle(Wax.sub)
-                            }
-                        }
-                        .font(.footnote)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.top, 4)
-                    } label: {
-                        HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: findingSymbol(finding.status))
-                                .foregroundStyle(findingColor(finding.status))
-                                .accessibilityHidden(true)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(finding.title).font(.subheadline.weight(.medium)).foregroundStyle(Wax.text)
-                                Text(finding.status.rawValue.capitalized).font(.caption).foregroundStyle(findingColor(finding.status))
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .frame(minHeight: 44, alignment: .leading)
-                        .contentShape(Rectangle())
-                    }
-                    .tint(Wax.link)
-                    .multilineTextAlignment(.leading)       // a disclosure label centres wrapped lines otherwise
-                }
-                Button("Discard check") { model.discardPreflight() }
-                    .font(.footnote.weight(.semibold)).foregroundStyle(Wax.link)
-                    .frame(minHeight: 44, alignment: .leading)
-            }
-        }
-        .accessibilityElement(children: .contain)
-    }
-
-    private func findingSymbol(_ status: PreflightStatus) -> String {
-        switch status {
-        case .pass: "checkmark.circle.fill"
-        case .warning: "exclamationmark.triangle.fill"
-        case .blocked: "xmark.octagon.fill"
-        case .unknown: "questionmark.circle"
-        }
-    }
-
-    private func findingColor(_ status: PreflightStatus) -> Color {
-        switch status {
-        case .pass: Wax.ok
-        case .warning: Wax.warn
-        case .blocked: Wax.bad
-        case .unknown: Wax.sub
         }
     }
 
     private var primaryIcon: String {
         switch primary {
         case .install: "arrow.down.app"
+        case .needProfile: "doc.badge.gearshape"
         case .needServer: "icloud.and.arrow.up"
         case .needIdentity(let canImport): canImport ? "key" : "person.badge.key"
         case .needApp: "shippingbox"
@@ -403,7 +300,8 @@ struct SignView: View {
         switch primary {
         case .needApp: picking = true
         case .needIdentity(let canImport): if canImport { router.openCredentials() } else { chooseIdentity = true }
-        case .needServer: router.tab = .settings
+        case .needProfile: router.openCredentials()
+        case .needServer: router.openInstallHost()
         case .install: exportRun = false; Task { await model.signAndInstall(ota: ota) { openURL($0) } }
         }
     }
@@ -420,10 +318,12 @@ struct SignView: View {
         let message = progressMessage
         return VStack(spacing: Wax.Space.m) {
             WaxMelt(progress: jobFraction, height: 230, isVisible: router.tab == .sign)
+                .animation(reduceMotion ? nil : .linear(duration: 0.25), value: jobFraction)
             Text("\(percent)%")
                 .font(.system(size: 46, weight: .bold, design: .rounded).monospacedDigit())
                 .foregroundStyle(Wax.text)
                 .contentTransition(.numericText())
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: percent)
             stageStrip(current)
             Text(message)
                 .font(.subheadline).foregroundStyle(Wax.sub)

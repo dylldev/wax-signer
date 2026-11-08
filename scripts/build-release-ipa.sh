@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Builds the unsigned release IPA and its SHA-256, with the official install feed injected (it is not stored in the source).
+# Builds the unsigned release IPA and its SHA-256, using the public install-feed defaults unless overridden.
 #   WAX_DEFAULT_FEED=https://you.github.io/repo/cert.json WAX_INSTALL_DOMAIN=name.duckdns.org scripts/build-release-ipa.sh <output-dir> [standard|dev]
-# Leave both variables unset for a build with no official feed (every feed is then chosen by the person).
+# Unset variables keep the project defaults. Set both to empty for a no-feed build.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 OUT="${1:?usage: build-release-ipa.sh <output-dir> [standard|dev]}"
@@ -13,11 +13,15 @@ case "$CHANNEL" in
 esac
 FEED="${WAX_DEFAULT_FEED:-}"; DOMAIN="${WAX_INSTALL_DOMAIN:-}"
 if [ -n "$FEED" ] && [ -z "$DOMAIN" ]; then echo "error: WAX_DEFAULT_FEED needs WAX_INSTALL_DOMAIN too (the names the feed may publish)" >&2; exit 1; fi
+BUILD_SETTINGS=(CODE_SIGNING_ALLOWED=NO)
+if [ "${WAX_DEFAULT_FEED+x}${WAX_INSTALL_DOMAIN+x}" ]; then
+  BUILD_SETTINGS+=("WAX_DEFAULT_FEED=$FEED" "WAX_INSTALL_DOMAIN=$DOMAIN")
+fi
 command -v xcodegen >/dev/null || { echo "error: brew install xcodegen" >&2; exit 1; }
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 xcodegen generate >/dev/null
 xcodebuild -project LocalIPASigner.xcodeproj -scheme "$SCHEME" -destination 'generic/platform=iOS' -configuration "$CONFIGURATION" \
-  -derivedDataPath "$work/derived" CODE_SIGNING_ALLOWED=NO WAX_DEFAULT_FEED="$FEED" WAX_INSTALL_DOMAIN="$DOMAIN" build >"$work/build.log" 2>&1 \
+  -derivedDataPath "$work/derived" "${BUILD_SETTINGS[@]}" build >"$work/build.log" 2>&1 \
   || { tail -20 "$work/build.log" >&2; exit 1; }
 app="$work/derived/Build/Products/$CONFIGURATION-iphoneos/LocalIPASigner.app"
 version="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Info.plist")"

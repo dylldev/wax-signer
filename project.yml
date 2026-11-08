@@ -60,16 +60,14 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleDisplayName: $(WAX_DISPLAY_NAME)
         UILaunchScreen: {}
-        # The official install feed and the names it is allowed to publish. Empty by default on purpose: a
-        # checkout, a fork or a leak of this repository must not reveal where the owner's feed lives. A build
-        # that leaves these empty ships with no official feed -- the person types their own address in Settings,
-        # which is then treated as person-chosen and still chain-checked. See SECURITY.md.
+        # Public install-feed defaults and the names that feed may publish. Builders can override both
+        # settings, including explicit empty values for a no-feed build. See SECURITY.md.
         WAX_DEFAULT_FEED: $(WAX_DEFAULT_FEED)
         WAX_INSTALL_DOMAIN: $(WAX_INSTALL_DOMAIN)
     settings:
       base:
-        MARKETING_VERSION: "0.17.0"
-        CURRENT_PROJECT_VERSION: "109"
+        MARKETING_VERSION: "0.17.1"
+        CURRENT_PROJECT_VERSION: "110"
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
@@ -83,9 +81,9 @@ targets:
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGNING_ALLOWED: YES
-        # Overridden by the owner's release build, e.g. `xcodebuild ... WAX_INSTALL_DOMAIN=name.example.org`.
-        WAX_DEFAULT_FEED: ""
-        WAX_INSTALL_DOMAIN: ""
+        # Public defaults apply to normal Wax and Wax Dev; custom builds can override them.
+        WAX_DEFAULT_FEED: "https://dylldev.github.io/wax-signer/cert.json"
+        WAX_INSTALL_DOMAIN: "waxspike123.duckdns.org"
       configs:
         Development:
           PRODUCT_BUNDLE_IDENTIFIER: io.github.dylldev.wax.dev

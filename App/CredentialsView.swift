@@ -4,6 +4,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct CredentialsView: View {
+    var showDeveloperTools = false
     @EnvironmentObject private var model: CredentialsModel
     @EnvironmentObject private var ota: OTAInstallModel
     #if WAX_DEVELOPMENT
@@ -56,22 +57,27 @@ struct CredentialsView: View {
                     }
                     ForEach(model.profiles) { profile in profileCard(profile).id("credential-\(profile.id)") }
 
-                    Text("Private keys are held in the iOS Keychain. Passwords are never stored. Before signing, Wax checks profile signatures and their certificate chains. An intact signature alone does not establish Apple trust. Revocation is not checked, and iOS makes the final installation decision.")
-                        .font(.footnote).foregroundStyle(Wax.sub)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.top, 6)
+                    DisclosureGroup("Privacy & checks") {
+                        Text("Private keys are held in the iOS Keychain. Passwords are never stored. Before signing, Wax checks profile signatures and their certificate chains. An intact signature alone does not establish Apple trust. Revocation is not checked, and iOS makes the final installation decision.")
+                            .font(.footnote).foregroundStyle(Wax.sub)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 6)
+                    }
+
 
                     #if WAX_DEVELOPMENT
-                    NavigationLink { ImportLogView() } label: {
-                        HStack {
-                            Text("Import log").font(.subheadline.weight(.semibold))
-                            Spacer()
-                            Image(systemName: "chevron.right").font(.footnote.weight(.semibold))
+                    if showDeveloperTools {
+                        NavigationLink { ImportLogView() } label: {
+                            HStack {
+                                Text("Import log").font(.subheadline.weight(.semibold))
+                                Spacer()
+                                Image(systemName: "chevron.right").font(.footnote.weight(.semibold))
+                            }
+                            .foregroundStyle(Wax.sub)
+                            .frame(minHeight: 52)
+                            .overlay(alignment: .top) { WaxDivider() }
                         }
-                        .foregroundStyle(Wax.sub)
-                        .frame(minHeight: 52)
-                        .overlay(alignment: .top) { WaxDivider() }
                     }
                     #endif
                 }
@@ -202,9 +208,11 @@ struct CredentialsView: View {
             WaxKV(key: "Expires", value: cert.notAfter.formatted(date: .abbreviated, time: .omitted))
             WaxDivider()
             #if WAX_DEVELOPMENT
-            WaxKV(key: "SHA-1", value: cert.sha1Fingerprint, small: true)
-            WaxDivider()
-            installTestRow(cert)
+            if showDeveloperTools {
+                WaxKV(key: "SHA-1", value: cert.sha1Fingerprint, small: true)
+                WaxDivider()
+                installTestRow(cert)
+            }
             #endif
             if !model.profiles.isEmpty {
                 WaxDivider()

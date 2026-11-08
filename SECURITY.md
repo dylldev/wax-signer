@@ -30,10 +30,10 @@ only touch that bucket, and add a one-day expiry rule on the bucket.
 ## "This iPhone" install host
 - Wax opens a listener on the loopback interface only, for the one app being installed. It uses a random path, a
   15-minute lifetime, and is closed once iOS has taken the whole file or after 10 minutes of waiting.
-- The official host is injected into the build (`WAX_INSTALL_DOMAIN`, see `project.yml`) and is not written in this
-  repository. It must resolve to `127.0.0.1`, and Wax refuses to start unless the name resolves only to loopback;
-  the official feed may publish only the injected names.
-- The official feed address is build-injected too (`WAX_DEFAULT_FEED`). A build without it has no official feed:
+- The public official host and feed default to the values in `project.yml` (`WAX_INSTALL_DOMAIN` and
+  `WAX_DEFAULT_FEED`). Builders can override them. The host must resolve to `127.0.0.1`, and Wax refuses to
+  start unless the name resolves only to loopback; the official feed may publish only the configured names.
+- Builders can clear both settings for a build without an official feed:
   every address the person enters in Settings is then person-chosen — still chain-verified, and the name iOS
   shows in the install prompt comes from that certificate.
 - **The certificate's private key is public on purpose.** It ships in a public file so every install of Wax can use

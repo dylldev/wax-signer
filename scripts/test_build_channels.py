@@ -55,7 +55,7 @@ class BuildChannels(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('standard|dev', result.stderr)
 
-    def release(self, channel, prefix, configuration, scheme):
+    def release(self, channel, prefix, configuration, scheme, feed_overrides=('', '')):
         # Replace only Xcode's slow compiler. Packaging and checksum generation run for real.
         with tempfile.TemporaryDirectory() as folder:
             base = Path(folder)
@@ -64,19 +64,28 @@ class BuildChannels(unittest.TestCase):
             (commands / 'xcodegen').write_text('#!/bin/bash\nexit 0\n')
             builder = commands / 'xcodebuild'
             builder.write_text('''#!/usr/bin/python3
-import os, pathlib, plistlib, sys
+import os, pathlib, plistlib, sys, json
 args = sys.argv[1:]
 value = lambda flag: args[args.index(flag) + 1]
 assert value('-configuration') == os.environ['EXPECTED_CONFIGURATION']
 assert value('-scheme') == os.environ['EXPECTED_SCHEME']
+overrides = json.loads(os.environ['EXPECTED_FEED_OVERRIDES'])
+for key in ('WAX_DEFAULT_FEED', 'WAX_INSTALL_DOMAIN'):
+    matches = [arg.split('=', 1)[1] for arg in args if arg.startswith(key + '=')]
+    assert matches == ([] if overrides is None else [overrides[key]]), (key, matches)
 app = pathlib.Path(value('-derivedDataPath')) / 'Build/Products' / (value('-configuration') + '-iphoneos') / 'LocalIPASigner.app'
 app.mkdir(parents=True)
-(app / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleShortVersionString': '1.2.3'}))
+(app / 'Info.plist').write_bytes(plistlib.dumps(dict({'CFBundleShortVersionString': '1.2.3'}, **(overrides or {}))))
 (app / 'LocalIPASigner').write_bytes(b'compiled app fixture')
 ''')
             for command in commands.iterdir():
                 command.chmod(0o755)
-            env = dict(os.environ, PATH=str(commands) + ':/usr/bin:/bin', EXPECTED_CONFIGURATION=configuration, EXPECTED_SCHEME=scheme, WAX_DEFAULT_FEED='', WAX_INSTALL_DOMAIN='')
+            overrides = None if feed_overrides is None else dict(zip(('WAX_DEFAULT_FEED', 'WAX_INSTALL_DOMAIN'), feed_overrides))
+            env = dict(os.environ, PATH=str(commands) + ':/usr/bin:/bin', EXPECTED_CONFIGURATION=configuration, EXPECTED_SCHEME=scheme, EXPECTED_FEED_OVERRIDES=json.dumps(overrides))
+            for key in ('WAX_DEFAULT_FEED', 'WAX_INSTALL_DOMAIN'):
+                env.pop(key, None)
+            if overrides is not None:
+                env.update(overrides)
             out = base / 'output with spaces'
             args = ['bash', str(ROOT / 'scripts/build-release-ipa.sh'), str(out)]
             if channel:
@@ -85,6 +94,7 @@ app.mkdir(parents=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             name = prefix + '-1.2.3.ipa'
             ipa = out / name
+            self.assertTrue(ipa.exists(), (result.stdout, result.stderr, [p.name for p in out.iterdir()] if out.exists() else []))
             with zipfile.ZipFile(ipa) as archive:
                 self.assertEqual(archive.read('Payload/LocalIPASigner.app/LocalIPASigner'), b'compiled app fixture')
             self.assertEqual((out / (name + '.sha256')).read_text(), hashlib.sha256(ipa.read_bytes()).hexdigest() + '  ' + name + '\n')
@@ -94,6 +104,21 @@ app.mkdir(parents=True)
 
     def test_dev_download_uses_development_and_distinct_filename(self):
         self.release('dev', 'Wax-Dev', 'Development', 'WaxDev')
+
+    def test_normal_and_dev_inherit_the_builtin_feed(self):
+        settings = self.spec['targets']['LocalIPASigner']['settings']
+        for configuration in ('Release', 'Development'):
+            effective = dict(settings['base'], **settings['configs'].get(configuration, {}))
+            self.assertEqual(effective['WAX_DEFAULT_FEED'], 'https://dylldev.github.io/wax-signer/cert.json')
+            self.assertEqual(effective['WAX_INSTALL_DOMAIN'], 'waxspike123.duckdns.org')
+
+    def test_unspecified_feed_keeps_project_defaults_for_both_channels(self):
+        self.release('standard', 'Wax', 'Release', 'LocalIPASigner', feed_overrides=None)
+        self.release('dev', 'Wax-Dev', 'Development', 'WaxDev', feed_overrides=None)
+
+    def test_custom_feed_and_allowed_host_reach_the_build(self):
+        self.release('standard', 'Wax', 'Release', 'LocalIPASigner',
+                     feed_overrides=('https://example.org/cert.json', 'install.example.org'))
 
 
 if __name__ == '__main__':
