@@ -39,6 +39,15 @@ final class CertificateFeedTests: XCTestCase {
         try await CertificateFeed.load(feed: feed, cacheDirectory: dir, session: session, now: now, verify: { _, _ in })
     }
 
+    func testBundledFeedFillsMissingOrBlankSavedSetup() {
+        let bundled = "https://default.example/cert.json"
+        XCTAssertEqual(LoopbackConfig.initialFeed(saved: nil, bundled: bundled), bundled)
+        XCTAssertEqual(LoopbackConfig.initialFeed(saved: "  \n", bundled: bundled), bundled)
+        XCTAssertEqual(LoopbackConfig.initialFeed(saved: "https://custom.example/cert.json", bundled: bundled),
+                       "https://custom.example/cert.json")
+        XCTAssertEqual(LoopbackConfig.initialFeed(saved: "", bundled: ""), "")
+    }
+
     func testFirstUseFetchesAndCaches() async throws {
         FeedStub.handler = { [self] _ in (200, json(notAfter: now.addingTimeInterval(60 * 86400))) }
         let b = try await load()

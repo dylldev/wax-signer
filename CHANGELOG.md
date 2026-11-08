@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.17.1 (unreleased, build 110)
+- Includes the default installation certificate feed and allowed hostname in normal Wax and Wax Dev.
+- Keeps custom-feed overrides and explicit no-feed builds available.
+- Signs and starts installation in one action, while retaining automatic validation and output checks.
+- Moves developer diagnostics into Settings, opens setup screens directly, and shortens routine helper text.
+- Interpolates the wax progress animation and keeps it paused with Reduce Motion or while offscreen.
+
 ## 0.17.0 (phone-test prerelease, build 109)
 - Adds an optional first-run guide, notification controls, local problem reports, and compression choices.
 - Keeps signing-certificate checks off the screen-rendering thread and verifies the stored certificate before signing.

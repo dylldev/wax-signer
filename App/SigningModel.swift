@@ -190,16 +190,11 @@ final class SigningModel: ObservableObject {
     @Published private(set) var savedInstallID: LibraryEntry.ID?
 
     /// Signs with the chosen certificate (when there is one), then uploads and hands the app to iOS.
-    /// When signing still has to run, this starts it and returns; the Install button appears once the report is ready.
+    /// One reserved installation job owns preparation, signing, delivery and the iOS handoff.
     /// Nothing is uploaded unless signing succeeded and its self-check passed. Keeps going if Wax is sent to the
     /// background, and posts a notification when the app is ready to install.
     func signAndInstall(ota: OTAInstallModel, open: @escaping (URL) -> Void) async {
         guard !installing, !Task.isCancelled else { return }
-        if certificateID != nil, preparedSigning == nil {
-            if let task = sign(standalone: false, compression: SigningCompression.Preference().flags(phoneInstall: ota.hostKind == .phone)) { await task.value }
-            return
-        }
-        if let preparedSigning, !preparedSigning.preflight.canContinue { return }
         await install(saved: nil, ota: ota, open: open)
     }
 
@@ -392,7 +387,7 @@ final class SigningModel: ObservableObject {
     @discardableResult
     /// `compression` is read once, here, so changing Signing options ▸ File compression cannot alter a run under way.
     /// Left out, it is the saved choice for an export (Signing options ▸ File compression).
-    func sign(standalone: Bool = true, compression: SigningCompression.Flags? = nil, backgroundID: UUID? = nil, cancellation: SigningCancellation? = nil) -> Task<Void, Never>? {
+    func sign(standalone: Bool = true, compression: SigningCompression.Flags? = nil, backgroundID: UUID? = nil, cancellation: SigningCancellation? = nil, reviewBeforeSigning: Bool = false) -> Task<Void, Never>? {
         guard busyMessage == nil, !runningSign, !shelfSaveState.isSaving, let ipaURL, let info = ipaInfo, let certificateID, let store = credentials.store,
               let cert = credentials.certificates.first(where: { $0.id == certificateID }) else { return nil }
         let revision = inputRevision
@@ -413,7 +408,7 @@ final class SigningModel: ObservableObject {
         if preparedToSign != nil { preparedSigning = nil }
         busyMessage = preparedToSign == nil ? "Preparing…" : "Signing…"
         let title = info.displayName.isEmpty ? "Wax" : info.displayName
-        let backgroundJob = standalone && preparedToSign != nil
+        let backgroundJob = standalone && (!reviewBeforeSigning || preparedToSign != nil)
         // This run's own job: never read from shared state later, so a replacement run's job cannot be ended by mistake.
         var ownedJobID: UUID? = backgroundID
         if backgroundJob {
@@ -426,150 +421,161 @@ final class SigningModel: ObservableObject {
         let chosenProfile = profileChoice
         let entitlementsOverride = customEntitlements
         let keep = keepBundleID
-        let skippedProfilesForRun = skippedProfiles
+        let previouslySkippedProfiles = skippedProfiles
         let model = self
         ImportLogs.shared.log("sign: start id=\(ipaInfo?.bundleIdentifier ?? "?") rewrite=\(rewrite)")
 
         signFraction = 0
         signStarted = Date()
         let throttle = ProgressThrottle()
+        let operationCancellation = cancellation ?? SigningCancellation()
         let worker = Task.detached(priority: .userInitiated) {
-            do {
-                let prepared: PreparedIPASigning
-                if let preparedToSign {
-                    prepared = preparedToSign
-                } else {
-                    let identity = try SecurityFrameworkIdentity(identity: store.identity(for: certificateID))
-                    var pool: [ProvisioningProfile] = []
-                    var skipped: [String] = []
-                    for profileInfo in store.profiles() {
-                        do { pool.append(try ProvisioningProfile.parse(try store.profileData(for: profileInfo.id))) }
-                        catch { skipped.append("\(profileInfo.name): \((error as? LocalizedError)?.errorDescription ?? "unreadable")") }
+            await withTaskCancellationHandler {
+                do {
+                    var skippedProfilesForRun = previouslySkippedProfiles
+                    let prepared: PreparedIPASigning
+                    if let preparedToSign {
+                        prepared = preparedToSign
+                    } else {
+                        let identity = try SecurityFrameworkIdentity(identity: store.identity(for: certificateID))
+                        var pool: [ProvisioningProfile] = []
+                        var skipped: [String] = []
+                        for profileInfo in store.profiles() {
+                            do { pool.append(try ProvisioningProfile.parse(try store.profileData(for: profileInfo.id))) }
+                            catch { skipped.append("\(profileInfo.name): \((error as? LocalizedError)?.errorDescription ?? "unreadable")") }
+                        }
+                        var options = SigningOptions()
+                        options.cancellation = operationCancellation
+                        options.rewriteBundleIdentifier = rewrite
+                        options.keepBundleIdentifier = keep
+                        options.overrideEntitlements = entitlementsOverride
+                        options.entitlementPolicy = strictForRun ? .reject : .dropAndWarn
+                        let profiles = try ProfileSet(pool: pool, overrides: Self.overrides(chosen: chosenProfile, store: store))
+                        prepared = try IPASigner.prepare(ipa: ipaURL, identity: identity, certificateTeamID: cert.teamID,
+                                                             profiles: profiles, options: options, edits: appEdits,
+                                                             workDirectory: FileManager.default.temporaryDirectory) { p in
+                            guard throttle.shouldPublish(p) else { return }
+                            Task { @MainActor in
+                                guard model.activeSigningRun == run, model.inputRevision == revision else { return }
+                                model.busyMessage = p.message; model.signFraction = p.fraction
+                            }
+                        }
+                        try operationCancellation.check()
+                        skippedProfilesForRun = skipped
+                        if reviewBeforeSigning {
+                            var findings = prepared.preflight.findings
+                            findings.append(Self.minimumOSFinding(prepared.minimumOSVersion))
+                            let passport = SigningPreflightReport(findings: findings, blockingError: prepared.preflight.blockingError,
+                                                                  selections: prepared.preflight.selections)
+                            let skippedProfilesForPreparation = skipped
+                            await MainActor.run {
+                                model.runningSign = false
+                                guard model.activeSigningRun == run else { prepared.discard(); return }
+                                model.activeSigningRun = nil
+                                model.busyMessage = nil
+                                guard model.inputRevision == revision else { prepared.discard(); return }
+                                model.preparedSigning = prepared
+                                let continuity = Self.continuityFinding(original: info.bundleIdentifier, selections: passport.selections,
+                                                                        certificate: cert, profiles: profileInfos, entries: model.library.signed)
+                                model.passportReport = continuity.map {
+                                    SigningPreflightReport(findings: passport.findings + [$0], blockingError: passport.blockingError, selections: passport.selections)
+                                } ?? passport
+                                model.skippedProfiles = skippedProfilesForPreparation
+                                model.busyMessage = nil
+                            }
+                            return
+                        }
                     }
-                    var options = SigningOptions()
-                    options.cancellation = cancellation
-                    options.rewriteBundleIdentifier = rewrite
-                    options.keepBundleIdentifier = keep
-                    options.overrideEntitlements = entitlementsOverride
-                    options.entitlementPolicy = strictForRun ? .reject : .dropAndWarn
-                    let profiles = try ProfileSet(pool: pool, overrides: Self.overrides(chosen: chosenProfile, store: store))
-                    let prepared = try IPASigner.prepare(ipa: ipaURL, identity: identity, certificateTeamID: cert.teamID,
-                                                         profiles: profiles, options: options, edits: appEdits,
-                                                         workDirectory: FileManager.default.temporaryDirectory) { p in
+
+                    let shelf = model.library.storage
+                    let pending = try shelf.reserve(kind: .signed, name: title, provenance: .waxSigned)
+                    let output = try shelf.pendingURL(pending.id)
+                    let outcome = try IPASigner.sign(prepared: prepared, output: output, compressChangedFiles: packing.compressChangedFiles, fastDeflate: packing.fastDeflate) { p in
+                        // The engine reports often; only pass on a visible change.
                         guard throttle.shouldPublish(p) else { return }
                         Task { @MainActor in
                             guard model.activeSigningRun == run, model.inputRevision == revision else { return }
                             model.busyMessage = p.message; model.signFraction = p.fraction
+                            if let id = jobForRun { model.background.update(id, fraction: weights.overall(sign: p.fraction, upload: 0), subtitle: p.message) }
                         }
                     }
-                    var findings = prepared.preflight.findings
-                    findings.append(Self.minimumOSFinding(prepared.minimumOSVersion))
-                    let passport = SigningPreflightReport(findings: findings, blockingError: prepared.preflight.blockingError,
-                                                          selections: prepared.preflight.selections)
-                    let skippedProfilesForPreparation = skipped
-                    await MainActor.run {
-                        model.runningSign = false
-                        guard model.activeSigningRun == run else { prepared.discard(); return }
+
+                    let size = (try? FileManager.default.attributesOfItem(atPath: outcome.output.path)[.size] as? Int) ?? 0
+                    // What this copy was signed with, kept beside it on the shelf. Losing it only loses later comparisons.
+                    try? shelf.setRecord(Self.signingRecord(original: outcome.inputArchive.bundleIdentifier, final: outcome.outputArchive.bundleIdentifier,
+                                                            certificate: cert, selections: outcome.signing.profileSelections, profiles: profileInfos),
+                                         for: pending.id)
+                    var profileLines = outcome.signing.profileSelections.map { sel -> String in
+                        "\(sel.bundlePath == "." ? "App" : sel.bundlePath) → “\(sel.profileName)” · \(Self.describe(sel.signatureStatus))"
+                    }
+                    profileLines += skippedProfilesForRun.map { "Skipped \($0)" }
+                    var archive = [
+                        "Input: \(outcome.inputArchive.displayName) \(outcome.inputArchive.version) (\(outcome.inputArchive.build)), \(outcome.inputArchive.entryCount) files",
+                        "Output: \(outcome.outputArchive.entryCount) files, signature files present: \(outcome.outputArchive.hasCodeSignature ? "yes" : "no")",
+                    ]
+                    archive += outcome.editNotes
+                    if keep, let first = outcome.signing.profileSelections.first {
+                        archive.append("Bundle IDs kept. Signed under the profile “\(first.profileName)”; iOS decides whether it accepts the app.")
+                    }
+                    for (old, new) in outcome.signing.bundleIdentifierChanges.sorted(by: { $0.key < $1.key }) {
+                        archive.append("Bundle ID changed: \(old) → \(new)")
+                    }
+                    let r = Report(
+                        archiveLines: archive,
+                        checkSummary: outcome.selfCheck.passed
+                            ? "Passed \(outcome.selfCheck.checks.count) consistency checks"
+                            : "FAILED \(outcome.selfCheck.failures.count) of \(outcome.selfCheck.checks.count)",
+                        checkFailures: outcome.selfCheck.failures.map { "\($0.name) \($0.detail)" },
+                        profileLines: profileLines, warnings: outcome.signing.warnings,
+                        output: outcome.output, outputSize: size,
+                        installTarget: InstallTarget(
+                            ipa: outcome.output, bundleIdentifier: outcome.outputArchive.bundleIdentifier,
+                            version: outcome.outputArchive.version, build: outcome.outputArchive.build, title: outcome.outputArchive.displayName))
+                    ImportLogs.shared.log("sign: ok items=\(outcome.signing.items.count) bytes=\(size)")
+                    let accepted: Bool = await MainActor.run {
+                        guard model.activeSigningRun == run else { return false }
                         model.activeSigningRun = nil
                         model.busyMessage = nil
-                        guard model.inputRevision == revision else { prepared.discard(); return }
-                        model.preparedSigning = prepared
-                        let continuity = Self.continuityFinding(original: info.bundleIdentifier, selections: passport.selections,
-                                                                certificate: cert, profiles: profileInfos, entries: model.library.signed)
-                        model.passportReport = continuity.map {
-                            SigningPreflightReport(findings: passport.findings + [$0], blockingError: passport.blockingError, selections: passport.selections)
-                        } ?? passport
-                        model.skippedProfiles = skippedProfilesForPreparation
+                        model.runningSign = false
+                        guard model.inputRevision == revision else {
+                            if backgroundJob, let id = jobForRun { model.background.end(id, success: false) }
+                            return false
+                        }
+                        model.lastSignSeconds = Date().timeIntervalSince(model.signStarted ?? Date())
+                        model.skippedProfiles = []
+                        return true
+                    }
+                    guard accepted else { return }
+                    await model.acceptSignedResult(r, pendingID: pending.id, revision: revision)
+                    await MainActor.run {
+                        if standalone {
+                            let saved = model.shelfSaveState.confirmedSaved
+                            if backgroundJob, let id = jobForRun { model.background.end(id, success: saved) }
+                            if saved { model.background.notifyIfInBackground(InstallNotification.signed(appTitle: title)) }
+                        }
+                    }
+                } catch {
+                    let text = error is CancellationError ? "Signing stopped before it finished. Try again with Wax open."
+                        : (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                    ImportLogs.shared.log("sign: failed \(ImportLog.describe(error))")
+                    await MainActor.run {
+                        guard model.activeSigningRun == run else { return }
+                        model.runningSign = false
+                        model.activeSigningRun = nil
                         model.busyMessage = nil
-                    }
-                    return
-                }
-
-                let shelf = model.library.storage
-                let pending = try shelf.reserve(kind: .signed, name: title, provenance: .waxSigned)
-                let output = try shelf.pendingURL(pending.id)
-                let outcome = try IPASigner.sign(prepared: prepared, output: output, compressChangedFiles: packing.compressChangedFiles, fastDeflate: packing.fastDeflate) { p in
-                    // The engine reports often; only pass on a visible change.
-                    guard throttle.shouldPublish(p) else { return }
-                    Task { @MainActor in
-                        guard model.activeSigningRun == run, model.inputRevision == revision else { return }
-                        model.busyMessage = p.message; model.signFraction = p.fraction
-                        if let id = jobForRun { model.background.update(id, fraction: weights.overall(sign: p.fraction, upload: 0), subtitle: p.message) }
-                    }
-                }
-
-                let size = (try? FileManager.default.attributesOfItem(atPath: outcome.output.path)[.size] as? Int) ?? 0
-                // What this copy was signed with, kept beside it on the shelf. Losing it only loses later comparisons.
-                try? shelf.setRecord(Self.signingRecord(original: outcome.inputArchive.bundleIdentifier, final: outcome.outputArchive.bundleIdentifier,
-                                                        certificate: cert, selections: outcome.signing.profileSelections, profiles: profileInfos),
-                                     for: pending.id)
-                var profileLines = outcome.signing.profileSelections.map { sel -> String in
-                    "\(sel.bundlePath == "." ? "App" : sel.bundlePath) → “\(sel.profileName)” · \(Self.describe(sel.signatureStatus))"
-                }
-                profileLines += skippedProfilesForRun.map { "Skipped \($0)" }
-                var archive = [
-                    "Input: \(outcome.inputArchive.displayName) \(outcome.inputArchive.version) (\(outcome.inputArchive.build)), \(outcome.inputArchive.entryCount) files",
-                    "Output: \(outcome.outputArchive.entryCount) files, signature files present: \(outcome.outputArchive.hasCodeSignature ? "yes" : "no")",
-                ]
-                archive += outcome.editNotes
-                if keep, let first = outcome.signing.profileSelections.first {
-                    archive.append("Bundle IDs kept. Signed under the profile “\(first.profileName)”; iOS decides whether it accepts the app.")
-                }
-                for (old, new) in outcome.signing.bundleIdentifierChanges.sorted(by: { $0.key < $1.key }) {
-                    archive.append("Bundle ID changed: \(old) → \(new)")
-                }
-                let r = Report(
-                    archiveLines: archive,
-                    checkSummary: outcome.selfCheck.passed
-                        ? "Passed \(outcome.selfCheck.checks.count) consistency checks"
-                        : "FAILED \(outcome.selfCheck.failures.count) of \(outcome.selfCheck.checks.count)",
-                    checkFailures: outcome.selfCheck.failures.map { "\($0.name) \($0.detail)" },
-                    profileLines: profileLines, warnings: outcome.signing.warnings,
-                    output: outcome.output, outputSize: size,
-                    installTarget: InstallTarget(
-                        ipa: outcome.output, bundleIdentifier: outcome.outputArchive.bundleIdentifier,
-                        version: outcome.outputArchive.version, build: outcome.outputArchive.build, title: outcome.outputArchive.displayName))
-                ImportLogs.shared.log("sign: ok items=\(outcome.signing.items.count) bytes=\(size)")
-                let accepted: Bool = await MainActor.run {
-                    guard model.activeSigningRun == run else { return false }
-                    model.activeSigningRun = nil
-                    model.busyMessage = nil
-                    model.runningSign = false
-                    guard model.inputRevision == revision else {
+                        guard model.inputRevision == revision else {
+                            if backgroundJob, let id = jobForRun { model.background.end(id, success: false) }
+                            return
+                        }
+                        model.preparedSigning?.discard()
+                        model.preparedSigning = nil
+                        model.errorText = text; model.busyMessage = nil
                         if backgroundJob, let id = jobForRun { model.background.end(id, success: false) }
-                        return false
-                    }
-                    model.lastSignSeconds = Date().timeIntervalSince(model.signStarted ?? Date())
-                    model.skippedProfiles = []
-                    return true
-                }
-                guard accepted else { return }
-                await model.acceptSignedResult(r, pendingID: pending.id, revision: revision)
-                await MainActor.run {
-                    if standalone {
-                        let saved = model.shelfSaveState.confirmedSaved
-                        if backgroundJob, let id = jobForRun { model.background.end(id, success: saved) }
-                        if saved { model.background.notifyIfInBackground(InstallNotification.signed(appTitle: title)) }
                     }
                 }
-            } catch {
-                let text = error is CancellationError ? "Signing stopped before it finished. Try again with Wax open."
-                    : (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                ImportLogs.shared.log("sign: failed \(ImportLog.describe(error))")
-                await MainActor.run {
-                    guard model.activeSigningRun == run else { return }
-                    model.runningSign = false
-                    model.activeSigningRun = nil
-                    model.busyMessage = nil
-                    guard model.inputRevision == revision else {
-                        if backgroundJob, let id = jobForRun { model.background.end(id, success: false) }
-                        return
-                    }
-                    model.preparedSigning?.discard()
-                    model.preparedSigning = nil
-                    model.errorText = text; model.busyMessage = nil
-                    if backgroundJob, let id = jobForRun { model.background.end(id, success: false) }
-                }
+            } onCancel: {
+                operationCancellation.cancel()
+                preparedToSign?.cancel()
             }
         }
         if backgroundJob, let id = jobForRun {

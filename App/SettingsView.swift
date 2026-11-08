@@ -13,7 +13,6 @@ struct SettingsView: View {
     @EnvironmentObject private var shake: ShakeReporter
     @AppStorage("signAfterDownload") private var signAfterDownload = false
     @AppStorage("expiryReminders") private var remindersEnabled = true
-    @State private var showServer = false
     @State private var confirmClear: LibraryEntry.Kind?
 
     var body: some View {
@@ -30,7 +29,7 @@ struct SettingsView: View {
                         }
                         .buttonStyle(WaxRowButtonStyle())
                         WaxRowDivider()
-                        Button { showServer = true } label: {
+                        NavigationLink(value: Router.SettingsRoute.installHost) {
                             WaxListRow(icon: "icloud.and.arrow.up", title: "Install host") {
                                 WaxRowValue(text: ota.isConfigured ? ota.hostSummary : "Not set up")
                                 WaxChevron()
@@ -96,12 +95,10 @@ struct SettingsView: View {
                         .buttonStyle(WaxRowButtonStyle())
                         #if WAX_DEVELOPMENT
                         WaxRowDivider()
-                        NavigationLink(value: Router.SettingsRoute.importLog) {
-                            WaxListRow(icon: "doc.text.magnifyingglass", title: "Import log") { WaxChevron() }
+                        NavigationLink(value: Router.SettingsRoute.developer) {
+                            WaxListRow(icon: "doc.text.magnifyingglass", title: "Developer") { WaxChevron() }
                         }
                         .buttonStyle(WaxRowButtonStyle())
-                        WaxRowDivider()
-                        WaxListRow(icon: "barcode", title: "Bundle ID") { WaxRowValue(text: Bundle.main.bundleIdentifier ?? "—") }
                         #endif
                         WaxRowDivider()
                         WaxListRow(icon: "info.circle", title: "Version") { WaxRowValue(text: aboutVersion) }
@@ -125,13 +122,13 @@ struct SettingsView: View {
                 switch route {
                 case .credentials: CredentialsView()
                 case .signingOptions: SigningOptionsView(model: signing)
+                case .installHost: InstallHostSettingsView()
                 #if WAX_DEVELOPMENT
-                case .importLog: ImportLogView()
+                case .developer: DeveloperSettingsView()
                 #endif
                 }
             }
         }
-        .sheet(isPresented: $showServer) { serverSheet }
         .confirmationDialog("Delete \(confirmClear == .signed ? library.signed.count : library.unsigned.count) \(confirmClear == .signed ? "signed" : "unsigned") apps (\(Self.size(library.bytes(confirmClear ?? .unsigned))))?",
                             isPresented: Binding(get: { confirmClear != nil }, set: { if !$0 { confirmClear = nil } }),
                             titleVisibility: .visible) {
@@ -172,18 +169,21 @@ struct SettingsView: View {
         return f.string(fromByteCount: Int64(bytes))
     }
 
-    private var serverSheet: some View {
-        NavigationStack {
-            List { InstallSection(model: ota, collapsed: false, eligibilityUnknown: false).listRowBackground(Wax.card) }
-                .scrollContentBackground(.hidden)
-                .background(Wax.bg.ignoresSafeArea())
-                .tint(Wax.link)
-                .navigationTitle("Install host")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbarBackground(Wax.bg, for: .navigationBar)
-                .toolbarBackground(.visible, for: .navigationBar)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showServer = false } } }
-        }
-        .presentationDetents([.large])
+
+}
+
+
+struct InstallHostSettingsView: View {
+    @EnvironmentObject private var ota: OTAInstallModel
+
+    var body: some View {
+        List { InstallSection(model: ota, collapsed: false, eligibilityUnknown: false).listRowBackground(Wax.card) }
+            .scrollContentBackground(.hidden)
+            .background(Wax.bg.ignoresSafeArea())
+            .tint(Wax.link)
+            .navigationTitle("Install host")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Wax.bg, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
     }
 }

@@ -52,7 +52,7 @@ final class OTAInstallModel: ObservableObject {
         didSet { UserDefaults.standard.set(bucketRegion, forKey: "s3Region"); invalidateBucketNotes() }
     }
     /// Where the certificate for the "This iPhone" host is published.
-    @Published var certificateFeedText = UserDefaults.standard.string(forKey: "certificateFeed") ?? LoopbackConfig.defaultFeed {
+    @Published var certificateFeedText = LoopbackConfig.initialFeed(saved: UserDefaults.standard.string(forKey: "certificateFeed")) {
         didSet { UserDefaults.standard.set(certificateFeedText, forKey: "certificateFeed") }
     }
     @Published var accessKeyDraft = ""

@@ -9,6 +9,7 @@ import SwiftUI
 /// Extra changes to make to an app before signing it, with the option to keep the switches as defaults.
 struct SigningOptionsView: View {
     @ObservedObject var model: SigningModel
+    var showDeveloperTools = false
     @EnvironmentObject private var credentials: CredentialsModel
     @State private var saved = false
     @State private var pickedIcon: PhotosPickerItem?
@@ -38,7 +39,7 @@ struct SigningOptionsView: View {
                     WaxDivider()
                     field("Minimum iOS", text: binding(\.minimumOSVersion), placeholder: model.ipaInfo?.minimumOSVersion ?? "Keep")
                 }
-                note("For this app only. Leave a field empty to keep the app's own value.")
+                note("Empty fields keep the original value.")
 
                 WaxPanel {
                     iconRow
@@ -46,11 +47,13 @@ struct SigningOptionsView: View {
                     profileRow
                     WaxDivider()
                     #if WAX_DEVELOPMENT
-                    entitlementsRow
-                    WaxDivider()
-                    Toggle("Require every requested capability", isOn: $model.strictEntitlements)
-                        .tint(Wax.link).padding(.vertical, 10)
-                    Text("Strict mode refuses signing when a profile cannot grant requested entitlements. Per-bundle profiles can be changed in the signing preview; any change requires preparing again.").font(.footnote).foregroundStyle(Wax.sub)
+                    if showDeveloperTools {
+                        entitlementsRow
+                        WaxDivider()
+                        Toggle("Require every requested capability", isOn: $model.strictEntitlements)
+                            .tint(Wax.link).padding(.vertical, 10)
+                        Text("Strict mode refuses signing when a profile cannot grant requested entitlements. Per-bundle profiles can be changed in the signing preview; any change requires preparing again.").font(.footnote).foregroundStyle(Wax.sub)
+                    }
                     #endif
                 }
                 if let fileProblem { note(fileProblem).foregroundStyle(Wax.bad) }
@@ -102,10 +105,12 @@ struct SigningOptionsView: View {
                 .overlay(RoundedRectangle(cornerRadius: Wax.radius, style: .continuous).stroke(Wax.line, lineWidth: 1))
 
                 #if WAX_DEVELOPMENT
-                WaxSectionLabel(text: "Advanced: app settings file (Info.plist)")
-                plistEditor
-                note("Each app carries a settings file. Add a key to set it, or choose Delete to remove one. This is for people who know the key they want; the bundle ID has its own option above.")
+                if showDeveloperTools {
+                    WaxSectionLabel(text: "Advanced: app settings file (Info.plist)")
+                    plistEditor
+                    note("Each app carries a settings file. Add a key to set it, or choose Delete to remove one. This is for people who know the key they want; the bundle ID has its own option above.")
 
+                }
                 #endif
 
                 VStack(spacing: 4) {

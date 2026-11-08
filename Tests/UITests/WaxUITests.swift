@@ -122,6 +122,41 @@ final class WaxUITests: XCTestCase {
         capture("single-wax-tab-bar")
     }
 
+    func testInstallHostOpensDirectlyFromSign() {
+        let host = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Install host")).firstMatch
+        XCTAssertTrue(host.waitForExistence(timeout: 5))
+        host.tap()
+        XCTAssertTrue(app.navigationBars["Install host"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Installability Passport"].exists)
+        XCTAssertFalse(app.buttons["Prepare signing preview"].exists)
+        capture("direct-install-host")
+    }
+
+    /// Run after building/installing WaxDev on this simulator; normal-only runs can select the other cases.
+    func testDeveloperToolsStayInSettingsAndAnimationPreviewResponds() {
+        app.terminate()
+        app = XCUIApplication(bundleIdentifier: "io.github.dylldev.wax.dev")
+        app.launchArguments = ["-firstRun.completed", "YES"]
+        app.launch()
+        XCTAssertFalse(app.buttons["Prepare signing preview"].exists)
+        XCTAssertFalse(app.staticTexts["Installability Passport"].exists)
+        tap("Settings")
+        let developer = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Developer")).firstMatch
+        for _ in 0..<5 where !developer.isHittable { app.swipeUp() }
+        XCTAssertTrue(developer.isHittable)
+        developer.tap()
+        XCTAssertTrue(app.navigationBars["Developer"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Prepare signing preview"].exists)
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Certificate tests")).firstMatch.exists)
+        tap("Animation preview")
+        let progress = app.sliders["Preview progress"]
+        XCTAssertTrue(progress.waitForExistence(timeout: 5))
+        progress.adjust(toNormalizedSliderPosition: 0.25)
+        capture("developer-animation-quarter")
+        progress.adjust(toNormalizedSliderPosition: 0.8)
+        capture("developer-animation-eighty")
+    }
+
     func testBottomOptionsStayAboveTabBarAtLargestText() throws {
         app.terminate()
         app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]

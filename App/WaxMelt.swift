@@ -2,18 +2,23 @@ import SwiftUI
 
 /// A candle melting into a pool. `progress` is the real progress of the job (0...1): the candle shrinks and its flame
 /// with it, the pool grows, and at 1 the candle is gone, the flame is out and the seal is pressed into the pool.
-struct WaxMelt: View {
-    let progress: Double
+struct WaxMelt: View, Animatable {
+    var progress: Double
     var height: CGFloat = 230
     var isVisible = true
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    var animatableData: Double {
+        get { progress }
+        set { progress = newValue }
+    }
+
     private var animates: Bool { isVisible && scenePhase == .active && !reduceMotion && progress < 1 }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !animates)) { timeline in
-            Canvas { context, size in
+        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !animates)) { timeline in
+            Canvas(rendersAsynchronously: true) { context, size in
                 draw(&context, size, time: animates ? timeline.date.timeIntervalSinceReferenceDate : 0)
             }
         }
@@ -129,13 +134,19 @@ extension WaxMelt {
 }
 
 #if WAX_DEVELOPMENT
-/// Debug only (launch argument `-meltprogress 0.5`): the melt on its own at a fixed progress.
+/// Developer Settings preview; does not run a signing or installation job.
 struct MeltDemo: View {
-    let progress: Double
+    @State private var progress: Double
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(progress: Double) { _progress = State(initialValue: progress) }
+
     var body: some View {
         VStack(spacing: 12) {
             Text("Melting wax into your app").font(.callout.weight(.semibold)).foregroundStyle(Wax.text)
             WaxMelt(progress: progress)
+                .animation(reduceMotion ? nil : .linear(duration: 0.25), value: progress)
+            Slider(value: $progress, in: 0...1).accessibilityLabel("Preview progress")
             Text("\(Int(progress * 100))%").font(.title.monospacedDigit().bold()).foregroundStyle(Wax.text)
         }
         .padding(24)

@@ -49,9 +49,7 @@ struct InstallSection: View {
 
     private var phoneSection: some View {
         Section("This iPhone") {
-            Text("Wax hands the signed app to iOS from this phone, so you need no server, bucket or account. "
-                 + "It uses a free certificate the project publishes and renews. While Wax is open iOS downloads the app; "
-                 + "keep Wax on screen until the install starts. If it does not work, use My server or Bucket.")
+            Text("Keep Wax open while iOS downloads the app. If this host fails, use My server or export the signed IPA.")
                 .font(.footnote).foregroundStyle(Wax.sub)
             LabeledContent("Certificate feed") { TextField("https://…", text: $model.certificateFeedText)
                 .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL).font(.footnote)

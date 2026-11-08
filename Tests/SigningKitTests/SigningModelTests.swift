@@ -42,6 +42,81 @@ final class SigningModelTests: XCTestCase {
         model = nil
     }
 
+    func testOneTapSigningProducesVerifiedSavedOutput() async throws {
+        let library = LibraryModel(library: IPALibrary(root: work.appendingPathComponent("OneTapShelf")), announce: { _ in })
+        let signer = SigningModel(credentials: credentials, library: library, background: background)
+        let input = work.appendingPathComponent("one-tap.ipa")
+        try FileManager.default.copyItem(at: Fixtures.ipa, to: input)
+        signer.picked(ipa: input)
+        for _ in 0..<500 where signer.busyMessage != nil { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertNotNil(signer.ipaInfo, signer.errorText ?? "IPA not loaded")
+        signer.certificateID = certificate.id
+
+        let task = try XCTUnwrap(signer.sign())
+        await task.value
+
+        let report = try XCTUnwrap(signer.report, signer.errorText ?? "Signing stopped at a review instead of producing output")
+        XCTAssertTrue(report.checkFailures.isEmpty)
+        XCTAssertTrue(signer.shelfSaveState.confirmedSaved)
+        XCTAssertEqual(library.signed.count, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: report.output.path))
+        XCTAssertNil(signer.passportReport)
+        XCTAssertFalse(signer.runningSign)
+    }
+
+    func testOneTapSigningAndInstallReachesTheHost() async throws {
+        struct Secrets: SecretStore {
+            func load() -> Data? { Data(String(repeating: "t", count: 40).utf8) }
+            func save(_ data: Data) throws {}
+            func delete() {}
+        }
+        struct Publisher: InstallHost {
+            func publish(ipa: URL, bundleIdentifier: String, version: String, build: String, title: String,
+                         progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
+                URL(string: "itms-services://?action=download-manifest&url=https://fixture.example/manifest")!
+            }
+        }
+        let previousHost = UserDefaults.standard.object(forKey: "installHost")
+        let previousServer = UserDefaults.standard.object(forKey: "otaServer")
+        defer {
+            UserDefaults.standard.set(previousHost, forKey: "installHost")
+            UserDefaults.standard.set(previousServer, forKey: "otaServer")
+        }
+        let ota = OTAInstallModel(store: Secrets(), bucketStore: Secrets(),
+                                  cleanupStore: BucketCleanupStore(file: work.appendingPathComponent("automatic-journal")),
+                                  sweepOnStart: false, prepareServer: { _, _ in .init(publisher: Publisher()) })
+        ota.hostKind = .server
+        ota.serverText = "https://fixture.example"
+
+        await model.signAndInstall(ota: ota, open: { _ in })
+
+        XCTAssertNotNil(model.report, model.errorText ?? "No signed output")
+        XCTAssertEqual(ota.state, .handedToiOS)
+        XCTAssertNotNil(model.readyLink)
+        XCTAssertNil(model.passportReport)
+        XCTAssertFalse(model.installing)
+    }
+
+    func testAutomaticSigningCannotPublishAStaleResultAfterEditsChange() async throws {
+        let task = try XCTUnwrap(model.sign())
+        model.edits.displayName = "Changed during automatic signing"
+        await task.value
+        XCTAssertNil(model.report)
+        XCTAssertNil(model.passportReport)
+        XCTAssertFalse(model.runningSign)
+    }
+
+    func testBackgroundExpirationStopsAutomaticPreparation() async throws {
+        expireBackground = nil
+        let task = try XCTUnwrap(model.sign())
+        try XCTUnwrap(expireBackground)()
+        await task.value
+        XCTAssertNil(model.report)
+        XCTAssertNil(model.passportReport)
+        XCTAssertFalse(model.runningSign)
+        XCTAssertEqual(model.errorText, "Signing stopped before it finished. Try again with Wax open.")
+    }
+
     func testCanceledPreparationCannotProduceAReview() async throws {
         let cancellation = SigningCancellation()
         cancellation.cancel()
@@ -53,10 +128,10 @@ final class SigningModelTests: XCTestCase {
     }
 
     func testBackgroundExpirationStopsSigningBeforePublication() async throws {
-        let preparation = try XCTUnwrap(model.sign())
+        let preparation = try XCTUnwrap(model.sign(reviewBeforeSigning: true))
         await preparation.value
         XCTAssertTrue(try XCTUnwrap(model.passportReport).canContinue)
-        let task = try XCTUnwrap(model.sign())
+        let task = try XCTUnwrap(model.sign(reviewBeforeSigning: true))
         try XCTUnwrap(expireBackground)()
         await task.value
         XCTAssertNil(model.report, "Expired work must stop before it publishes a signed output")
@@ -81,7 +156,7 @@ final class SigningModelTests: XCTestCase {
                                   cleanupStore: BucketCleanupStore(file: work.appendingPathComponent("journal")), defaults: defaults,
                                   sweepOnStart: false, prepareServer: { _, _ in .init(publisher: Publisher()) })
         ota.hostKind = .server; ota.serverText = "https://fixture.example"
-        let preparation = try XCTUnwrap(model.sign())
+        let preparation = try XCTUnwrap(model.sign(reviewBeforeSigning: true))
         await preparation.value
         XCTAssertTrue(try XCTUnwrap(model.passportReport).canContinue)
         expireBackground = nil
@@ -95,7 +170,7 @@ final class SigningModelTests: XCTestCase {
     }
 
     func testInputChangeDiscardsPreparationStillInFlight() async throws {
-        let task = try XCTUnwrap(model.sign())
+        let task = try XCTUnwrap(model.sign(reviewBeforeSigning: true))
         model.edits.displayName = "Changed during preparation"
         await task.value
         XCTAssertNil(model.passportReport, "The old input snapshot must not reappear after invalidation")
@@ -104,10 +179,10 @@ final class SigningModelTests: XCTestCase {
     }
 
     func testReviewedPreparationContinuesToASignedResult() async throws {
-        let preparation = try XCTUnwrap(model.sign())
+        let preparation = try XCTUnwrap(model.sign(reviewBeforeSigning: true))
         await preparation.value
         XCTAssertTrue(try XCTUnwrap(model.passportReport).canContinue)
-        let signing = try XCTUnwrap(model.sign())
+        let signing = try XCTUnwrap(model.sign(reviewBeforeSigning: true))
         await signing.value
         let report = try XCTUnwrap(model.report, model.errorText ?? "No signing result")
         XCTAssertTrue(report.checkFailures.isEmpty)
@@ -123,9 +198,9 @@ final class SigningModelTests: XCTestCase {
         signer.picked(ipa: input)
         for _ in 0..<500 where signer.busyMessage != nil { try await Task.sleep(for: .milliseconds(10)) }
         signer.certificateID = certificate.id
-        let preparation = try XCTUnwrap(signer.sign()); await preparation.value
+        let preparation = try XCTUnwrap(signer.sign(reviewBeforeSigning: true)); await preparation.value
         XCTAssertFalse(try XCTUnwrap(signer.passportReport).findings.contains { $0.id == "identity-continuity" }, "nothing to compare with yet")
-        let signing = try XCTUnwrap(signer.sign()); await signing.value
+        let signing = try XCTUnwrap(signer.sign(reviewBeforeSigning: true)); await signing.value
         XCTAssertTrue(signer.shelfSaveState.confirmedSaved, signer.errorText ?? "\(signer.shelfSaveState)")
 
         let entry = try XCTUnwrap(library.signed.first)
@@ -135,7 +210,7 @@ final class SigningModelTests: XCTestCase {
         XCTAssertFalse(record.profiles.isEmpty)
 
         signer.clearResult()
-        let next = try XCTUnwrap(signer.sign()); await next.value
+        let next = try XCTUnwrap(signer.sign(reviewBeforeSigning: true)); await next.value
         let row = try XCTUnwrap(signer.passportReport?.findings.first { $0.id == "identity-continuity" })
         XCTAssertEqual(row.status, .pass, row.detail)
         XCTAssertTrue(row.title.contains("Updates"), row.title)
@@ -143,19 +218,19 @@ final class SigningModelTests: XCTestCase {
     }
 
     func testChangingStrictEntitlementsDiscardsACachedPreparation() async throws {
-        let preparation = try XCTUnwrap(model.sign())
+        let preparation = try XCTUnwrap(model.sign(reviewBeforeSigning: true))
         await preparation.value
         XCTAssertNotNil(model.passportReport)
         model.strictEntitlements = true          // the reviewed check was made under the permissive policy
         XCTAssertNil(model.passportReport, "a preparation made under another entitlement policy must not be signed")
         XCTAssertFalse(model.runningSign)
-        let again = try XCTUnwrap(model.sign(), "a fresh preparation must be possible after the policy change")
+        let again = try XCTUnwrap(model.sign(reviewBeforeSigning: true), "a fresh preparation must be possible after the policy change")
         await again.value
         XCTAssertNotNil(model.passportReport)
     }
 
     func testAnotherIPACannotReplaceTheInputWhileSigningIsBusy() async throws {
-        let task = try XCTUnwrap(model.sign())
+        let task = try XCTUnwrap(model.sign(reviewBeforeSigning: true))
         let other = work.appendingPathComponent("other.ipa")
         try FileManager.default.copyItem(at: Fixtures.ipa, to: other)
         model.picked(ipa: other)
@@ -166,7 +241,7 @@ final class SigningModelTests: XCTestCase {
 
     func testMinimumIOSFindingUsesThePreparedAppEdits() async throws {
         model.edits.minimumOSVersion = "99.0"
-        let task = try XCTUnwrap(model.sign())
+        let task = try XCTUnwrap(model.sign(reviewBeforeSigning: true))
         await task.value
         let finding = try XCTUnwrap(model.passportReport?.findings.first { $0.id == "minimum-ios" })
         XCTAssertEqual(finding.status, .warning)
@@ -174,8 +249,8 @@ final class SigningModelTests: XCTestCase {
     }
 
     func testSecondSignCannotStartWhilePreparing() async throws {
-        let task = try XCTUnwrap(model.sign())
-        XCTAssertNil(model.sign(), "Only one preparation may run at a time")
+        let task = try XCTUnwrap(model.sign(reviewBeforeSigning: true))
+        XCTAssertNil(model.sign(reviewBeforeSigning: true), "Only one preparation may run at a time")
         await task.value
         XCTAssertNotNil(model.passportReport)
     }

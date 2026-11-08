@@ -28,7 +28,7 @@ Have your `.p12` or `.pfx` certificate, its password, a matching `.mobileprovisi
 2. **Import both signing files.** Open Wax, go to **Settings → Certificates & profiles**, and choose **Import a certificate**. Pick your `.p12` or `.pfx` and enter its password. Then choose **Import a provisioning profile** and pick the matching `.mobileprovision` file.
 3. **Choose an app.** Return to **Sign**, tap **Choose an app**, and pick your IPA. Tap the signing identity row and choose the certificate you imported.
 4. **Check the install host.** Use **This iPhone** for an on-phone install. If the host needs setup, open **Settings → Install host**. Official releases include a default certificate feed; a build without one needs its own feed or another host. [Host setup and limits](#what-it-does) explains the choices.
-5. **Sign and install.** Tap **Sign & Install**, review Wax's checks, then tap **Continue to install** if the checks allow it. Accept the iOS install prompt and keep Wax on screen while iOS takes the file. Open the installed app to confirm it works; Wax handing the file to iOS does not confirm installation or launch.
+5. **Sign and install.** Tap **Sign & Install**. Wax checks the inputs, signs the app and starts delivery without a separate review step. Accept the iOS install prompt and keep Wax on screen while iOS takes the file. Open the installed app to confirm it works; Wax handing the file to iOS does not confirm installation or launch.
 
 If installation stops, keep your original IPA. Export any signed copy Wax retained, or retry delivery if an install action is available. You do not need to delete your signing files to retry.
 
@@ -39,7 +39,7 @@ If installation stops, keep your original IPA. Export any signed copy Wax retain
 ## What it does
 - **Sign on the phone** with your own `.p12` and `.mobileprovision`. The certificate and its private key are kept in the iPhone Keychain, this device only; the profile is stored in app-private storage, excluded from iCloud backups.
 - **Install** the signed app with `itms-services`, from one of three places. All are free:
-  - **This iPhone** (default, experimental): Wax serves the app to iOS from the phone itself, using a certificate for a name that points at `127.0.0.1`. No server of yours, no bucket, no account. This repository ships no official feed: the owner builds the app with `WAX_DEFAULT_FEED` (the published certificate file) and `WAX_INSTALL_DOMAIN` (the name it may publish), and anyone else points Settings at a feed of their own choice, which Wax then chain-checks. The feed's two free public services (wherever `cert.json` sits — for this project GitHub Pages — and Let's Encrypt) need to stay up for renewals. iOS shows the certificate's name in the install prompt.
+  - **This iPhone** (default, experimental): Wax serves the app to iOS from the phone itself, using a certificate for a name that points at `127.0.0.1`. No server of yours, no bucket, no account. Normal builds include the public official certificate feed and its allowed hostname. You can choose another feed in Settings; Wax still checks its certificate chain. The feed's two free public services (wherever `cert.json` sits — for this project GitHub Pages — and Let's Encrypt) need to stay up for renewals. iOS shows the certificate's name in the install prompt.
   - **My server**: any small HTTPS server you run. `Server/wax-ota/install.sh` sets one up on a fresh Ubuntu VPS (Oracle Always Free works).
   - **Bucket** (experimental): any S3-compatible bucket you own. Tested only against the AWS signing examples, not yet against a real provider.
 - **Sources**: add AltStore/Feather-style source links, or a direct IPA link, and download apps to sign. Wax ships with no sources and does not choose what you load.
@@ -62,7 +62,11 @@ xcodebuild -scheme LocalIPASigner -destination 'generic/platform=iOS Simulator' 
 Server and script tests: `python3 -m unittest discover -s Server/wax-ota -p 'test_*.py'`, `bash scripts/test_make_install_cert.sh`, `bash scripts/test_publish_prep.sh`.
 
 ## Building a release
-The official install feed is not stored in the source. A release build injects it:
+Normal and Dev builds include the public official install feed by default:
+```bash
+scripts/build-release-ipa.sh dist
+```
+To use your own feed, override its URL and allowed hostname together:
 ```bash
 WAX_DEFAULT_FEED=https://<you>.github.io/<repo>/cert.json WAX_INSTALL_DOMAIN=<name>.duckdns.org scripts/build-release-ipa.sh dist
 ```
@@ -72,8 +76,8 @@ WAX_DEFAULT_FEED=https://<you>.github.io/<repo>/cert.json WAX_INSTALL_DOMAIN=<na
 ```
 This writes `Wax-Dev-<version>.ipa` and its `.sha256`. In Xcode, choose the `WaxDev` scheme, which uses the `Development` configuration. App-hosted test schemes also use this configuration to exercise the developer tools.
 
-Without the two variables the build has no official feed and
-"This iPhone" needs a feed address typed in Settings.
+Set both variables to empty strings for a build without an official feed; "This iPhone" then needs
+an address in Settings. These commands do not publish or install anything.
 
 ## Security
 See [`SECURITY.md`](SECURITY.md). Report problems privately through GitHub's "Report a vulnerability".

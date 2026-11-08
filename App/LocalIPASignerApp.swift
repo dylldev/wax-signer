@@ -7,9 +7,9 @@ import UIKit
 final class Router: ObservableObject {
     enum Tab: Int { case sources, ipa, sign, settings }
     /// Screens that can be pushed inside Settings.
-    enum SettingsRoute: Hashable { case credentials, signingOptions
+    enum SettingsRoute: Hashable { case credentials, signingOptions, installHost
         #if WAX_DEVELOPMENT
-        case importLog
+        case developer
         #endif
     }
 
@@ -30,6 +30,7 @@ final class Router: ObservableObject {
     }
 
     func openCredentials() { settingsPath = [.credentials]; tab = .settings }
+    func openInstallHost() { settingsPath = [.installHost]; tab = .settings }
 }
 
 @main
@@ -80,14 +81,7 @@ struct LocalIPASignerApp: App {
 
     var body: some Scene {
         WindowGroup {
-            #if WAX_DEVELOPMENT
-            if let i = CommandLine.arguments.firstIndex(of: "-meltprogress"), i + 1 < CommandLine.arguments.count,
-               let value = Double(CommandLine.arguments[i + 1]) {
-                MeltDemo(progress: value)   // debug only: look at the melt at a fixed progress
-            } else { appRoot }
-            #else
             appRoot
-            #endif
         }
     }
 

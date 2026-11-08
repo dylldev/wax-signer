@@ -2,6 +2,13 @@ import XCTest
 @testable import InstallKit
 
 final class SignScreenLogicTests: XCTestCase {
+    func testMissingProfileRequiresImportBeforeSigning() {
+        XCTAssertEqual(SignPrimary.resolve(hasApp: true, hasCertificates: true, certificateChosen: true,
+                                            inputIsInstallable: false, serverReady: true, hasProfiles: false), .needProfile)
+        XCTAssertEqual(SignPrimary.resolve(hasApp: true, hasCertificates: true, certificateChosen: false,
+                                            inputIsInstallable: true, serverReady: true, hasProfiles: false), .install)
+    }
+
     func testPhaseBusyBeatsErrorBeatsReport() {
         XCTAssertEqual(SignPhase.resolve(busy: true, hasError: true, hasReport: true), .signing)
         XCTAssertEqual(SignPhase.resolve(busy: false, hasError: true, hasReport: true), .failed)

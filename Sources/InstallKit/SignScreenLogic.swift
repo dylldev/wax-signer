@@ -88,12 +88,14 @@ public enum InstallSetupPanel: Equatable, Sendable {
 public enum SignPrimary: Equatable, Sendable {
     case needApp
     case needIdentity(canImport: Bool)
+    case needProfile
     case needServer
     case install
 
     public static func resolve(hasApp: Bool, hasCertificates: Bool, certificateChosen: Bool,
-                               inputIsInstallable: Bool, serverReady: Bool) -> SignPrimary {
+                               inputIsInstallable: Bool, serverReady: Bool, hasProfiles: Bool = true) -> SignPrimary {
         guard hasApp else { return .needApp }
+        if certificateChosen && !hasProfiles { return .needProfile }
         if !certificateChosen && !inputIsInstallable { return .needIdentity(canImport: !hasCertificates) }
         return serverReady ? .install : .needServer
     }
@@ -102,6 +104,7 @@ public enum SignPrimary: Equatable, Sendable {
         switch self {
         case .needApp: "Choose an app"
         case .needIdentity(let canImport): canImport ? "Import signing files" : "Choose an identity"
+        case .needProfile: "Import a profile"
         case .needServer: "Set up installation"
         case .install: "Sign & Install"
         }
@@ -112,6 +115,7 @@ public enum SignPrimary: Equatable, Sendable {
         case .needApp: "Pick an IPA to sign."
         case .needIdentity(let canImport):
             canImport ? "Bring your own .p12 certificate and .mobileprovision profile. Wax does not provide them." : "Pick the certificate to sign with."
+        case .needProfile: "Choose the matching .mobileprovision file."
         case .needServer: "Choose This iPhone, My server or Bucket in Settings."
         case .install: "Signs the app, uploads it, and asks iOS to install."
         }
