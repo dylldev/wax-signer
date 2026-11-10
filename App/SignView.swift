@@ -306,10 +306,13 @@ struct SignView: View {
         }
     }
 
-    /// 0...1 for the whole job, from the real signing and upload progress weighted by expected time.
+    /// 0...1 for the whole job. Each host reports what it really measured: signing first, then the upload on a
+    /// remote host, or the handoff on this iPhone. Only the end of the route is 100.
     private var jobFraction: Double {
-        let signing = (model.report != nil || uploading) ? 1 : model.signFraction
-        return model.jobProgress(uploadFraction: uploadProgress ?? 0, exportOnly: exportRun).overall(sign: signing, upload: uploadProgress ?? 0)
+        SignProgress.fraction(signFraction: model.signFraction, signed: model.report != nil,
+                              uploading: uploading, uploadFraction: uploadProgress,
+                              handedToHost: handedToiOS, exportOnly: exportRun,
+                              remoteHost: ota.hostKind != .phone)
     }
 
     /// While Wax works: the melting wax, the percent, the stage, and the engine's own words underneath.

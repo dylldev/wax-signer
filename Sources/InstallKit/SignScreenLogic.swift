@@ -44,8 +44,29 @@ public enum SignStage: String, Equatable, Sendable, CaseIterable {
     }
 }
 
-/// One step of the Sign screen's setup card: what it needs, and what to do about it while it is missing.
-/// Once the step is set, the row shows the value instead of these words.
+/// How much of the melt to show. Only measured work counts: the run starts at 0, follows the signer's own
+/// fraction, and reaches 1 only when the host really has the app. A reserved install session or an "installing"
+/// flag is not progress, so neither may pin the melt at the end before signing has even started.
+public enum SignProgress {
+    public static func fraction(signFraction: Double, signed: Bool, uploading: Bool, uploadFraction: Double?,
+                                handedToHost: Bool, exportOnly: Bool, remoteHost: Bool) -> Double {
+        let sign = signed || uploading || handedToHost ? 1 : clamp(signFraction)
+        if exportOnly { return sign }
+        if remoteHost {
+            let upload = uploading ? clamp(uploadFraction ?? 0) : (handedToHost ? 1 : 0)
+            return (sign + upload) / 2
+        }
+        // On this iPhone the last stretch is the handoff, so signing alone stops just short of the end.
+        return handedToHost ? 1 : sign * 0.92
+    }
+
+    private static func clamp(_ value: Double) -> Double {
+        if value.isNaN { return 0 }
+        return min(1, max(0, value))
+    }
+}
+
+/// One step of the Sign screen's setup card: what it needs, and what to do about it while it is missing./// Once the step is set, the row shows the value instead of these words.
 public struct SignSetupStep: Equatable, Sendable {
     public let icon: String
     public let title: String
