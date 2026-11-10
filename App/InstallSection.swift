@@ -127,8 +127,7 @@ struct InstallSection: View {
 
     @ViewBuilder private var setupFields: some View {
         Text("Wax sends the signed app to your own HTTPS server, and iOS installs it from there. The server deletes it "
-             + "after a while (6 hours by default), not when the install finishes. "
-             + "iOS does not allow installing from a server on the phone itself.")
+             + "after a while (6 hours by default), not when the install finishes.")
             .font(.footnote).foregroundStyle(Wax.sub)
 
         PasteButton(payloadType: String.self) { strings in
