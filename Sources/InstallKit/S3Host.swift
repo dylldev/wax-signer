@@ -128,8 +128,16 @@ public struct S3Host: InstallHost {
         r.timeoutInterval = 60
         r.setValue("bytes=\(size - window)-\(size - 1)", forHTTPHeaderField: "Range")
         let result: (body: Data, code: Int)
-        do { result = try await InstallTransport.send(r, session: session, budget: InstallTransport.Budget(maxBytes: window, deadline: 60)) }
-        catch { throw Failure(message: "Could not read the stored app back from the bucket: \(error.localizedDescription)") }
+        do {
+            // A server that ignores the range is allowed to answer with the whole object; the budget stops a
+            // multi-hundred-megabyte second download before it starts.
+            result = try await InstallTransport.send(r, session: session,
+                                                     budget: InstallTransport.Budget(maxBytes: max(window, 1024 * 1024), deadline: 60))
+        } catch InstallTransport.Failure.tooLarge {
+            throw Failure(message: "The bucket did not return the requested part of the stored app, so Wax could not confirm what it holds. Check the endpoint or the proxy in front of the bucket; no install link was handed over.")
+        } catch {
+            throw Failure(message: "Could not read the stored app back from the bucket: \(error.localizedDescription)")
+        }
         guard result.code == 206 || result.code == 200 else {
             throw Failure(message: "The bucket stored the app but did not return it (HTTP \(result.code)). No install link was handed over.")
         }

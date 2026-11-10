@@ -25,8 +25,11 @@ private final class BucketTransactionProtocol: URLProtocol {
                 stream.open(); defer { stream.close() }; var bytes = [UInt8](repeating: 0, count: 4096)
                 while stream.read(&bytes, maxLength: bytes.count) > 0 {}
             }
-            let body = request.httpMethod == "GET" ? Data("<plist><dict/></plist>".utf8) : Data()
-            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+            // A bucket answers a presigned ranged GET with just the requested bytes; the synthetic IPA is
+            // three bytes, and the tail check reads exactly those back.
+            let ranged = request.httpMethod == "GET" && request.value(forHTTPHeaderField: "Range") != nil
+            let body = ranged ? Data([1, 2, 3]) : (request.httpMethod == "GET" ? Data("<plist><dict/></plist>".utf8) : Data())
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: ranged ? 206 : 200, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: body); client?.urlProtocolDidFinishLoading(self)
         } catch { client?.urlProtocol(self, didFailWithError: error) }
     }
