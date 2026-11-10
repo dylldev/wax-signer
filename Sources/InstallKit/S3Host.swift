@@ -53,6 +53,9 @@ public struct S3Host: InstallHost {
             try await put("manifest.plist", file: tmp, type: "text/xml", progress: { _ in })
             let manifestLink = S3Signer.presignGET(objectURL("manifest.plist"), credentials: credentials, expires: Self.linkLifetime, date: now())
             try await verifyReachable(manifestLink)
+            // iOS fetches the app through its own signed URL. Read the stored tail back so a proxy that
+            // truncated or swapped the object cannot hand over a link that fails on the phone.
+            try await verifyServedIPA(ipaLink, local: ipa)
             return OTALink.installURL(manifest: manifestLink)
         } catch {
             await cleanup()
@@ -104,6 +107,35 @@ public struct S3Host: InstallHost {
         do { result = try await InstallTransport.sendUpload(r, file: file, session: session, progress: progress) }
         catch { throw Failure(message: "Could not reach the bucket: \(error.localizedDescription)") }
         guard (200..<300).contains(result.code) else { throw Self.explain(result.code, body: String(decoding: result.body.prefix(4096), as: UTF8.self)) }
+    }
+
+    /// Reads back the last 64 KiB of the stored object and compares it with the uploaded file.
+    /// The bucket must answer the ranged GET; one that cannot confirm its own bytes does not get a link.
+    private func verifyServedIPA(_ link: URL, local: URL) async throws {
+        let size = (try? local.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard size > 0, let handle = try? FileHandle(forReadingFrom: local) else {
+            throw Failure(message: "The signed app could not be read back before the install link was handed over.")
+        }
+        defer { try? handle.close() }
+        let window = min(64 * 1024, size)
+        do { try handle.seek(toOffset: UInt64(size - window)) } catch {
+            throw Failure(message: "The signed app could not be read back before the install link was handed over.")
+        }
+        guard let expected = (try? handle.read(upToCount: window)) ?? nil, expected.count == window else {
+            throw Failure(message: "The signed app could not be read back before the install link was handed over.")
+        }
+        var r = URLRequest(url: link)
+        r.timeoutInterval = 60
+        r.setValue("bytes=\(size - window)-\(size - 1)", forHTTPHeaderField: "Range")
+        let result: (body: Data, code: Int)
+        do { result = try await InstallTransport.send(r, session: session, budget: InstallTransport.Budget(maxBytes: window, deadline: 60)) }
+        catch { throw Failure(message: "Could not read the stored app back from the bucket: \(error.localizedDescription)") }
+        guard result.code == 206 || result.code == 200 else {
+            throw Failure(message: "The bucket stored the app but did not return it (HTTP \(result.code)). No install link was handed over.")
+        }
+        guard result.body == expected else {
+            throw Failure(message: "The bucket returned different bytes than Wax uploaded, so the app would not install. Check for a proxy or a failed upload; no link was handed over.")
+        }
     }
 
     private func verifyReachable(_ manifest: URL) async throws {
