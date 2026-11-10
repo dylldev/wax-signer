@@ -231,6 +231,24 @@ final class ProfileSelectionTests: XCTestCase {
         }
     }
 
+    /// An invalid CMS profile must be refused on the signing path, not merely warned about.
+    /// The refusal must happen before any file in the app tree changes.
+    func testSignRefusesInvalidCMSProfileBeforeTouchingTheApp() throws {
+        let cms = try CMSSignedData.parse(FixtureData.profileWildcardAll)
+        let content = try XCTUnwrap(cms.encapsulatedContent)
+        let unsigned = DER.sequence([DER.oid("1.2.840.113549.1.7.2"), DER.tlv(0xa0, DER.sequence([
+            DER.integer(1), DER.setOf([]), DER.sequence([DER.oid("1.2.840.113549.1.7.1"), DER.tlv(0xa0, DER.octetString(content))]), DER.setOf([])
+        ]))])
+        let app = try makeWorkingApp()
+        let before = try Data(contentsOf: app.appendingPathComponent("Info.plist"))
+        XCTAssertThrowsError(try sign(app, pool: [unsigned])) {
+            guard case .profileRejected(_, _, let reason) = $0 as? SigningError else { return XCTFail("\($0)") }
+            XCTAssertTrue(reason.contains("CMS signature invalid"), reason)
+        }
+        XCTAssertEqual(try Data(contentsOf: app.appendingPathComponent("Info.plist")), before,
+                       "an invalid profile must be refused before the app tree is modified")
+    }
+
     func testEmptyPoolSaysSo() throws {
         XCTAssertThrowsError(try sign(try makeWorkingApp(), pool: [])) {
             guard case .noCompatibleProfile(_, _, let reasons) = $0 as? SigningError else { return XCTFail("\($0)") }

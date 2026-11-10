@@ -85,14 +85,25 @@ public struct SigningPreflightReport: Equatable {
 public enum BundleSigner {
     /// Single-profile convenience. Behaves as before: the one profile must serve every bundle that needs one.
     public static func sign(appDirectory: URL, identity: CodeSigningIdentity, certificateTeamID: String?,
-                            profile: ProvisioningProfile, options: SigningOptions = SigningOptions()) throws -> SigningResult {
+                            profile: ProvisioningProfile, options: SigningOptions = SigningOptions(),
+                            profilePolicy: SigningPlan.ProfilePolicy = .requireValidCMS) throws -> SigningResult {
         try sign(appDirectory: appDirectory, identity: identity, certificateTeamID: certificateTeamID,
-                 profiles: ProfileSet(single: profile), options: options)
+                 profiles: ProfileSet(single: profile), options: options, profilePolicy: profilePolicy)
     }
 
     public static func sign(appDirectory: URL, identity: CodeSigningIdentity, certificateTeamID: String?,
-                            profiles: ProfileSet, options: SigningOptions = SigningOptions()) throws -> SigningResult {
+                            profiles: ProfileSet, options: SigningOptions = SigningOptions(),
+                            profilePolicy: SigningPlan.ProfilePolicy = .requireValidCMS) throws -> SigningResult {
         var ctx = try prepare(appDirectory: appDirectory, identity: identity, certificateTeamID: certificateTeamID, profiles: profiles, options: options)
+        // Same trust rule as `plan`: an invalid CMS must be refused before any file changes.
+        if profilePolicy == .requireValidCMS {
+            for selection in ctx.result.profileSelections {
+                if case .invalid(let reason) = selection.signatureStatus {
+                    throw SigningError.profileRejected(bundle: selection.bundlePath, profile: selection.profileName,
+                                                       reason: "CMS signature invalid: \(reason)")
+                }
+            }
+        }
         // Validate all inputs before changing any binary in the app tree.
         ctx.result.warnings.append(contentsOf: try FatMachO.thinTree(at: appDirectory, scratchDirectory: options.ownedScratchDirectory, checkpoint: { try options.check() }))
         try options.check()
