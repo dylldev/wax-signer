@@ -20,6 +20,8 @@ struct InstallSection: View {
     var eligibilityUnknown = false
     @State private var editing = false
     @State private var forgetting: String?
+    /// Off by default: a signed app can be hundreds of megabytes, and cellular plans are not free.
+    @AppStorage("allowCellularUploads") private var allowCellularUploads = false
 
     var body: some View {
         Group {
@@ -35,6 +37,13 @@ struct InstallSection: View {
         case .phone: phoneSection
         case .bucket: bucketSection
         case .server: serverSection
+        }
+        if model.hostKind != .phone {
+            Section("Uploading") {
+                Toggle("Upload over cellular", isOn: $allowCellularUploads)
+                Text("Off by default so a large app does not arrive as a surprise bill. The phone host never uses the network.")
+                    .font(.footnote).foregroundStyle(Wax.sub)
+            }
         }
         }
         .confirmationDialog("Forget saved access?", isPresented: Binding(get: { forgetting != nil }, set: { if !$0 { forgetting = nil } }), titleVisibility: .visible) {

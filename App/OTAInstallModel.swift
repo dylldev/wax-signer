@@ -106,6 +106,8 @@ final class OTAInstallModel: ObservableObject {
     private let cleanupStore: BucketCleanupStore
     private let cleanup: @Sendable (S3Credentials, String, String) async throws -> Void
     private let defaults: UserDefaults
+    /// One answer per upload: is the current network metered (cellular or hotspot)?
+    private let networkIsExpensive: @Sendable () async -> Bool?
     private var activeBucketRecords = Set<UUID>()
 
     /// The Keychain service name for cloud bucket keys. DO NOT RENAME: Wax has shipped under this string, and
@@ -117,6 +119,7 @@ final class OTAInstallModel: ObservableObject {
          preparePhone: ((URL) async throws -> PreparedHost)? = nil,
          prepareServer: ((OTAEndpoint, String) async throws -> PreparedHost)? = nil,
          bucketHost: @escaping (S3Credentials, String) throws -> S3Host = { try S3Host(credentials: $0, bucket: $1) },
+         networkIsExpensive: (@Sendable () async -> Bool?)? = nil,
          cleanup: @escaping @Sendable (S3Credentials, String, String) async throws -> Void = { credentials, bucket, id in
              try await S3Host(credentials: credentials, bucket: bucket, id: id).cleanupConfirmed()
          }) {
@@ -134,7 +137,8 @@ final class OTAInstallModel: ObservableObject {
         self.prepareServer = prepareServer ?? { endpoint, token in PreparedHost(publisher: OTAUploader(endpoint: endpoint, token: token)) }
         self.store = store
         self.bucketStore = bucketStore
-        self.defaults = defaults; self.cleanup = cleanup; self.bucketHost = bucketHost
+        self.defaults = defaults
+        self.networkIsExpensive = networkIsExpensive ?? { await UploadNetworkPolicy.currentPathIsExpensive() }; self.cleanup = cleanup; self.bucketHost = bucketHost
         self.cleanupStore = cleanupStore ?? BucketCleanupStore(file: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Install/bucket-cleanup-v1.json"))
         hasToken = store.load() != nil
@@ -395,6 +399,14 @@ final class OTAInstallModel: ObservableObject {
         defer { if let record = bucketRecord { activeBucketRecords.remove(record.id) } }
         do {
             try Task.checkCancellation()
+            // Refuse a metered connection before anything is written: no cleanup record, no prepared host.
+            if session.kind != .phone {
+                let expensive = await networkIsExpensive()
+                if UploadNetworkPolicy.blocksUpload(remote: true, expensive: expensive == true,
+                                                    allowCellular: defaults.bool(forKey: "allowCellularUploads")) {
+                    throw SessionError(message: UploadNetworkPolicy.message)
+                }
+            }
             let host: PreparedHost
             switch session.configuration {
             case .phone(let feed): host = try await preparePhone(feed)
