@@ -95,7 +95,7 @@ final class AppIDPrefixTests: XCTestCase {
         let credentials = try TestCredentials(), profile = try ProvisioningProfile.parse(bytes())
         var options = SigningOptions()
         options.requestedEntitlements = ["application-identifier": team + ".dev.localsigner.testapp", "keychain-access-groups": [team + ".dev.localsigner.testapp"]]
-        let result = try BundleSigner.sign(appDirectory: app, identity: credentials.signer, certificateTeamID: credentials.loaded.teamID, profile: profile, options: options)
+        let result = try BundleSigner.sign(appDirectory: app, identity: credentials.signer, certificateTeamID: credentials.loaded.teamID, profile: profile, options: options, profilePolicy: .allowInvalidForTesting)
         XCTAssertTrue(result.warnings.contains { $0.contains("keychain data") })
         XCTAssertTrue(SignatureVerifier.verifyBundle(at: app).passed)
         for (path, identifier) in [("SigningTestApp", "dev.localsigner.testapp"), ("PlugIns/TestExt.appex/TestExt", "dev.localsigner.testapp.TestExt")] {
@@ -120,7 +120,7 @@ final class AppIDPrefixTests: XCTestCase {
             try FileManager.default.removeItem(at: app.appendingPathComponent("PlugIns"))
             let profile = try ProvisioningProfile.parse(bytes(pattern: "com.example.renamed"))
             var options = SigningOptions(); options.keepBundleIdentifier = keep; options.rewriteBundleIdentifier = !keep
-            let result = try BundleSigner.sign(appDirectory: app, identity: credentials.signer, certificateTeamID: credentials.loaded.teamID, profile: profile, options: options)
+            let result = try BundleSigner.sign(appDirectory: app, identity: credentials.signer, certificateTeamID: credentials.loaded.teamID, profile: profile, options: options, profilePolicy: .allowInvalidForTesting)
             XCTAssertEqual(result.bundleIdentifierChanges.isEmpty, keep)
             let image = try MachO(Data(contentsOf: app.appendingPathComponent("SigningTestApp"))), signature = try XCTUnwrap(image.existingSignature)
             let entitlements = try XCTUnwrap(BlobReader.entitlements(inSignature: image.data[signature.offset..<(signature.offset + signature.size)]))
