@@ -26,6 +26,13 @@ final class SystemKeychainTests: XCTestCase {
         return id
     }
 
+    func testSigningKeyCustodyNeedsNoBiometricPromptAndStaysOnThisDevice() {
+        // Decided policy, not an accident: signing must work while locked or in the background, so the key is
+        // readable after the first unlock and is bound to this device only. See SECURITY.md, "Signing key custody".
+        XCTAssertEqual(SystemIdentityKeychain.accessibility as String,
+                       kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String)
+    }
+
     func testStoreFetchSignAndRemove() throws {
         let id = try storeFixture()
         let identity = try keychain.identity(id: id)
