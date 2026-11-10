@@ -20,6 +20,36 @@ final class IPALibraryTests: XCTestCase {
         return url
     }
 
+    func testEveryLibraryFileIsExcludedFromBackup() throws {
+        let lib = IPALibrary(root: root)
+        let entry = try lib.add(file: try file("a.ipa", bytes: 10), kind: .unsigned, name: "A", version: "1", bundleID: "com.a")
+        let pending = try lib.reserve(kind: .signed, name: "B")
+        try Data(repeating: 1, count: 4).write(to: try lib.pendingURL(pending.id))
+        _ = try lib.complete(pending.id, name: "B", version: "1", bundleID: "com.b", build: nil, provenance: nil)
+        try lib.commit(pending.id)
+
+        func excluded(_ url: URL) throws -> Bool {
+            try url.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup ?? false
+        }
+        let fm = FileManager.default
+        XCTAssertTrue(try excluded(lib.root), "library root")
+        for folder in ["unsigned", "signed"] {
+            XCTAssertTrue(try excluded(lib.root.appendingPathComponent(folder)), folder)
+        }
+        XCTAssertTrue(try excluded(lib.url(for: entry)), "published IPA")
+        let index = lib.root.appendingPathComponent("index.json")
+        XCTAssertTrue(try excluded(index), "index")
+        let enumerator = fm.enumerator(at: lib.root, includingPropertiesForKeys: [.isExcludedFromBackupKey])!
+        var checked = 0
+        for case let url as URL in enumerator {
+            let values = try url.resourceValues(forKeys: [.isExcludedFromBackupKey, .isRegularFileKey, .isDirectoryKey])
+            guard values.isDirectory != true else { continue }
+            XCTAssertEqual(values.isExcludedFromBackup, true, "backup-eligible file: \(url.lastPathComponent)")
+            checked += 1
+        }
+        XCTAssertGreaterThanOrEqual(checked, 3)
+    }
+
     func testAddedFilesAreListedNewestFirstPerKind() throws {
         let lib = IPALibrary(root: root)
         let a = try lib.add(file: try file("a.ipa", bytes: 10), kind: .unsigned, name: "A", version: "1", bundleID: "com.a",

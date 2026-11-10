@@ -182,6 +182,7 @@ public final class IPALibrary: @unchecked Sendable {
             let folder = pendingFolder(pending.id), part = folder.appendingPathComponent("artifact.part")
             let digest = try LibraryFileIO.copy(file, to: part, checkpoint: checkpoint)
             try FileManager.default.moveItem(at: part, to: folder.appendingPathComponent("artifact.ipa"))
+            try Self.excludeFromBackup(folder.appendingPathComponent("artifact.ipa"))
             return try finish(pending, digest: digest)
         }
     }
@@ -207,7 +208,9 @@ public final class IPALibrary: @unchecked Sendable {
                                      added: old.entry.added, fileName: old.entry.fileName, sha256: digest.sha256, build: build, provenance: provenance,
                                      record: old.entry.record)
             if file.lastPathComponent == "artifact.part" {
-                try FileManager.default.moveItem(at: file, to: pendingFolder(id).appendingPathComponent("artifact.ipa"))
+                let artifact = pendingFolder(id).appendingPathComponent("artifact.ipa")
+                try FileManager.default.moveItem(at: file, to: artifact)
+                try Self.excludeFromBackup(artifact)
             }
             let updated = LibraryPending(id: id, entry: entry, phase: .ready)
             try journal(updated); return updated
@@ -429,6 +432,7 @@ public final class IPALibrary: @unchecked Sendable {
             guard !FileManager.default.fileExists(atPath: dest.path) else { throw LibraryError.changed("The reserved destination already exists") }
             try plainFile(source); try checkpoint(.beforePublish, source)
             try FileManager.default.moveItem(at: source, to: dest)
+            try Self.excludeFromBackup(dest)
             try checkpoint(.afterPublish, dest)
         }
         try checkFile(dest, kind: pending.entry.kind)
@@ -471,6 +475,7 @@ public final class IPALibrary: @unchecked Sendable {
             let backup = root.appendingPathComponent("index.previous.json")
             try rejectLink(backup)
             try Data(contentsOf: indexURL).write(to: backup, options: .atomic)
+            try Self.excludeFromBackup(backup)
         }
         try writeIndex(entries, deletions: deletions)
     }
@@ -480,6 +485,7 @@ public final class IPALibrary: @unchecked Sendable {
             let data = try JSONEncoder().encode(Index(entries: entries, deletions: deletions))
             guard data.count <= 64 * 1024 * 1024 else { throw LibraryError.damagedIndex("index size limit would be exceeded") }
             try data.write(to: indexURL, options: .atomic)
+            try Self.excludeFromBackup(indexURL)
         }
         catch { throw LibraryError.io("Writing the library index", error.localizedDescription) }
     }
@@ -490,6 +496,7 @@ public final class IPALibrary: @unchecked Sendable {
         let data = try JSONEncoder().encode(pending)
         guard data.count < 64 * 1024 else { throw LibraryError.unsafeFile("transaction metadata exceeds 64 KiB") }
         try data.write(to: url, options: .atomic)
+        try Self.excludeFromBackup(url)
     }
     private func readPending(_ id: UUID) throws -> LibraryPending {
         try checkPendingFolder(id)
@@ -538,6 +545,15 @@ public final class IPALibrary: @unchecked Sendable {
         guard url.isFileURL else { throw LibraryError.unsafeFile("expected a local library directory") }
         if FileManager.default.fileExists(atPath: url.path) { try plainDirectory(url) }
         else { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true); try plainDirectory(url) }
+        try Self.excludeFromBackup(url)
+    }
+    /// The shelf holds users' IPA files and signing records; nothing in it belongs in an iCloud backup.
+    /// Each written resource carries the flag itself rather than relying on its parent directory.
+    private static func excludeFromBackup(_ url: URL) throws {
+        var values = URLResourceValues(); values.isExcludedFromBackup = true
+        var marked = url
+        do { try marked.setResourceValues(values) }
+        catch { throw LibraryError.io("Excluding the library from backup", error.localizedDescription) }
     }
     private func rejectLink(_ url: URL) throws {
         if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path), attrs[.type] as? FileAttributeType == .typeSymbolicLink { throw LibraryError.unsafeFile(url.lastPathComponent) }
