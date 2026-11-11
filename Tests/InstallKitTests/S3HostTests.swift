@@ -51,19 +51,29 @@ final class S3HostTests: XCTestCase {
     }
     override func setUpWithError() throws {
         S3Stub.seen = []
-        S3Stub.handler = { [plist] r in r.httpMethod == "GET" ? (200, plist) : (200, Data()) }
         ipa = FileManager.default.temporaryDirectory.appendingPathComponent("s3-\(UUID().uuidString).ipa")
         try Data(repeating: 1, count: 3000).write(to: ipa)
+        let artifact = ipa!
+        S3Stub.handler = { [plist] r in
+            guard r.httpMethod == "GET" else { return (200, Data()) }
+            guard r.url?.lastPathComponent == "app.ipa", let range = r.value(forHTTPHeaderField: "Range") else { return (200, plist) }
+            // Serve the requested tail like a real bucket does for a presigned ranged GET.
+            let numbers = range.replacingOccurrences(of: "bytes=", with: "").split(separator: "-").compactMap { Int($0) }
+            guard numbers.count == 2 else { return (416, Data()) }
+            let bytes = (try? Data(contentsOf: artifact)) ?? Data()
+            return (206, bytes[numbers[0]...min(numbers[1], bytes.count - 1)])
+        }
     }
     override func tearDownWithError() throws { try? FileManager.default.removeItem(at: ipa) }
 
     func testPublishPutsIPAAndManifestThenReturnsAnItmsLinkWithSignedURLs() async throws {
         let link = try await publish(host())
-        XCTAssertEqual(S3Stub.seen.map { $0.httpMethod ?? "" }, ["PUT", "PUT", "GET"], "IPA, manifest, then the link check")
+        XCTAssertEqual(S3Stub.seen.map { $0.httpMethod ?? "" }, ["PUT", "PUT", "GET", "GET"], "IPA, manifest, link check, then the stored app's tail")
         XCTAssertEqual(S3Stub.seen[0].url?.path, "/wax/ota/ABCDEFGHIJKLMNOPQRSTUV/app.ipa")
         XCTAssertEqual(S3Stub.seen[1].url?.path, "/wax/ota/ABCDEFGHIJKLMNOPQRSTUV/manifest.plist")
         XCTAssertTrue(S3Stub.seen[0].value(forHTTPHeaderField: "Authorization")?.hasPrefix("AWS4-HMAC-SHA256 Credential=AK/20130524/auto/s3/") == true)
         XCTAssertNil(S3Stub.seen[2].value(forHTTPHeaderField: "Authorization"), "the link check uses the presigned URL alone, like iOS")
+        XCTAssertEqual(S3Stub.seen[3].url?.lastPathComponent, "app.ipa")
         XCTAssertTrue(link.absoluteString.hasPrefix("itms-services://?action=download-manifest&url=https://acct.r2.example/wax/ota/"))
         XCTAssertTrue(link.absoluteString.contains("X-Amz-Signature"))
     }
@@ -140,4 +150,23 @@ final class S3HostTests: XCTestCase {
         XCTAssertEqual(CleanupRedirectStub.destinations, ["acct.r2.example", "acct.r2.example"], "neither destructive request may reach the redirect destination")
     }
 
+
+    func testPublishRejectsAServedAppWhoseBytesDifferFromTheUpload() async throws {
+        S3Stub.handler = { [plist] r in
+            guard r.httpMethod == "GET" else { return (200, Data()) }
+            if r.url?.lastPathComponent == "app.ipa" { return (206, Data(repeating: 9, count: 3000)) }
+            return (200, plist)
+        }
+        do { _ = try await publish(host()); XCTFail("expected the served bytes to be refused") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("different bytes"), error.localizedDescription) }
+        let deleted = S3Stub.seen.filter { $0.httpMethod == "DELETE" }.map { $0.url!.lastPathComponent }
+        XCTAssertEqual(Set(deleted), ["app.ipa", "manifest.plist"], "a refused link leaves nothing in the bucket")
+    }
+
+    func testPublishAcceptsAServedAppThatMatchesTheUpload() async throws {
+        let link = try await publish(host())
+        XCTAssertTrue(link.absoluteString.hasPrefix("itms-services://"), link.absoluteString)
+        let check = S3Stub.seen.last { $0.httpMethod == "GET" && $0.url?.lastPathComponent == "app.ipa" }
+        XCTAssertEqual(check?.value(forHTTPHeaderField: "Range"), "bytes=0-2999", "the whole small file is checked")
+    }
 }

@@ -76,6 +76,22 @@ final class SigningModel: ObservableObject {
     @Published private(set) var report: Report?
     @Published private(set) var errorText: String?
 
+    enum Recovery: Equatable, Sendable {
+        case removeAppExtensions(bundle: String)
+    }
+    @Published private(set) var recovery: Recovery?
+
+    nonisolated static func recovery(for error: SigningError) -> Recovery? {
+        guard case .appIdentifierMismatch(let bundle, _, _) = error,
+              bundle.hasPrefix("PlugIns/"), bundle.hasSuffix(".appex") else { return nil }
+        return .removeAppExtensions(bundle: bundle)
+    }
+
+    func removeUnsupportedExtensions() {
+        guard recovery != nil, !runningSign, !installing else { return }
+        edits.removeExtensions = true
+    }
+
     private var ipaURL: URL?
     private var preparedSigning: PreparedIPASigning?
     private var inputRevision = UUID()
@@ -157,7 +173,7 @@ final class SigningModel: ObservableObject {
         preparedSigning = nil
         passportReport = nil
         skippedProfiles = []
-        report = nil; errorText = nil; savedInstallError = nil; signedPendingID = nil; shelfSaveState = .idle
+        report = nil; errorText = nil; recovery = nil; savedInstallError = nil; signedPendingID = nil; shelfSaveState = .idle
         if installSession == nil { readyLink = nil }
     }
 
@@ -397,6 +413,7 @@ final class SigningModel: ObservableObject {
         let run = UUID()
         let preparedToSign = preparedSigning
         if let preparedToSign, !preparedToSign.preflight.canContinue {
+            recovery = preparedToSign.preflight.blockingError.flatMap { Self.recovery(for: $0) }
             errorText = preparedToSign.preflight.findings.first(where: { $0.status == .blocked })?.detail
             return nil
         }
@@ -404,6 +421,7 @@ final class SigningModel: ObservableObject {
         runningSign = true
         report = nil
         errorText = nil
+        recovery = nil
         passportReport = nil
         if preparedToSign != nil { preparedSigning = nil }
         busyMessage = preparedToSign == nil ? "Preparing…" : "Signing…"
@@ -569,6 +587,7 @@ final class SigningModel: ObservableObject {
                         }
                         model.preparedSigning?.discard()
                         model.preparedSigning = nil
+                        model.recovery = (error as? SigningError).flatMap { Self.recovery(for: $0) }
                         model.errorText = text; model.busyMessage = nil
                         if backgroundJob, let id = jobForRun { model.background.end(id, success: false) }
                     }

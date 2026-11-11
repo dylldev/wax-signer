@@ -18,7 +18,14 @@ final class CredentialsModel: ObservableObject {
     @Published private(set) var importedItemID: String?
     private(set) var store: CredentialStore?
     private var pendingP12: Data?
-    private var pendingName = ""
+    @Published private var pendingName = ""
+    private var pendingProfile: Data?
+    @Published private(set) var pendingProfileName = ""
+    @Published private(set) var importCompleted = false
+    private let preferences: UserDefaults
+    private let nicknameKey = "credential.displayNicknames"
+    var canSubmitImport: Bool { busyMessage == nil && (pendingP12 != nil || pendingProfile != nil) }
+    var isCommittingImport: Bool { importing }
     private var token = UUID()
     private var operation: Task<Void, Never>?
     private var importing = false
@@ -29,9 +36,10 @@ final class CredentialsModel: ObservableObject {
     var canCancelReading: Bool { readToken != nil && !importing }
     var canRetryPassword: Bool { pendingP12 != nil && !awaitingPassword && busyMessage == nil }
 
-    init(store: CredentialStore? = nil,
+    init(store: CredentialStore? = nil, preferences: UserDefaults = .standard,
          certificateImport: @escaping @Sendable (CredentialStore, Data, String) throws -> [CertificateInfo] = { try $0.importCertificates(p12: $1, password: $2) },
          profileImport: @escaping @Sendable (CredentialStore, Data) throws -> ProfileInfo = { try $0.importProfile($1) }) {
+        self.preferences = preferences
         self.certificateImport = certificateImport; self.profileImport = profileImport
         if let store { self.store = store }
         else {
@@ -41,6 +49,35 @@ final class CredentialsModel: ObservableObject {
             } catch { message = "Credential storage is unavailable. " + Self.describe(error) }
         }
         certificates = self.store?.certificates() ?? []; profiles = self.store?.profiles() ?? []
+    }
+
+    func displayName(for certificate: CertificateInfo) -> String {
+        let nickname = preferences.dictionary(forKey: nicknameKey)?[certificate.id.uuidString] as? String
+        if let nickname, !nickname.isEmpty { return nickname }
+        return certificate.organization ?? certificate.commonName
+    }
+
+    @discardableResult func stageCertificate(_ result: Result<URL, Error>) -> Task<Void, Never>? {
+        guard !importing else { return nil }
+        pendingP12 = nil; pendingName = ""; importCompleted = false
+        return load(result, limit: 5 * 1024 * 1024, clearDraft: false) { data, name, _ in
+            self.pendingP12 = data; self.pendingName = name
+        }
+    }
+
+    @discardableResult func stageProfile(_ result: Result<URL, Error>) -> Task<Void, Never>? {
+        guard !importing else { return nil }
+        pendingProfile = nil; pendingProfileName = ""; importCompleted = false
+        return load(result, limit: 1024 * 1024, clearDraft: false) { data, name, _ in
+            self.pendingProfile = data; self.pendingProfileName = name
+        }
+    }
+
+    func dismissImport() { cancelPassword() }
+
+    @discardableResult func confirmImport(password: String, nickname: String) -> Task<Void, Never>? {
+        guard canSubmitImport else { return nil }
+        return commitImport(password: password, nickname: nickname, profile: pendingProfile)
     }
 
     func identityStatus(for certificate: CertificateInfo) -> IdentityStatus {
@@ -82,30 +119,70 @@ final class CredentialsModel: ObservableObject {
         message = nil; awaitingPassword = true
     }
     @discardableResult func confirmPassword(_ password: String) -> Task<Void, Never>? {
-        guard !importing, busyMessage == nil, let data = pendingP12 else { return nil }
+        guard pendingP12 != nil else { return nil }
+        return commitImport(password: password, nickname: "", profile: nil)
+    }
+
+    private func commitImport(password: String, nickname: String, profile: Data?) -> Task<Void, Never>? {
+        guard !importing, busyMessage == nil, pendingP12 != nil || profile != nil else { return nil }
         guard let store else { message = "Credential storage is unavailable. Free space and restart Wax before retrying."; return nil }
-        let id = UUID(); token = id; importing = true; awaitingPassword = false; message = nil
+        let data = pendingP12
+        let id = UUID(); token = id; importing = true; awaitingPassword = false; message = nil; importCompleted = false
         busyMessage = "Importing credentials…"; importedItemID = nil
-        let importer = certificateImport
+        let importer = certificateImport, provisionImporter = profileImport
         let work = Task {
             defer { if token == id { importing = false; busyMessage = nil } }
+            var imported: [CertificateInfo] = []
+            var targetID: String?
+            var outcomeMessage: String?
+            var completed = false
             do {
-                let result = try await Task.detached {
-                    let infos = try importer(store, data, password)
-                    guard !infos.isEmpty else { throw CredentialError.storage("no identity was imported") }
-                    return (infos, store.certificates(), store.profiles())
-                }.value
+                if let data {
+                    imported = try await Task.detached {
+                        let infos = try importer(store, data, password)
+                        guard !infos.isEmpty else { throw CredentialError.storage("no identity was imported") }
+                        return infos
+                    }.value
+                    let trimmed = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty {
+                        var names = preferences.dictionary(forKey: nicknameKey) ?? [:]
+                        for info in imported { names[info.id.uuidString] = trimmed }
+                        preferences.set(names, forKey: nicknameKey)
+                    }
+                    targetID = imported.first.map { "credential-\($0.id)" }
+                }
+                var provision: ProfileInfo?
+                if let profile {
+                    provision = try await Task.detached { try provisionImporter(store, profile) }.value
+                }
                 guard token == id else { return }
-                clearPending(); certificates = result.1; profiles = result.2
-                importedItemID = result.0.first.map { "credential-\($0.id)" }
-                message = result.0.count == 1 ? "Imported \(result.0[0].commonName)." : "Imported \(result.0.count) identities: " + result.0.map(\.commonName).joined(separator: ", ") + "."
-                ImportLogs.shared.log("p12 import ok")
+                clearPending()
+                if let provision {
+                    targetID = targetID ?? "credential-\(provision.id)"
+                    outcomeMessage = imported.isEmpty ? "Imported profile \(provision.name)." : "Imported certificate and profile \(provision.name)."
+                } else {
+                    outcomeMessage = imported.count == 1 ? "Imported \(imported[0].commonName)." : "Imported \(imported.count) identities: " + imported.map(\.commonName).joined(separator: ", ") + "."
+                }
+                completed = true
+                ImportLogs.shared.log("credential import ok")
             } catch {
                 guard token == id else { return }
-                // No password persisted. Keep only the bounded encrypted bytes for an explicit retry.
-                message = Self.describe(error)
-                ImportLogs.shared.log("p12 import failed")
+                if !imported.isEmpty {
+                    clearPending()
+                    outcomeMessage = "Certificate imported: " + imported.map(\.commonName).joined(separator: ", ")
+                        + ". Profile was not imported. " + Self.describe(error)
+                } else {
+                    // Keep bounded encrypted input for an explicit retry, never the password.
+                    outcomeMessage = Self.describe(error)
+                }
+                ImportLogs.shared.log("credential import failed")
             }
+            let snapshot = await Task.detached { (store.certificates(), store.profiles()) }.value
+            guard token == id else { return }
+            certificates = snapshot.0; profiles = snapshot.1
+            importedItemID = targetID
+            message = outcomeMessage
+            importCompleted = completed
         }
         operation = work; return work
     }
@@ -134,9 +211,9 @@ final class CredentialsModel: ObservableObject {
             } catch { if self.token == id { self.message = Self.describe(error); ImportLogs.shared.log("profile import failed") } }
         }
     }
-    func delete(certificate: CertificateInfo) { remove { try $0.deleteCertificate(id: certificate.id) } }
+    func delete(certificate: CertificateInfo) { remove(nicknameID: certificate.id) { try $0.deleteCertificate(id: certificate.id) } }
     func delete(profile: ProfileInfo) { remove { try $0.deleteProfile(id: profile.id) } }
-    private func remove(_ action: @escaping @Sendable (CredentialStore) throws -> Void) {
+    private func remove(nicknameID: UUID? = nil, _ action: @escaping @Sendable (CredentialStore) throws -> Void) {
         guard busyMessage == nil, let store else { return }
         busyMessage = "Removing credential…"; importing = true
         operation = Task {
@@ -144,14 +221,19 @@ final class CredentialsModel: ObservableObject {
             do {
                 let snapshot = try await Task.detached { try action(store); return (store.certificates(), store.profiles()) }.value
                 certificates = snapshot.0; profiles = snapshot.1
+                if let nicknameID {
+                    var names = preferences.dictionary(forKey: nicknameKey) ?? [:]
+                    names.removeValue(forKey: nicknameID.uuidString)
+                    preferences.set(names, forKey: nicknameKey)
+                }
             } catch { message = Self.describe(error) }
         }
     }
 
-    private func load(_ result: Result<URL, Error>, limit: Int,
+    private func load(_ result: Result<URL, Error>, limit: Int, clearDraft: Bool = true,
                       then: @escaping @MainActor (Data, String, UUID) async -> Void) -> Task<Void, Never>? {
         guard !importing else { message = "Wait for the confirmed credential import to finish."; return nil }
-        operation?.cancel(); clearPending(); let id = UUID(); token = id; readToken = nil; message = nil; importedItemID = nil
+        operation?.cancel(); if clearDraft { clearPending() }; let id = UUID(); token = id; readToken = nil; message = nil; importedItemID = nil
         switch result {
         case .failure:
             busyMessage = nil; message = "The file could not be selected. Choose it again from Files."; return nil
@@ -190,7 +272,7 @@ final class CredentialsModel: ObservableObject {
         guard data.count == size.intValue else { throw CredentialError.storage("the input changed while reading; choose it again") }
         try handle.close(); return data
     }
-    private func clearPending() { pendingP12 = nil; pendingName = ""; awaitingPassword = false }
+    private func clearPending() { pendingP12 = nil; pendingName = ""; pendingProfile = nil; pendingProfileName = ""; awaitingPassword = false }
     nonisolated private static func describe(_ error: Error) -> String {
         // Known credential messages contain no password/key bytes. Unknown errors are not dumped to logs/UI.
         (error as? CredentialError)?.errorDescription ?? "Import failed. Check the file and free space, then retry."

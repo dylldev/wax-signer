@@ -1,5 +1,8 @@
 import CredentialKit
+import Combine
 import XCTest
+import Security
+import SwiftUI
 @testable import LocalIPASigner
 
 /// Model outcomes use bounded, synthetic encrypted input and public metadata, never a private key.
@@ -133,5 +136,151 @@ final class CredentialImportOutcomeTests: XCTestCase {
         XCTAssertEqual(model.message, CredentialError.profileNotCMS.errorDescription); XCTAssertNil(model.importedItemID)
         await model.picked(profile: .success(try picked(Data(repeating: 0, count: 1024 * 1024 + 1))))?.value
         XCTAssertEqual(model.message, CredentialError.fileTooLarge.errorDescription); XCTAssertNil(model.busyMessage)
+    }
+    func testCombinedImportPersistsOnlyNicknameAndClearsDrafts() async throws {
+        let info = try certificate(), provision = try profile()
+        let suite = "credential-nicknames-\(UUID())"
+        let isolated = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { isolated.removePersistentDomain(forName: suite) }
+        let model = CredentialsModel(store: try store(), preferences: isolated,
+            certificateImport: { _, _, password in XCTAssertEqual(password, "temporary secret"); return [info] },
+            profileImport: { _, _ in return provision })
+        await model.stageCertificate(.success(try picked()))?.value
+        await model.stageProfile(.success(try picked(name: "matching.mobileprovision")))?.value
+        XCTAssertTrue(model.canSubmitImport)
+        XCTAssertFalse(model.awaitingPassword)
+        await model.confirmImport(password: "temporary secret", nickname: "  My identity  ")?.value
+        XCTAssertTrue(model.importCompleted)
+        XCTAssertEqual(model.displayName(for: info), "My identity")
+        XCTAssertFalse(model.canSubmitImport)
+        XCTAssertEqual(model.pendingFileName, "")
+        XCTAssertEqual(model.pendingProfileName, "")
+        let reloaded = CredentialsModel(store: try store(), preferences: isolated)
+        XCTAssertEqual(reloaded.displayName(for: info), "My identity")
+        XCTAssertEqual(reloaded.displayName(for: try certificate("Other identity")), "Other identity")
+        XCTAssertFalse(String(describing: isolated.persistentDomain(forName: suite)).contains("temporary secret"))
+    }
+    func testCombinedWrongPasswordDoesNotImportProfileAndCanRetry() async throws {
+        let info = try certificate()
+        let model = CredentialsModel(store: try store(), certificateImport: { _, _, password in
+            guard password == "correct" else { throw CredentialError.incorrectPassword }; return [info]
+        }, profileImport: { _, _ in XCTFail("profile must not import after certificate failure"); throw CredentialError.profileNotCMS })
+        await model.stageCertificate(.success(try picked()))?.value
+        await model.stageProfile(.success(try picked(name: "profile.mobileprovision")))?.value
+        await model.confirmImport(password: "wrong", nickname: "")?.value
+        XCTAssertFalse(model.importCompleted); XCTAssertTrue(model.canSubmitImport)
+        XCTAssertEqual(model.message, CredentialError.incorrectPassword.errorDescription)
+        model.dismissImport()
+        XCTAssertFalse(model.canSubmitImport); XCTAssertEqual(model.pendingProfileName, "")
+    }
+    func testCombinedProfileFailureReportsCertificateAndPreservesItsNickname() async throws {
+        let info = try certificate()
+        let suite = "credential-partial-\(UUID())"
+        let isolated = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { isolated.removePersistentDomain(forName: suite) }
+        let model = CredentialsModel(store: try store(), preferences: isolated,
+            certificateImport: { _, _, _ in [info] }, profileImport: { _, _ in throw CredentialError.profileNotCMS })
+        await model.stageCertificate(.success(try picked()))?.value
+        await model.stageProfile(.success(try picked(name: "bad.mobileprovision")))?.value
+        await model.confirmImport(password: "", nickname: "Kept identity")?.value
+        XCTAssertFalse(model.importCompleted)
+        XCTAssertTrue(model.message?.contains("Certificate imported") == true)
+        XCTAssertTrue(model.message?.contains("Profile was not imported") == true)
+        XCTAssertEqual(model.displayName(for: info), "Kept identity")
+        XCTAssertFalse(model.canSubmitImport)
+    }
+    func testCombinedDismissAndRepeatedDoneAreSafe() async throws {
+        let entered = expectation(description: "combined worker began"), release = DispatchSemaphore(value: 0)
+        let info = try certificate()
+        let model = CredentialsModel(store: try store(), certificateImport: { _, _, _ in
+            entered.fulfill()
+            guard release.wait(timeout: .now() + 5) == .success else { throw CredentialError.storage("timeout") }
+            return [info]
+        })
+        await model.stageCertificate(.success(try picked()))?.value
+        let work = try XCTUnwrap(model.confirmImport(password: "", nickname: ""))
+        defer { release.signal() }
+        await fulfillment(of: [entered], timeout: 3)
+        XCTAssertNil(model.confirmImport(password: "", nickname: ""))
+        model.dismissImport(); XCTAssertNotNil(model.busyMessage)
+        release.signal(); await work.value
+        XCTAssertTrue(model.importCompleted); XCTAssertFalse(model.canSubmitImport)
+        await model.stageProfile(.success(try picked(name: "discard.mobileprovision")))?.value
+        model.dismissImport(); XCTAssertFalse(model.canSubmitImport)
+    }
+
+    func testImportSheetRendersLongFilenamesWithoutLosingEitherSelection() async throws {
+        let model = CredentialsModel(store: try store())
+        let certificateName = String(repeating: "Long-certificate-name-", count: 6) + ".p12"
+        let profileName = String(repeating: "Long-provisioning-profile-", count: 6) + ".mobileprovision"
+        await model.stageCertificate(.success(try picked(name: certificateName)))?.value
+        await model.stageProfile(.success(try picked(name: profileName)))?.value
+        XCTAssertEqual(model.pendingFileName, certificateName)
+        XCTAssertEqual(model.pendingProfileName, profileName)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let previous = scene.windows.first { $0.isKeyWindow }
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = UIHostingController(rootView: CredentialImportSheet().environmentObject(model))
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; previous?.makeKeyAndVisible() }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        window.layoutIfNeeded()
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "credential-import-long-filenames"; attachment.lifetime = .keepAlways
+        add(attachment)
+        XCTAssertGreaterThan(image.size.width, 0)
+        model.dismissImport()
+        XCTAssertFalse(model.canSubmitImport)
+    }
+
+    func testCombinedImportPublishesItsTargetAfterProfileImport() async throws {
+        let info = try certificate(), provision = try profile()
+        let profileImported = expectation(description: "profile import finishes")
+        let targetPublished = expectation(description: "scroll target publishes")
+        let model = CredentialsModel(store: try store(), certificateImport: { _, _, _ in [info] },
+            profileImport: { _, _ in profileImported.fulfill(); return provision })
+        let listener = model.$importedItemID.compactMap { $0 }.sink { _ in targetPublished.fulfill() }
+        defer { listener.cancel() }
+        await model.stageCertificate(.success(try picked()))?.value
+        await model.stageProfile(.success(try picked(name: "matching.mobileprovision")))?.value
+        await model.confirmImport(password: "", nickname: "")?.value
+        await fulfillment(of: [profileImported, targetPublished], timeout: 1, enforceOrder: true)
+        XCTAssertTrue(model.importCompleted)
+    }
+
+    func testDeletingCertificateRemovesOnlyItsNicknameAfterSuccess() async throws {
+        let first = try certificate("First"), second = try certificate("Second")
+        for failRemoval in [false, true] {
+            let directory = base.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            struct Index: Encodable { let certificates: [CertificateInfo]; let profiles: [ProfileInfo] }
+            let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+            try encoder.encode(Index(certificates: [first, second], profiles: [])).write(to: directory.appendingPathComponent("index.json"))
+            let preferences = try XCTUnwrap(UserDefaults(suiteName: "credential-delete-\(UUID())"))
+            defer { preferences.removeObject(forKey: "credential.displayNicknames") }
+            preferences.set([first.id.uuidString: "First nickname", second.id.uuidString: "Second nickname"], forKey: "credential.displayNicknames")
+            let store = try CredentialStore(directory: directory, keychain: ImportRemovalKeychain(failRemoval: failRemoval))
+            let model = CredentialsModel(store: store, preferences: preferences)
+            model.delete(certificate: first)
+            for _ in 0..<200 where model.busyMessage != nil { try await Task.sleep(nanoseconds: 10_000_000) }
+            XCTAssertNil(model.busyMessage)
+            XCTAssertEqual(model.displayName(for: first), failRemoval ? "First nickname" : "First")
+            XCTAssertEqual(model.displayName(for: second), "Second nickname")
+            XCTAssertEqual(model.certificates.contains(first), failRemoval)
+        }
+    }
+
+}
+
+
+private struct ImportRemovalKeychain: IdentityKeychain {
+    let failRemoval: Bool
+    func store(identity: SecIdentity, id: UUID) throws { }
+    func identity(id: UUID) throws -> SecIdentity { throw CredentialError.notFound }
+    func remove(id: UUID) throws {
+        if failRemoval { throw CredentialError.keychain(operation: "remove", status: -50) }
     }
 }

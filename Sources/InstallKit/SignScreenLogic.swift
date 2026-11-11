@@ -13,14 +13,23 @@ public enum SignPhase: Equatable, Sendable {
 
 /// The step Wax is on while it works. Ticked in order under the melting wax, so the wait says where it is.
 public enum SignStage: String, Equatable, Sendable, CaseIterable {
-    case reading, signing, uploading
+    case reading, signing, preparing, uploading, handed
 
     /// The step the screen is on right now, or nil when Wax is not working.
-    public static func resolve(reading: Bool, signing: Bool, uploading: Bool) -> SignStage? {
+    /// Reserving the host precedes signing; its preparing state must not hide active signing or reading.
+    public static func resolve(reading: Bool, signing: Bool, uploading: Bool,
+                               preparing: Bool = false, handed: Bool = false) -> SignStage? {
+        if handed { return .handed }
         if uploading { return .uploading }
         if signing { return .signing }
         if reading { return .reading }
+        if preparing { return .preparing }
         return nil
+    }
+
+    /// The stages one run passes through. A sign-only export never uploads or hands off, so it shows two.
+    public static func sequence(exportOnly: Bool) -> [SignStage] {
+        exportOnly ? [.reading, .signing] : allCases
     }
 
     public var title: String {
@@ -28,6 +37,8 @@ public enum SignStage: String, Equatable, Sendable, CaseIterable {
         case .reading: "Reading"
         case .signing: "Signing"
         case .uploading: "Uploading"
+        case .preparing: "Preparing"
+        case .handed: "Handed to iOS"
         }
     }
 
@@ -37,10 +48,32 @@ public enum SignStage: String, Equatable, Sendable, CaseIterable {
         return mine < now
     }
 
-    /// "Stage 2 of 3, Signing", for VoiceOver.
-    public var spoken: String {
-        let step = (Self.allCases.firstIndex(of: self) ?? 0) + 1
-        return "Stage \(step) of \(Self.allCases.count), \(title)"
+    /// "Stage 2 of 3, Signing", for VoiceOver. `sequence` is the run's own list, so a sign-only run says two, not five.
+    public func spoken(in sequence: [SignStage] = SignStage.allCases) -> String {
+        let step = (sequence.firstIndex(of: self) ?? 0) + 1
+        return "Stage \(step) of \(sequence.count), \(title)"
+    }
+}
+
+/// How much of the melt to show. Only measured work counts: the run starts at 0, follows the signer's own
+/// fraction, and reaches 1 only when the host really has the app. A reserved install session or an "installing"
+/// flag is not progress, so neither may pin the melt at the end before signing has even started.
+public enum SignProgress {
+    public static func fraction(signFraction: Double, signed: Bool, uploading: Bool, uploadFraction: Double?,
+                                handedToHost: Bool, exportOnly: Bool, remoteHost: Bool) -> Double {
+        let sign = signed || uploading || handedToHost ? 1 : clamp(signFraction)
+        if exportOnly { return sign }
+        if remoteHost {
+            let upload = uploading ? clamp(uploadFraction ?? 0) : (handedToHost ? 1 : 0)
+            return (sign + upload) / 2
+        }
+        // On this iPhone the last stretch is the handoff, so signing alone stops just short of the end.
+        return handedToHost ? 1 : sign * 0.92
+    }
+
+    private static func clamp(_ value: Double) -> Double {
+        if value.isNaN { return 0 }
+        return min(1, max(0, value))
     }
 }
 

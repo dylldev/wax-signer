@@ -79,6 +79,26 @@ final class IPASignerTests: XCTestCase {
         XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: work.path).contains { $0.hasPrefix("Wax-PreparedSigning-") })
     }
 
+    func testSigningRefusesATreeChangedAfterPreparation() throws {
+        let creds = try TestCredentials()
+        let prepared = try IPASigner.prepare(ipa: Fixtures.ipa, identity: creds.signer, certificateTeamID: creds.loaded.teamID,
+                                            profiles: ProfileSet(single: try ProvisioningProfile.parse(FixtureData.profileWildcardAll)),
+                                            workDirectory: work)
+        let folder = try XCTUnwrap(try FileManager.default.contentsOfDirectory(atPath: work.path).first { $0.hasPrefix("Wax-PreparedSigning-") })
+        let tree = work.appendingPathComponent(folder).appendingPathComponent("tree")
+        let payload = tree.appendingPathComponent("Payload")
+        let app = payload.appendingPathComponent(try FileManager.default.contentsOfDirectory(atPath: payload.path).first { $0.hasSuffix(".app") }!)
+        let target = app.appendingPathComponent("SigningTestApp")
+        var tampered = try Data(contentsOf: target); tampered.append(contentsOf: [0xde, 0xad])
+        try tampered.write(to: target)
+
+        let output = work.appendingPathComponent("tampered-signed.ipa")
+        XCTAssertThrowsError(try IPASigner.sign(prepared: prepared, output: output)) {
+            XCTAssertTrue($0.localizedDescription.contains("changed"), $0.localizedDescription)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path), "a refused run must not publish output")
+    }
+
     func testFinishedTreesAreDeletedInTheBackgroundAndLeftoversSweptLater() throws {
         let creds = try TestCredentials()
         let prepared = try IPASigner.prepare(ipa: Fixtures.ipa, identity: creds.signer, certificateTeamID: creds.loaded.teamID,

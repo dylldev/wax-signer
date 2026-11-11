@@ -40,6 +40,8 @@ public final class PreparedIPASigning: @unchecked Sendable {
     fileprivate let source: IPAArchiveSession
     fileprivate let inventory: IPAExtractionInventory
     fileprivate let cancellation: SigningCancellation
+    /// Exact tree state captured at prepare. Signing verifies it before any binary changes.
+    fileprivate let manifest: IPAArchiveManifest
     private let lock = NSLock()
     private var running = false
     private var cleaned = false
@@ -47,11 +49,12 @@ public final class PreparedIPASigning: @unchecked Sendable {
     fileprivate init(work: URL, tree: URL, app: URL, ipaURL: URL, inputArchive: IPAMetadata, editNotes: [String],
                      minimumOSVersion: String?, preflight: SigningPreflightReport, identity: CodeSigningIdentity, certificateTeamID: String?,
                      profiles: ProfileSet, options: SigningOptions, source: IPAArchiveSession, inventory: IPAExtractionInventory,
-                     cancellation: SigningCancellation) {
+                     cancellation: SigningCancellation, manifest: IPAArchiveManifest) {
         self.source = source; self.inventory = inventory; self.cancellation = cancellation
         self.work = work; self.tree = tree; self.app = app; self.ipaURL = ipaURL; self.inputArchive = inputArchive
         self.editNotes = editNotes; self.minimumOSVersion = minimumOSVersion; self.preflight = preflight; self.identity = identity
         self.certificateTeamID = certificateTeamID; self.profiles = profiles; self.options = options
+        self.manifest = manifest
     }
 
     fileprivate func begin() throws {
@@ -158,10 +161,13 @@ public enum IPASigner {
                 PreflightFinding(id: "apple-acceptance", status: .unknown, title: "Apple's install decision is unknown",
                                  detail: "Only iOS can make the final installation decision.")
             ], blockingError: report.blockingError, selections: report.selections)
+            // Freeze the edited tree now: signing must refuse anything changed between review and execution.
+            let manifest = try IPAArchiveManifest.capture(directory: tree, rootFolder: "Payload",
+                                                          checkpoint: { try cancellation.check() })
             return PreparedIPASigning(work: work, tree: tree, app: app, ipaURL: ipa, inputArchive: input, editNotes: edited.notes,
                                       minimumOSVersion: plist?["MinimumOSVersion"] as? String, preflight: report, identity: identity, certificateTeamID: certificateTeamID,
                                       profiles: profiles, options: signingOptions, source: source, inventory: inventory,
-                                      cancellation: cancellation)
+                                      cancellation: cancellation, manifest: manifest)
         } catch {
             try? fm.removeItem(at: work)
             throw error
@@ -190,6 +196,8 @@ public enum IPASigner {
         func stage(_ message: String, _ lo: Double, _ hi: Double, _ f: Double = 0) {
             progress?(SigningProgress(message: message, fraction: lo + (hi - lo) * min(1, max(0, f))))
         }
+        let cancellation = prepared.cancellation
+        try prepared.manifest.verifyTree(checkpoint: { try cancellation.check() })
         stage("Signing…", 0.40, 0.52)
         let result = try BundleSigner.sign(appDirectory: prepared.app, identity: prepared.identity,
                                            certificateTeamID: prepared.certificateTeamID,
@@ -197,7 +205,6 @@ public enum IPASigner {
 
         stage("Checking the signature…", 0.52, 0.62)
         guard let leaf = prepared.identity.certificateChainDER.first else { throw SigningError.keyOperation("no certificate") }
-        let cancellation = prepared.cancellation
         try cancellation.check()
         let expected = try IPAArchiveManifest.capture(directory: prepared.tree)
         let selfCheck = SignatureVerifier.verifyBundle(at: prepared.app, expectedSignerSHA1: X509Fingerprint.sha1(leaf))

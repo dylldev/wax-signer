@@ -22,6 +22,9 @@ struct SignView: View {
     @State private var exportRun = false
     /// One outcome per run: the haptic and the spoken line must not repeat themselves.
     @State private var announced = false
+    /// The percent and the stage glyph grow with the reader's text size instead of staying at one size.
+    @ScaledMetric(relativeTo: .largeTitle) private var percentSize: CGFloat = 46
+    @ScaledMetric(relativeTo: .body) private var stageGlyphSize: CGFloat = 17
 
     init(inbox: InstallInbox? = nil) { self.inbox = inbox ?? .shared }
 
@@ -45,6 +48,9 @@ struct SignView: View {
 
     private var uploading: Bool { if case .uploading = ota.state { return true } else { return false } }
 
+    /// Handed to iOS but (for the phone host) iOS has not finished taking the app yet, so success must not be claimed.
+    private var waitingForTransfer: Bool { handedToiOS && model.installing && ota.hostKind == .phone }
+
     private var errorText: String? {
         if let e = model.errorText { return e }
         if case .failed(let t) = ota.state { return t }
@@ -55,10 +61,20 @@ struct SignView: View {
 
     /// The step Wax is on while it works, or nil when it is waiting for the person.
     private var stage: SignStage? {
-        let waitingForDelivery = model.installing && !handedToiOS && !uploading
         return SignStage.resolve(reading: isReading,
-                                 signing: (model.busyMessage != nil && !isReading) || waitingForDelivery,
-                                 uploading: uploading)
+                                 signing: model.busyMessage != nil && !isReading,
+                                 uploading: uploading,
+                                 preparing: preparingHost,
+                                 handed: waitingForTransfer)
+    }
+
+    private var preparingHost: Bool {
+        if case .preparing = ota.state { return true } else { return false }
+    }
+
+    /// The waiting state: nothing running, nothing failed, no finished report. It is the state that owns the primary action.
+    private var showsIdleActions: Bool {
+        stage == nil && errorText == nil && !(phase == .done && model.report != nil)
     }
 
     // MARK: Body
@@ -67,23 +83,36 @@ struct SignView: View {
         NavigationStack {
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(spacing: 10) {
+                    VStack(spacing: Wax.Space.m) {
                         header.id("top")
+                        if showsIdleActions && dynamicTypeSize.isAccessibilitySize { idleActions }
+                        summaryCard
                         if let stage {
+                            if waitingForTransfer, let link = model.readyLink {
+                                Text("Keep Wax open while iOS takes the app.")
+                                    .font(.subheadline).foregroundStyle(Wax.sub)
+                                    .multilineTextAlignment(.center)
+                                Button("Open install again") { openURL(link) }
+                                    .buttonStyle(WaxSecondaryButtonStyle())
+                            }
                             progressCard(stage)
+                            // iOS shows its own prompt and gives no callback when it is dismissed, so the wait needs a way out.
+                            if waitingForTransfer { cancelWaitButton }
                         } else if phase == .done && errorText == nil, let r = model.report {
                             resultCard(r)
                         } else {
-                            idleScreen
+                            if let error = errorText { errorCard(error) }
+                            if !dynamicTypeSize.isAccessibilitySize { idleActions }
+                            optionsRow
                         }
                     }
                     .padding(.horizontal, Wax.inset)
-                    .padding(.bottom, 24)
+                    .padding(.bottom, Wax.Space.tabBarClearance)
                 }
                 .scrollIndicators(.hidden)
                 .background(Wax.bg.ignoresSafeArea())
                 .toolbar(.hidden, for: .navigationBar)
-                .onChange(of: router.reselectTick[.sign]) { _, _ in withAnimation { proxy.scrollTo("top", anchor: .top) } }
+                .onChange(of: router.reselectTick[.sign]) { _, _ in withAnimation(reduceMotion ? nil : .default) { proxy.scrollTo("top", anchor: .top) } }
             }
         }
         .sheet(isPresented: $picking) {
@@ -99,16 +128,17 @@ struct SignView: View {
                 Button(identityTitle(cert)) { model.certificateID = cert.id }
             }
         }
-        .onChange(of: phase) { _, new in if new == .done { stamp() } else { stamped = false } }
+        .onChange(of: phase) { _, new in if new == .done { if !waitingForTransfer { stamp() } } else { stamped = false } }
         .onChange(of: model.busyMessage) { _, busy in if busy != nil { announced = false } }   // a new run earns its own feedback
         .onChange(of: model.ipaInfo != nil) { _, ready in if ready { announceRead() } }
         .onChange(of: model.report != nil) { _, done in if done { announceOutcome(success: true) } }
         .onChange(of: model.errorText) { _, text in if let text { announceOutcome(success: false, message: text) } }
+        .onChange(of: model.installing) { _, new in if !new && handedToiOS && ota.hostKind == .phone { stamp() } }
         .onChange(of: credentials.certificates) { _, _ in model.discardPreflight() }
         .onChange(of: credentials.profiles) { _, _ in model.discardPreflight() }
         .onChange(of: inbox.pendingLink) { _, _ in openPendingInstall() }
         .onAppear { openPendingInstall() }   // a tap that launched Wax from scratch
-        .onChange(of: handedToiOS) { _, new in if new { stamp() } }
+        .onChange(of: handedToiOS) { _, new in if new && !waitingForTransfer { stamp() } }
     }
 
     /// A tapped "Ready to install" notification: go to this screen and bring up iOS's install prompt.
@@ -127,20 +157,10 @@ struct SignView: View {
 
     // MARK: Pieces
 
-    private var header: some View { WaxHeader(title: "Sign", subtitle: "Sign an app and install it on this iPhone.") }
+    private var header: some View { WaxHeader(title: "Sign", subtitle: "Sign an app and hand it to iOS to install.") }
 
-    /// Nothing to do but say what is missing: the setup card, any problem, the one button, and the options.
-    private var idleScreen: some View {
-        Group {
-            summaryCard
-            if let error = errorText { errorCard(error) }
-            idleActions
-            optionsRow
-        }
-    }
-
-    /// One card with the three things signing needs: the app, the identity, the install host. Each line opens its
-    /// own place to set it.
+    /// One card with the three things signing needs: the app, the identity, the install host. Stays on screen
+    /// through signing and results so the selection is never lost and the layout does not jump.
     private var summaryCard: some View {
         WaxPanel {
             appRow
@@ -151,21 +171,26 @@ struct SignView: View {
         }
     }
 
-    /// With no app chosen this line is only a summary: the big button below is the one way to choose one.
-    @ViewBuilder private var appRow: some View {
-        if let info = model.ipaInfo {
-            Button { picking = true; ImportLogs.shared.log("sign: choose tapped") } label: {
+    /// Both states are buttons. The empty one used to be a summary with a red "Choose" that did nothing, so at
+    /// accessibility sizes the only way to pick a file was the big button below the fold.
+    private var appRow: some View {
+        Button { picking = true; ImportLogs.shared.log("sign: choose tapped") } label: {
+            if let info = model.ipaInfo {
                 setupRow(icon: SignSetupChecklist.app.icon,
-                          title: info.displayName.isEmpty ? "App" : info.displayName,
-                          subtitle: appSubtitle(info)) { WaxLinkText(text: "Change") }
+                         title: info.displayName.isEmpty ? "App" : info.displayName,
+                         subtitle: appSubtitle(info)) { WaxLinkText(text: "Change") }
+            } else {
+                setupRow(icon: SignSetupChecklist.app.icon, title: SignSetupChecklist.app.title,
+                         subtitle: SignSetupChecklist.app.detail) {
+                    // At accessibility sizes this row's trailing cue repeats the big "Choose an app" button above it,
+                    // and the extra line pushed the cue under the floating tab bar, where its contrast failed.
+                    if !dynamicTypeSize.isAccessibilitySize { WaxLinkText(text: "Choose") }
+                }
             }
-            .buttonStyle(.plain)
-            .disabled(model.busyMessage != nil)
-            .accessibilityHint("Opens Files to pick another IPA")
-        } else {
-            setupRow(icon: SignSetupChecklist.app.icon, title: SignSetupChecklist.app.title,
-                     subtitle: SignSetupChecklist.app.detail) { EmptyView() }
         }
+        .buttonStyle(.plain)
+        .disabled(model.busyMessage != nil || model.installing)
+        .accessibilityHint(model.ipaInfo == nil ? "Opens Files to pick an IPA" : "Opens Files to pick another IPA")
     }
 
     private var identityRow: some View {
@@ -174,7 +199,7 @@ struct SignView: View {
                 setupRow(icon: SignSetupChecklist.identity.icon, title: SignSetupChecklist.identity.title,
                          subtitle: SignSetupChecklist.identity.detail) { WaxLinkText(text: "Import") }
             } else if let cert = certificate {
-                setupRow(icon: SignSetupChecklist.identity.icon, title: cert.organization ?? cert.commonName,
+                setupRow(icon: SignSetupChecklist.identity.icon, title: credentials.displayName(for: cert),
                          subtitle: identitySubtitle(cert)) {
                     let status = credentials.identityStatus(for: cert)
                     if dynamicTypeSize.isAccessibilitySize {
@@ -187,7 +212,7 @@ struct SignView: View {
             }
         }
         .buttonStyle(.plain)
-        .disabled(model.busyMessage != nil)
+        .disabled(model.busyMessage != nil || model.installing)
         .accessibilityHint("Opens your signing identities")
     }
 
@@ -203,25 +228,29 @@ struct SignView: View {
             }
         }
         .buttonStyle(.plain)
-        .disabled(model.busyMessage != nil)
+        .disabled(model.busyMessage != nil || model.installing)
         .accessibilityHint("Opens Settings to set the install host")
     }
 
     /// One line of the setup card: icon tile, the value or what to do, something on the right.
     private func setupRow<T: View>(icon: String, title: String, subtitle: String, @ViewBuilder trailing: () -> T) -> some View {
-        let layout = dynamicTypeSize.isAccessibilitySize
-            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
-            : AnyLayout(HStackLayout(spacing: 12))
-        return layout {
+        // The icon stays inline at every text size: stacking it above the copy cost
+        // a whole line per row and pushed the primary button off screen at XXXL.
+        HStack(alignment: .top, spacing: Wax.Space.m) {
             WaxIconTile(symbol: icon)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.callout.weight(.semibold)).foregroundStyle(Wax.text)
+            VStack(alignment: .leading, spacing: Wax.Space.hairline) {
+                Text(title).font(Wax.Ramp.body).foregroundStyle(Wax.text)
                     .fixedSize(horizontal: false, vertical: true)
-                Text(subtitle).font(.footnote).foregroundStyle(Wax.sub)
+                Text(subtitle).font(Wax.Ramp.secondary).foregroundStyle(Wax.sub)
                     .fixedSize(horizontal: false, vertical: true)
+                if dynamicTypeSize.isAccessibilitySize {
+                    trailing().padding(.top, Wax.Space.xs)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            trailing()
+            if !dynamicTypeSize.isAccessibilitySize {
+                trailing()
+            }
         }
         .frame(minHeight: Wax.rowHeight)
         .contentShape(Rectangle())
@@ -237,7 +266,7 @@ struct SignView: View {
     }
 
     private func identityTitle(_ cert: CertificateInfo) -> String {
-        [cert.organization ?? cert.commonName, IdentityReadiness.kindLabel(for: cert, profiles: credentials.profiles)]
+        [credentials.displayName(for: cert), IdentityReadiness.kindLabel(for: cert, profiles: credentials.profiles)]
             .compactMap { $0 }.joined(separator: Wax.separator)
     }
 
@@ -253,30 +282,36 @@ struct SignView: View {
                          subtitle: model.edits.isEmpty ? "Compression and app edits" : "App edits changed") {
                     Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(Wax.sub)
                 }
-                .padding(.vertical, 4)
+                .padding(.vertical, Wax.Space.xs)
             }
         }
         .buttonStyle(.plain)
-        .disabled(model.busyMessage != nil)
+        .disabled(model.busyMessage != nil || model.installing)
         .accessibilityHint("Opens signing options")
     }
 
     // MARK: Action zone
 
     private var idleActions: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: Wax.Space.s) {
             Button { runPrimary() } label: {
                 Label(primary.title, systemImage: primaryIcon)
             }
             .buttonStyle(WaxPrimaryButtonStyle())
             .disabled(model.installing)
-            .padding(.top, 4)
+            .padding(.top, Wax.Space.xs)
+            Text(primary.reason)
+                .font(Wax.Ramp.secondary).foregroundStyle(Wax.sub).multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
             if primary.isSigning && model.bundleIDMode == .rename {
-                Text("The app will be renamed to fit the profile.")
-                    .font(.footnote.weight(.semibold)).foregroundStyle(Wax.warn).multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity)
+                HStack(spacing: Wax.Space.s) {
+                    Image(systemName: "exclamationmark.triangle.fill").font(Wax.Ramp.secondary).foregroundStyle(Wax.warn)
+                    Text("The app will be renamed to fit the profile. It installs as a new app.")
+                        .font(Wax.Ramp.secondary.weight(.semibold)).foregroundStyle(Wax.warn)
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
             }
-            if model.canSign {
+            if model.canSign && (primary == .install || primary == .needServer) {
                 Button("Sign only and export") {
                     exportRun = true; model.sign()
                 }
@@ -306,25 +341,41 @@ struct SignView: View {
         }
     }
 
-    /// 0...1 for the whole job, from the real signing and upload progress weighted by expected time.
-    private var jobFraction: Double {
-        let signing = (model.report != nil || uploading) ? 1 : model.signFraction
-        return model.jobProgress(uploadFraction: uploadProgress ?? 0, exportOnly: exportRun).overall(sign: signing, upload: uploadProgress ?? 0)
+    /// The share of the job that is measured done. Unpacking, signing and packing each move the whole file, so the
+    /// sign pass is the measured part. A run that uploads splits the bar between signing and uploading; a run that
+    /// hands the file straight to iOS has nothing to measure after signing, so signing is the whole bar and the
+    /// handoff completes it. No time estimate is involved. A reserved install session and the "installing" flag are
+    /// true before signing starts, so they cannot count as past it: the melt starts at 0 and only the handoff reaches 100.
+    private var measuredFraction: Double {
+        SignProgress.fraction(signFraction: model.signFraction,
+                              signed: model.report != nil,
+                              uploading: uploading,
+                              uploadFraction: uploadProgress,
+                              handedToHost: handedToiOS,
+                              exportOnly: exportRun,
+                              remoteHost: ota.isConfigured && ota.hostKind != .phone)
+    }
+
+    /// Stops waiting when iOS's install prompt was dismissed; the signed app stays in the IPA tab.
+    private var cancelWaitButton: some View {
+        Button("Cancel install") { model.cancelInstallation(ota: ota) }
+            .buttonStyle(WaxSecondaryButtonStyle())
+            .accessibilityHint("Stops waiting for iOS. The signed app stays in the IPA tab.")
     }
 
     /// While Wax works: the melting wax, the percent, the stage, and the engine's own words underneath.
     private func progressCard(_ current: SignStage) -> some View {
-        let percent = Int(jobFraction * 100)
+        let percent = Int(measuredFraction * 100)
         let message = progressMessage
+        let sequence = SignStage.sequence(exportOnly: exportRun)
         return VStack(spacing: Wax.Space.m) {
-            WaxMelt(progress: jobFraction, height: 230, isVisible: router.tab == .sign)
-                .animation(reduceMotion ? nil : .linear(duration: 0.25), value: jobFraction)
+            WaxMelt(progress: measuredFraction, height: 230, isVisible: router.tab == .sign)
             Text("\(percent)%")
-                .font(.system(size: 46, weight: .bold, design: .rounded).monospacedDigit())
+                .font(.system(size: min(percentSize, 64), weight: .bold, design: .rounded).monospacedDigit())
                 .foregroundStyle(Wax.text)
                 .contentTransition(.numericText())
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: percent)
-            stageStrip(current)
+            stageStrip(current, sequence: sequence)
             Text(message)
                 .font(.subheadline).foregroundStyle(Wax.sub)
                 .multilineTextAlignment(.center).lineLimit(2)
@@ -336,48 +387,67 @@ struct SignView: View {
         .transition(.opacity)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Working")
-        .accessibilityValue("\(current.spoken). \(percent) percent. \(message)")
+        .accessibilityValue("\(current.spoken(in: sequence)). \(percent) percent. \(message)")
     }
 
-    /// Reading, Signing, Uploading: the one in hand is wax-red, the ones before it are ticked.
-    private func stageStrip(_ current: SignStage) -> some View {
-        HStack(alignment: .top, spacing: Wax.Space.s) {
-            ForEach(SignStage.allCases, id: \.self) { stage in
-                VStack(spacing: 4) {
-                    Image(systemName: stage.isDone(current: current) ? "checkmark.circle.fill"
-                                    : (stage == current ? "circle.fill" : "circle"))
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(stage.isDone(current: current) ? Wax.ok : (stage == current ? Wax.link : Wax.sub))
-                        .frame(width: 24, height: 24)
-                    Text(stage.title)
-                        .font(.footnote.weight(stage == current ? .semibold : .regular))
-                        .foregroundStyle(stage == current ? Wax.text : Wax.sub)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
+    /// The run's stages in order: the one in hand is wax-red, the ones before it are ticked. At accessibility
+    /// sizes the strip becomes one sentence, because five labels side by side cannot be read there.
+    private func stageStrip(_ current: SignStage, sequence: [SignStage]) -> some View {
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                Text(current.spoken(in: sequence))
+                    .font(Wax.Ramp.secondary.weight(.semibold))
+                    .foregroundStyle(Wax.text)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+            } else {
+                HStack(alignment: .top, spacing: Wax.Space.s) {
+                    ForEach(sequence, id: \.self) { stage in
+                        VStack(spacing: 4) {
+                            Image(systemName: stage.isDone(current: current) ? "checkmark.circle.fill"
+                                            : (stage == current ? "circle.fill" : "circle"))
+                                .font(.system(size: min(stageGlyphSize, 26), weight: .semibold))
+                                .foregroundStyle(stage.isDone(current: current) ? Wax.ok : (stage == current ? Wax.link : Wax.sub))
+                                .frame(width: 24, height: 24)
+                            Text(stage.title)
+                                .font(.footnote.weight(stage == current ? .semibold : .regular))
+                                .foregroundStyle(stage == current ? Wax.text : Wax.sub)
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
                 }
-                .frame(maxWidth: .infinity)
             }
         }
         .waxMotion(value: current)
     }
 
-    /// What Wax is doing right now, in the engine's own words.
+    /// What Wax is doing right now, in the engine's own words. Host-aware: never claims work that has not started.
     private var progressMessage: String {
-        if uploading { return "Sending to your server…" }
+        if waitingForTransfer { return "Waiting for iOS to take the app…" }
+        if uploading {
+            switch ota.hostKind {
+            case .bucket: return "Sending to your bucket…"
+            case .server: return "Sending to your server…"
+            case .phone: return "Sending the app from this iPhone…"
+            }
+        }
+        if waitingForTransfer { return "Waiting for iOS to take the app…" }
         if isReading { return model.ipaName ?? "Reading the file…" }
-        guard let busy = model.busyMessage else { return "Signing the app…" }
-        return busy.hasSuffix("…") ? busy : busy + "…"
+        if let busy = model.busyMessage { return busy.hasSuffix("…") ? busy : busy + "…" }
+        return preparingHost || model.installing ? "Preparing installation…" : "Signing the app…"
     }
 
     private var uploadProgress: Double? { if case .uploading(let p) = ota.state { return p } else { return nil } }
 
     private func resultCard(_ r: SigningModel.Report) -> some View {
         let failed = !r.checkFailures.isEmpty
-        return VStack(spacing: 8) {
+        return VStack(spacing: Wax.Space.s) {
             resultHeader(failed)
             if !failed { shelfSaveFeedback }
             if let link = model.readyLink {
-                Button { openURL(link) } label: { Label("Install", systemImage: "arrow.down.app") }
+                Button { openURL(link) } label: { Label(waitingForTransfer ? "Open install again" : "Install", systemImage: "arrow.down.app") }
                     .buttonStyle(WaxPrimaryButtonStyle())
             }
             exportButton(r)
@@ -397,30 +467,38 @@ struct SignView: View {
             .buttonStyle(.plain)
             .accessibilityHint("Opens the checks Wax made")
         }
-        .padding(.top, 4)
+        .padding(.top, Wax.Space.xs)
     }
 
     private func resultHeader(_ failed: Bool) -> some View {
-        HStack(spacing: 16) {
+        HStack(spacing: Wax.Space.l) {
             WaxSeal(size: 76)
                 .scaleEffect(stamped || reduceMotion ? 1 : 1.9)
                 .rotationEffect(.degrees(stamped || reduceMotion ? 0 : -14))
                 .opacity(stamped || reduceMotion ? 1 : 0)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(failed ? "Signed, with problems" : (handedToiOS ? "Signed and uploaded" : "Signed"))
-                    .font(.headline).foregroundStyle(failed ? Wax.bad : Wax.ok)
-                Text(resultSubtitle).font(.footnote).foregroundStyle(Wax.sub)
+            VStack(alignment: .leading, spacing: Wax.Space.xs) {
+                Text(resultTitle(failed: failed))
+                    .font(.headline).foregroundStyle(failed ? Wax.bad : (waitingForTransfer ? Wax.text : Wax.ok))
+                Text(resultSubtitle).font(Wax.Ramp.secondary).foregroundStyle(Wax.sub)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, 16).padding(.vertical, 14)
+        .padding(.horizontal, Wax.Space.l).padding(.vertical, Wax.Space.m)
         .frame(maxWidth: .infinity)
-        .background(failed ? Wax.badBg : Wax.okBg, in: RoundedRectangle(cornerRadius: Wax.radius, style: .continuous))
+        .background(failed ? Wax.badBg : (waitingForTransfer ? Wax.chip : Wax.okBg), in: RoundedRectangle(cornerRadius: Wax.radius, style: .continuous))
         .accessibilityElement(children: .combine)
     }
 
+    private func resultTitle(failed: Bool) -> String {
+        if failed { return "Signed, with problems" }
+        if waitingForTransfer { return "Handed to iOS" }
+        if handedToiOS { return "Signed and handed to iOS" }
+        return "Signed"
+    }
+
     private var resultSubtitle: String {
+        if waitingForTransfer { return "Waiting for iOS to take the app. Keep Wax open." }
         if handedToiOS { return "Wax checked the file. iOS decides whether it installs." }
         return "Wax checked the file. Export it or sign again."
     }
@@ -473,11 +551,25 @@ struct SignView: View {
         }
     }
 
-    /// A problem sits above the big button, with the way back into Files.
-    private func errorCard(_ text: String) -> some View {
-        WaxFeedbackCard(tone: .bad, text: text, actionTitle: "Choose another file") {
-            picking = true
-            ImportLogs.shared.log("sign: choose another from error")
+    /// A problem sits below the selection, with the way back into Files only when another file is a real choice.
+    @ViewBuilder private func errorCard(_ text: String) -> some View {
+        if model.recovery != nil {
+            VStack(spacing: Wax.Space.s) {
+                WaxFeedbackCard(tone: .bad, text: text, actionTitle: "Remove app extensions") {
+                    model.removeUnsupportedExtensions()
+                }
+                .accessibilityIdentifier("removeUnsupportedExtensions")
+                Text("Removes widgets and other extensions from the signed copy. Your original IPA stays unchanged.")
+                    .font(.footnote).foregroundStyle(Wax.sub)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } else if model.ipaInfo != nil {
+            WaxFeedbackCard(tone: .bad, text: text, actionTitle: "Choose another file") {
+                picking = true
+                ImportLogs.shared.log("sign: choose another from error")
+            }
+        } else {
+            WaxFeedbackCard(tone: .bad, text: text)
         }
     }
 
@@ -486,7 +578,7 @@ struct SignView: View {
     private var detailsSheet: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: Wax.Space.m) {
                     WaxPanel {
                         if let info = model.ipaInfo {
                             WaxListRow(icon: "app", title: "App's bundle ID", detail: info.bundleIdentifier)
@@ -507,6 +599,9 @@ struct SignView: View {
                         }
                         .buttonStyle(WaxRowButtonStyle())
                     }
+                    if let passport = model.passportReport {
+                        WaxPanel { passportDetails(passport).padding(.vertical, Wax.Space.m) }
+                    }
                     if let r = model.report { WaxPanel { reportDetails(r).padding(.vertical, Wax.Space.m) } }
                 }
                 .padding(Wax.inset)
@@ -520,14 +615,120 @@ struct SignView: View {
     }
 
     @ViewBuilder private func reportDetails(_ r: SigningModel.Report) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("What Wax checked").font(.subheadline.weight(.semibold)).foregroundStyle(Wax.text)
-            Text(r.checkSummary + " (Wax's own consistency checks, not Apple's verifier.)")
-                .font(.footnote).foregroundStyle(Wax.sub)
-            ForEach(r.checkFailures, id: \.self) { Text($0).font(.footnote).foregroundStyle(Wax.bad) }
-            ForEach(r.archiveLines, id: \.self) { Text($0).font(.footnote).foregroundStyle(Wax.sub) }
-            ForEach(r.profileLines, id: \.self) { Text($0).font(.footnote).foregroundStyle(Wax.sub) }
-            ForEach(r.warnings, id: \.self) { Text($0).font(.footnote).foregroundStyle(Wax.warn) }
+        VStack(alignment: .leading, spacing: Wax.Space.s) {
+            Text("What Wax checked").font(Wax.Ramp.rowLabel).foregroundStyle(Wax.text)
+            HStack(alignment: .top, spacing: Wax.Space.s) {
+                Image(systemName: r.checkFailures.isEmpty ? "checkmark.circle.fill" : "xmark.octagon.fill")
+                    .foregroundStyle(r.checkFailures.isEmpty ? Wax.ok : Wax.bad)
+                    .accessibilityHidden(true)
+                Text(r.checkSummary + " (Wax's own consistency checks, not Apple's verifier.)")
+                    .font(Wax.Ramp.paragraph).foregroundStyle(Wax.text)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !r.checkFailures.isEmpty || !r.warnings.isEmpty {
+                Text("Needs attention").font(Wax.Ramp.section).foregroundStyle(Wax.sub)
+                    .padding(.top, Wax.Space.xs)
+                ForEach(r.checkFailures, id: \.self) { failure in
+                    findingLine(symbol: "xmark.octagon.fill", color: Wax.bad, text: failure)
+                }
+                ForEach(r.warnings, id: \.self) { warning in
+                    findingLine(symbol: "exclamationmark.triangle.fill", color: Wax.warn, text: warning)
+                }
+            }
+            if !r.profileLines.isEmpty {
+                detailGroup(title: "Profiles") {
+                    ForEach(r.profileLines, id: \.self) { Text($0).font(Wax.Ramp.secondary).foregroundStyle(Wax.sub) }
+                }
+            }
+            if !r.archiveLines.isEmpty {
+                detailGroup(title: "Archive details") {
+                    ForEach(r.archiveLines, id: \.self) { Text($0).font(Wax.Ramp.secondary).foregroundStyle(Wax.sub) }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func passportDetails(_ report: SigningPreflightReport) -> some View {
+        let blocked = report.findings.filter { $0.status == .blocked }
+        let warnings = report.findings.filter { $0.status == .warning }
+        let unknowns = report.findings.filter { $0.status == .unknown }
+        let passes = report.findings.filter { $0.status == .pass }
+        VStack(alignment: .leading, spacing: Wax.Space.s) {
+            Text("Installability preview").font(Wax.Ramp.rowLabel).foregroundStyle(Wax.text)
+            Text("Wax checks these inputs before signing. Only iOS can make the final install decision.")
+                .font(Wax.Ramp.paragraph).foregroundStyle(Wax.sub).fixedSize(horizontal: false, vertical: true)
+            if !blocked.isEmpty {
+                Text("Blocking").font(Wax.Ramp.section).foregroundStyle(Wax.sub)
+                ForEach(blocked) { finding in findingRow(finding) }
+            }
+            if !warnings.isEmpty {
+                Text("Needs attention").font(Wax.Ramp.section).foregroundStyle(Wax.sub)
+                ForEach(warnings) { finding in findingRow(finding) }
+            }
+            if !unknowns.isEmpty {
+                detailGroup(title: "Wax cannot know (\(unknowns.count))") {
+                    ForEach(unknowns) { finding in findingRow(finding) }
+                }
+            }
+            if !passes.isEmpty {
+                detailGroup(title: "Checked and passed (\(passes.count))") {
+                    ForEach(passes) { finding in findingRow(finding) }
+                }
+            }
+        }
+    }
+
+    private func findingLine(symbol: String, color: Color, text: String) -> some View {
+        HStack(alignment: .top, spacing: Wax.Space.s) {
+            Image(systemName: symbol).foregroundStyle(color).accessibilityHidden(true)
+            Text(text).font(Wax.Ramp.secondary).foregroundStyle(Wax.text).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func findingRow(_ finding: PreflightFinding) -> some View {
+        VStack(alignment: .leading, spacing: Wax.Space.xs) {
+            HStack(alignment: .top, spacing: Wax.Space.s) {
+                Image(systemName: findingSymbol(finding.status))
+                    .foregroundStyle(findingColor(finding.status)).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: Wax.Space.hairline) {
+                    Text(finding.title).font(Wax.Ramp.rowLabel).foregroundStyle(Wax.text)
+                    Text(finding.status.rawValue.capitalized).font(Wax.Ramp.caption).foregroundStyle(findingColor(finding.status))
+                }
+            }
+            Text(finding.detail).font(Wax.Ramp.secondary).foregroundStyle(Wax.sub).fixedSize(horizontal: false, vertical: true)
+            if !finding.evidence.isEmpty {
+                Text(finding.evidence).font(Wax.Ramp.secondary).foregroundStyle(Wax.sub).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, Wax.Space.xs)
+    }
+
+    private func detailGroup<Content: View>(title: String, @ViewBuilder content: @escaping () -> Content) -> some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: Wax.Space.s) { content() }
+                .padding(.top, Wax.Space.xs)
+                .fixedSize(horizontal: false, vertical: true)
+        } label: {
+            Text(title).font(Wax.Ramp.rowLabel).foregroundStyle(Wax.text)
+        }
+        .tint(Wax.link)
+    }
+
+    private func findingSymbol(_ status: PreflightStatus) -> String {
+        switch status {
+        case .pass: "checkmark.circle.fill"
+        case .warning: "exclamationmark.triangle.fill"
+        case .blocked: "xmark.octagon.fill"
+        case .unknown: "questionmark.circle"
+        }
+    }
+
+    private func findingColor(_ status: PreflightStatus) -> Color {
+        switch status {
+        case .pass: Wax.ok
+        case .warning: Wax.warn
+        case .blocked: Wax.bad
+        case .unknown: Wax.sub
         }
     }
 

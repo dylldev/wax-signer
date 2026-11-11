@@ -42,6 +42,133 @@ final class SigningModelTests: XCTestCase {
         model = nil
     }
 
+    private func extensionSigner(profile: Data = FixtureData.profileExactTestApp,
+                                 p12: Data = FixtureData.p12ValidLegacy) async throws -> (SigningModel, LibraryModel, URL) {
+        let directory = work.appendingPathComponent(UUID().uuidString)
+        let store = try CredentialStore(directory: directory.appendingPathComponent("Credentials"), keychain: ModelTestKeychain())
+        let cert = try store.importCertificate(p12: p12, password: FixtureData.password)
+        try store.importProfile(profile)
+        let library = LibraryModel(library: IPALibrary(root: directory.appendingPathComponent("Shelf")), announce: { _ in })
+        let saved = try await library.fileNow(Fixtures.ipa, info: IPAInspector.inspect(url: Fixtures.ipa))
+        let source = library.url(for: saved.entry)
+        let signer = SigningModel(credentials: CredentialsModel(store: store), library: library, background: background)
+        signer.use(saved.entry)
+        for _ in 0..<500 where signer.busyMessage != nil { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertNotNil(signer.ipaInfo, signer.errorText ?? "IPA not loaded")
+        let oldKeep = UserDefaults.standard.object(forKey: "keepBundleID")
+        let oldRewrite = UserDefaults.standard.object(forKey: "rewriteBundleID")
+        signer.keepBundleID = false; signer.rewriteBundleID = false
+        UserDefaults.standard.set(oldKeep, forKey: "keepBundleID")
+        UserDefaults.standard.set(oldRewrite, forKey: "rewriteBundleID")
+        signer.edits = AppEdits()
+        signer.certificateID = cert.id
+        return (signer, library, source)
+    }
+
+    func testExtensionMismatchOffersExplicitOutputOnlyRecovery() async throws {
+        let (signer, library, source) = try await extensionSigner()
+        let original = try Data(contentsOf: source)
+        let task = try XCTUnwrap(signer.sign()); await task.value
+
+        XCTAssertEqual(signer.errorText, "Bundle PlugIns/TestExt.appex has identifier dev.localsigner.testapp.TestExt, which the profile's application identifier FIXT123456.dev.localsigner.testapp does not permit.")
+        XCTAssertEqual(signer.recovery, .removeAppExtensions(bundle: "PlugIns/TestExt.appex"))
+        XCTAssertNil(signer.passportReport)
+        XCTAssertNil(signer.report)
+        XCTAssertFalse(signer.edits.removeExtensions)
+        XCTAssertTrue(library.signed.isEmpty)
+        let files = try XCTUnwrap(FileManager.default.enumerator(at: library.storage.root, includingPropertiesForKeys: nil))
+        XCTAssertEqual(files.compactMap { $0 as? URL }.filter { $0.pathExtension == "ipa" }.count, 1, "Only the original IPA may exist after refusal")
+
+        signer.removeUnsupportedExtensions()
+        XCTAssertTrue(signer.edits.removeExtensions)
+        XCTAssertNil(signer.recovery)
+        XCTAssertNil(signer.errorText)
+        XCTAssertNil(signer.passportReport)
+        XCTAssertNil(signer.report)
+        XCTAssertFalse(signer.runningSign)
+        XCTAssertTrue(library.signed.isEmpty, "Recovery requires another explicit Sign")
+        XCTAssertEqual(try Data(contentsOf: source), original)
+
+        let retry = try XCTUnwrap(signer.sign()); await retry.value
+        let report = try XCTUnwrap(signer.report, signer.errorText ?? "No signed result")
+        XCTAssertTrue(report.checkFailures.isEmpty)
+        XCTAssertTrue(signer.shelfSaveState.confirmedSaved)
+        XCTAssertEqual(library.signed.count, 1)
+        let outputNames = try IPAExtractor.extract(ipa: report.output, to: work.appendingPathComponent("recovered-output"))
+        XCTAssertFalse(outputNames.contains { $0.contains(".appex/") })
+        XCTAssertEqual(try Data(contentsOf: source), original, "The retained original must remain byte-identical")
+        let sourceNames = try IPAExtractor.extract(ipa: source, to: work.appendingPathComponent("retained-original"))
+        XCTAssertTrue(sourceNames.contains { $0.contains("PlugIns/TestExt.appex/") })
+    }
+
+    func testExtensionRecoveryClearsOnInputChangesAndNewRuns() async throws {
+        let (signer, _, _) = try await extensionSigner()
+        for change in 0..<4 {
+            let task = try XCTUnwrap(signer.sign()); await task.value
+            XCTAssertNotNil(signer.recovery)
+            switch change {
+            case 0: signer.edits.displayName = "Changed"
+            case 1: signer.profileChoice = UUID(); signer.profileChoice = nil
+            case 2: let id = signer.certificateID; signer.certificateID = nil; signer.certificateID = id
+            default: signer.strictEntitlements.toggle()
+            }
+            XCTAssertNil(signer.recovery)
+            XCTAssertNil(signer.errorText)
+        }
+        signer.strictEntitlements = false
+        let failed = try XCTUnwrap(signer.sign()); await failed.value
+        XCTAssertNotNil(signer.recovery)
+        let cancellation = SigningCancellation(); cancellation.cancel()
+        let retry = try XCTUnwrap(signer.sign(cancellation: cancellation))
+        XCTAssertNil(signer.recovery, "A new attempt must discard the previous recovery")
+        await retry.value
+        XCTAssertNil(signer.recovery, "Cancellation must not reuse an extension recovery")
+
+        let again = try XCTUnwrap(signer.sign()); await again.value
+        XCTAssertNotNil(signer.recovery)
+        let malformed = work.appendingPathComponent("malformed.ipa")
+        try Data("not an IPA".utf8).write(to: malformed)
+        signer.picked(ipa: malformed)
+        XCTAssertNil(signer.recovery)
+        for _ in 0..<500 where signer.busyMessage != nil { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertNotNil(signer.errorText)
+        XCTAssertNil(signer.recovery)
+    }
+
+    func testMainAppAndCertificateFailuresDoNotOfferExtensionRemoval() async throws {
+        for (profile, p12, expected) in [
+            (FixtureData.profileValidBER, FixtureData.p12ValidLegacy, "Bundle . has identifier"),
+            (FixtureData.profileExactTestApp, FixtureData.p12SecondIdentity, "does not list the signing certificate")
+        ] {
+            let (signer, library, _) = try await extensionSigner(profile: profile, p12: p12)
+            let task = try XCTUnwrap(signer.sign()); await task.value
+            XCTAssertTrue(signer.errorText?.contains(expected) == true, signer.errorText ?? "No error")
+            XCTAssertNil(signer.recovery)
+            signer.removeUnsupportedExtensions()
+            XCTAssertFalse(signer.edits.removeExtensions)
+            XCTAssertNil(signer.report)
+            XCTAssertNil(signer.passportReport)
+            XCTAssertTrue(library.signed.isEmpty)
+        }
+    }
+
+    func testRecoveryClassificationRequiresTypedExtensionIdentifierMismatch() {
+        XCTAssertEqual(SigningModel.recovery(for: .appIdentifierMismatch(bundle: "PlugIns/homewidget.appex", id: "app.widget", profile: "TEAM.app")),
+                       .removeAppExtensions(bundle: "PlugIns/homewidget.appex"))
+        let errors: [SigningError] = [
+            .appIdentifierMismatch(bundle: ".", id: "app", profile: "TEAM.other"),
+            .appIdentifierMismatch(bundle: "Watch/WatchApp.app", id: "app.watch", profile: "TEAM.app"),
+            .appIdentifierMismatch(bundle: "Watch/WatchApp.app/PlugIns/WatchExt.appex", id: "app.watch.ext", profile: "TEAM.app"),
+            .certificateExpired(.distantPast), .profileDoesNotListCertificate,
+            .profileRejected(bundle: "PlugIns/homewidget.appex", profile: "Main", reason: "expired"),
+            .noCompatibleProfile(bundle: "PlugIns/homewidget.appex", id: "app.widget", reasons: ["certificate not listed"]),
+            .bundle("malformed input")
+        ]
+        for error in errors {
+            XCTAssertNil(SigningModel.recovery(for: error), "\(error)")
+        }
+    }
+
     func testOneTapSigningProducesVerifiedSavedOutput() async throws {
         let library = LibraryModel(library: IPALibrary(root: work.appendingPathComponent("OneTapShelf")), announce: { _ in })
         let signer = SigningModel(credentials: credentials, library: library, background: background)
@@ -186,7 +313,8 @@ final class SigningModelTests: XCTestCase {
         await signing.value
         let report = try XCTUnwrap(model.report, model.errorText ?? "No signing result")
         XCTAssertTrue(report.checkFailures.isEmpty)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: report.output.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: report.output.path),
+                      "Output: \(report.output.lastPathComponent); save state: \(String(describing: model.shelfSaveState))")
         XCTAssertNil(model.passportReport)
     }
 

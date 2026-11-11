@@ -5,7 +5,7 @@ import SourcesKit
 /// Display-only, bounded source claims beside metadata from an actually committed IPA entry.
 /// Never associates artifacts by matching their names/versions and never exposes download URL tokens.
 struct SourceAppDetails {
-    struct Field: Identifiable {
+    struct Field: Identifiable, Equatable, Hashable {
         let title: String
         let value: String
         var id: String { title }

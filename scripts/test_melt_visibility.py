@@ -14,10 +14,13 @@ class MeltVisibility(unittest.TestCase):
         for arguments in calls:
             self.assertRegex(arguments, r'isVisible:\s*router\.tab\s*==\s*\.sign')
 
-    def test_timeline_pauses_for_visibility_scene_and_reduce_motion(self):
+    def test_renderer_pauses_for_visibility_scene_and_reduce_motion(self):
         source = (ROOT / 'App/WaxMelt.swift').read_text()
-        self.assertRegex(source, r'private var animates: Bool\s*\{\s*isVisible\s*&&\s*scenePhase == \.active\s*&&\s*!reduceMotion\s*&&\s*progress < 1\s*\}')
-        self.assertIn('paused: !animates', source)
+        self.assertRegex(source, r'private var animates: Bool\s*\{\s*isVisible\s*&&\s*scenePhase == \.active\s*&&\s*!reduceMotion\s*\}')
+        self.assertIn('isAnimating: animates', source)
+        view = (ROOT / 'App/WaxCandleView.swift').read_text()
+        self.assertIn('view.isPaused = !isAnimating', view)
+        self.assertIn('view.isPaused = true', view)
 
 
 if __name__ == '__main__':

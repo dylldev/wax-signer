@@ -25,8 +25,11 @@ private final class BucketTransactionProtocol: URLProtocol {
                 stream.open(); defer { stream.close() }; var bytes = [UInt8](repeating: 0, count: 4096)
                 while stream.read(&bytes, maxLength: bytes.count) > 0 {}
             }
-            let body = request.httpMethod == "GET" ? Data("<plist><dict/></plist>".utf8) : Data()
-            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+            // A bucket answers a presigned ranged GET with just the requested bytes; the synthetic IPA is
+            // three bytes, and the tail check reads exactly those back.
+            let ranged = request.httpMethod == "GET" && request.value(forHTTPHeaderField: "Range") != nil
+            let body = ranged ? Data([1, 2, 3]) : (request.httpMethod == "GET" ? Data("<plist><dict/></plist>".utf8) : Data())
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: ranged ? 206 : 200, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: body); client?.urlProtocolDidFinishLoading(self)
         } catch { client?.urlProtocol(self, didFailWithError: error) }
     }
@@ -43,6 +46,9 @@ final class BucketCleanupOutcomeTests: XCTestCase {
     private var journal: BucketCleanupStore { BucketCleanupStore(file: root.appendingPathComponent("journal.json")) }
     private var credentials: S3Credentials { S3Credentials(accessKey: "public-id", secretKey: "synthetic-key", region: "auto", endpoint: URL(string: "https://original.example")!) }
     override func setUpWithError() throws {
+        // Each test installs its own request handler; a leftover one would answer the next test's requests
+        // with stale assertions (and has crashed the runner).
+        BucketTransactionProtocol.handler = nil
         root = FileManager.default.temporaryDirectory.appendingPathComponent("bucket-outcome-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         for key in settingKeys { if let value = UserDefaults.standard.object(forKey: key) { savedDefaults[key] = value } }
@@ -97,11 +103,13 @@ final class BucketCleanupOutcomeTests: XCTestCase {
         await model.sweepBucket(credentials: credentials, bucket: "wax")
         XCTAssertEqual(try Data(contentsOf: file), data); XCTAssertTrue(model.bucketNote?.contains("preserved") == true)
     }
-    private func uploadingModel() -> (OTAInstallModel, URLSession) {
+    private func uploadingModel(expensive: Bool? = false, allowCellular: Bool = false) -> (OTAInstallModel, URLSession) {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [BucketTransactionProtocol.self]
         let network = URLSession(configuration: config)
+        defaults.set(allowCellular, forKey: "allowCellularUploads")
         let model = OTAInstallModel(store: EmptySecrets(), bucketStore: BucketTestSecrets(), cleanupStore: journal, defaults: defaults,
-            sweepOnStart: false, bucketHost: { try S3Host(credentials: $0, bucket: $1, session: network) }, cleanup: { _, _, _ in })
+            sweepOnStart: false, bucketHost: { try S3Host(credentials: $0, bucket: $1, session: network) }, networkIsExpensive: { expensive },
+            cleanup: { _, _, _ in })
         model.hostKind = .bucket; model.bucketEndpoint = credentials.endpoint.absoluteString; model.bucketName = "wax"; model.bucketRegion = "auto"
         return (model, network)
     }
@@ -139,4 +147,22 @@ final class BucketCleanupOutcomeTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "injected index damage")
     }
 
+
+    func testCellularBlocksAnUploadBeforeTheFirstByte() async throws {
+        BucketTransactionProtocol.handler = { _ in XCTFail("nothing may be sent over a metered connection by default") }
+        let (model, network) = uploadingModel(expensive: true); defer { network.invalidateAndCancel() }
+        let link = try await upload(model)
+        XCTAssertNil(link)
+        guard case .failed(let message) = model.state else { return XCTFail("must refuse before uploading") }
+        XCTAssertTrue(message.contains("Wi-Fi"), message)
+        XCTAssertTrue(message.contains("Upload over cellular"), message)
+        XCTAssertTrue(try journal.records().isEmpty, "a refused upload leaves no cleanup record")
+    }
+
+    func testTheCellularOverrideLetsTheUploadRun() async throws {
+        let (model, network) = uploadingModel(expensive: true, allowCellular: true); defer { network.invalidateAndCancel() }
+        let link = try await upload(model)
+        XCTAssertNotNil(link)
+        XCTAssertEqual(model.state, .handedToiOS)
+    }
 }

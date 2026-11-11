@@ -11,7 +11,8 @@ final class WaxUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
-        if name.contains("testDeleteConfirmation") || name.contains("testSettingsAndLibraryBottomRows") {
+        if name.contains("testDeleteConfirmation") || name.contains("testSettingsAndLibraryBottomRows")
+            || name.contains("testDarkPopulatedLibrary") || name.contains("testLibraryCardsShareOneColumn") {
             if app.state != .notRunning { app.terminate() }
             try prepareDeletionFixtures()
         }
@@ -197,13 +198,48 @@ final class WaxUITests: XCTestCase {
         tap("IPA")
         let lastName = try XCTUnwrap(fixtureEntries.last).name
         let lastApp = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", lastName + ",")).firstMatch
-        for _ in 0..<10 {
-            if lastApp.isHittable && lastApp.frame.maxY <= app.buttons["IPA"].firstMatch.frame.minY { break }
+        // The list is a plain VStack now, so every row is laid out and reachable at this text size.
+        for _ in 0..<16 {
+            if lastApp.exists, lastApp.isHittable, lastApp.frame.maxY <= app.buttons["IPA"].firstMatch.frame.minY { break }
             app.swipeUp()
         }
         XCTAssertTrue(lastApp.isHittable)
         XCTAssertLessThanOrEqual(lastApp.frame.maxY, app.buttons["IPA"].firstMatch.frame.minY)
         capture("largest-text-library-bottom-above-tabs")
+    }
+
+    /// A dark library with two saved apps: the state 05 could not capture. Also pins that both shelf rows render.
+    /// Every library card shares one leading and one trailing edge, so the shelf reads as a column and not a stagger.
+    /// The add row is included: it is the first card and the one a reader compares the rest against.
+    func testLibraryCardsShareOneColumn() throws {
+        tap("IPA")
+        let cards = [
+            app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Add an IPA")).firstMatch,
+            app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Wax UI Cancel,")).firstMatch,
+            app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Wax UI Delete,")).firstMatch,
+        ]
+        for card in cards { XCTAssertTrue(card.waitForExistence(timeout: 5)) }
+        let frames = cards.map(\.frame)
+        for frame in frames.dropFirst() {
+            XCTAssertEqual(frame.minX, frames[0].minX, accuracy: 0.5, "Card leading edges must match")
+            XCTAssertEqual(frame.maxX, frames[0].maxX, accuracy: 0.5, "Card trailing edges must match")
+            XCTAssertEqual(frame.width, frames[0].width, accuracy: 0.5, "Card widths must match")
+        }
+        capture("library-card-column")
+    }
+
+    func testDarkPopulatedLibraryShowsEverySavedApp() throws {
+        app.terminate()
+        XCUIDevice.shared.appearance = .dark
+        defer { XCUIDevice.shared.appearance = .light }
+        app.launch()
+        tap("IPA")
+        let first = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Wax UI Delete,")).firstMatch
+        let second = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Wax UI Cancel,")).firstMatch
+        XCTAssertTrue(first.waitForExistence(timeout: 5))
+        XCTAssertTrue(second.exists)
+        XCTAssertFalse(app.staticTexts["No unsigned apps yet"].exists)
+        capture("dark-populated-library")
     }
 
     func testSigningOptionsKeyboardInput() throws {
@@ -257,6 +293,51 @@ final class WaxUITests: XCTestCase {
         tap("Settings")
         tap("Certificates & profiles, None yet")
         capture("11-credentials-empty")
+    }
+
+    func testCredentialImportSheetClearsDismissedPasswordAndSupportsKeyboard() throws {
+        tap("Settings")
+        tap("Certificates & profiles, None yet")
+        tap("Import credentials")
+        XCTAssertTrue(app.buttons["Choose .P12 Certificate"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Choose Mobile Provision"].exists)
+        let password = app.secureTextFields["Certificate Password"]
+        XCTAssertTrue(password.exists)
+        let nickname = app.textFields["Custom Nickname"]
+        XCTAssertEqual(password.frame.width, nickname.frame.width, accuracy: 1)
+        XCTAssertEqual(password.frame.midX, nickname.frame.midX, accuracy: 1)
+        // Native field frames describe the text line, excluding the padded touch area.
+        password.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+            .withOffset(CGVector(dx: 0, dy: -8)).tap()
+        app.typeText("temporary-password")
+        XCTAssertFalse((password.value as? String ?? "").isEmpty, "The padded edge must focus the password field")
+        XCTAssertTrue(app.buttons["Close credential import"].isHittable)
+        capture("credential-import-keyboard")
+        app.buttons["Close credential import"].tap()
+        tap("Import credentials")
+        XCTAssertEqual(app.secureTextFields["Certificate Password"].value as? String, "")
+        XCTAssertEqual(app.textFields["Custom Nickname"].value as? String, "Optional")
+        XCTAssertFalse(app.buttons["Done"].isEnabled)
+        capture("credential-import-reset")
+        app.buttons["Close credential import"].tap()
+    }
+
+    func testCredentialImportSheetLargestText() throws {
+        app.terminate()
+        app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        app.launch()
+        tap("Settings")
+        tap("Certificates & profiles, None yet")
+        tap("Import credentials")
+        XCTAssertTrue(app.buttons["Close credential import"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Close credential import"].isHittable)
+        app.swipeUp()
+        let nickname = app.textFields["Custom Nickname"]
+        XCTAssertTrue(nickname.isHittable)
+        nickname.tap(); nickname.typeText("My signing identity")
+        XCTAssertTrue(app.buttons["Close credential import"].isHittable)
+        capture("credential-import-largest-text-keyboard")
+        app.buttons["Close credential import"].tap()
     }
 
     func testAdaptiveScreens() throws {
