@@ -9,24 +9,51 @@ final class SignStageTests: XCTestCase {
         XCTAssertNil(SignStage.resolve(reading: false, signing: false, uploading: false))
     }
 
-    func testTheStagesRunInOrderAndSaySoInTwoWords() {
-        XCTAssertEqual(SignStage.allCases, [.reading, .signing, .uploading])
-        XCTAssertEqual(SignStage.allCases.map(\.title), ["Reading", "Signing", "Uploading"])
+    /// A reservation stays preparing while signing runs; uploading and handoff happen later.
+    func testLaterStepsWinOverEarlierOnes() {
+        XCTAssertEqual(SignStage.resolve(reading: true, signing: true, uploading: true, preparing: true), .uploading)
+        XCTAssertEqual(SignStage.resolve(reading: true, signing: true, uploading: true, preparing: true, handed: true), .handed)
+        XCTAssertEqual(SignStage.resolve(reading: false, signing: false, uploading: false, preparing: true), .preparing)
+        XCTAssertNil(SignStage.resolve(reading: false, signing: false, uploading: false, preparing: false, handed: false))
+    }
+
+    func testReservationDoesNotMarkActiveSigningOrReadingComplete() {
+        XCTAssertEqual(SignStage.resolve(reading: false, signing: true, uploading: false, preparing: true), .signing)
+        XCTAssertEqual(SignStage.resolve(reading: true, signing: false, uploading: false, preparing: true), .reading)
+    }
+
+    func testTheStagesRunInOrderAndSayWhereTheyAre() {
+        XCTAssertEqual(SignStage.allCases, [.reading, .signing, .preparing, .uploading, .handed])
+        XCTAssertEqual(SignStage.allCases.map(\.title), ["Reading", "Signing", "Preparing", "Uploading", "Handed to iOS"])
+    }
+
+    /// A sign-only export never uploads or hands off, so it must not show five steps it will never reach.
+    func testASignOnlyRunShowsTwoSteps() {
+        XCTAssertEqual(SignStage.sequence(exportOnly: true), [.reading, .signing])
+        XCTAssertEqual(SignStage.sequence(exportOnly: false), SignStage.allCases)
+        XCTAssertEqual(SignStage.signing.spoken(in: SignStage.sequence(exportOnly: true)), "Stage 2 of 2, Signing")
     }
 
     func testEveryStageBeforeTheCurrentOneIsTicked() {
         XCTAssertFalse(SignStage.reading.isDone(current: .reading))
-        XCTAssertTrue(SignStage.reading.isDone(current: .signing))
-        XCTAssertTrue(SignStage.reading.isDone(current: .uploading))
+        XCTAssertTrue(SignStage.reading.isDone(current: .preparing))
+        XCTAssertFalse(SignStage.preparing.isDone(current: .preparing))
+        XCTAssertTrue(SignStage.signing.isDone(current: .preparing))
         XCTAssertFalse(SignStage.signing.isDone(current: .signing))
         XCTAssertTrue(SignStage.signing.isDone(current: .uploading))
         XCTAssertFalse(SignStage.uploading.isDone(current: .uploading))
+        XCTAssertFalse(SignStage.uploading.isDone(current: .preparing))
+        XCTAssertTrue(SignStage.preparing.isDone(current: .uploading))
+        XCTAssertTrue(SignStage.preparing.isDone(current: .handed))
+        XCTAssertFalse(SignStage.handed.isDone(current: .handed))
     }
 
     func testTheSpokenLineSaysWhereInTheJobItIs() {
-        XCTAssertEqual(SignStage.reading.spoken, "Stage 1 of 3, Reading")
-        XCTAssertEqual(SignStage.signing.spoken, "Stage 2 of 3, Signing")
-        XCTAssertEqual(SignStage.uploading.spoken, "Stage 3 of 3, Uploading")
+        XCTAssertEqual(SignStage.reading.spoken(), "Stage 1 of 5, Reading")
+        XCTAssertEqual(SignStage.signing.spoken(), "Stage 2 of 5, Signing")
+        XCTAssertEqual(SignStage.uploading.spoken(), "Stage 4 of 5, Uploading")
+        XCTAssertEqual(SignStage.preparing.spoken(), "Stage 3 of 5, Preparing")
+        XCTAssertEqual(SignStage.handed.spoken(), "Stage 5 of 5, Handed to iOS")
     }
 }
 

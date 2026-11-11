@@ -62,21 +62,24 @@ struct WaxTabBar: View {
         (.sources, "Sources", .sources), (.ipa, "IPA", .ipa), (.sign, "Sign", .sign), (.settings, "Settings", .settings),
     ]
 
+    /// The pill's own spring. Named once so a tap and a programmatic tab change slide identically.
+    private static let pillSpring = Animation.spring(response: 0.38, dampingFraction: 0.72)
+
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: Wax.Space.xs) {
             ForEach(items, id: \.tab) { item in
                 let selected = selection == item.tab
                 Button {
                     guard !selected else { onReselect(item.tab); return }
                     UISelectionFeedbackGenerator().selectionChanged()
-                    withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.72)) { selection = item.tab }
+                    withAnimation(reduceMotion ? nil : Self.pillSpring) { selection = item.tab }
                 } label: {
-                    VStack(spacing: 3) {
+                    VStack(spacing: Wax.Space.xs) {
                         WaxGlyph(kind: item.glyph)
                             .stroke(style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                             .frame(width: 24, height: 24)
-                            .scaleEffect(selected ? 1.08 : 1)
-                        Text(item.title).font(.caption2.weight(.semibold)).lineLimit(1)
+                            .scaleEffect(selected && !reduceMotion ? 1.08 : 1)
+                        Text(item.title).font(Wax.Ramp.caption.weight(.semibold)).lineLimit(1)
                             .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                     }
                     .foregroundStyle(selected ? Wax.onAccent : Wax.sub)
@@ -94,12 +97,13 @@ struct WaxTabBar: View {
                 .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
             }
         }
-        .padding(6)
-        .background(Wax.card, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(Wax.line, lineWidth: 1))
-        .shadow(color: .black.opacity(0.10), radius: 12, y: 4)
+        .animation(reduceMotion ? nil : Self.pillSpring, value: selection)
+        .padding(Wax.Space.s)
+        .background(Wax.raised, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(Wax.line, lineWidth: Wax.stroke))
+        .waxElevation()
         .padding(.horizontal, Wax.inset)
-        .padding(.bottom, 6)
+        .padding(.bottom, Wax.Space.s)
     }
 }
 

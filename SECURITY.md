@@ -13,6 +13,23 @@ you control. This page says what protects what, and how to report a problem.
   error message.
 - Wax has no built-in server, source or account. The address you enter is the only place it sends signed apps.
 
+## Signing key custody
+Signing never asks for Face ID, Touch ID or the passcode. Wax is not a password manager: its job is to sign an app
+while the screen may be locked or the app in the background, and a biometric prompt would break that, including
+installs that finish while you are in another app.
+
+What protects the key instead:
+- Keychain items use `AfterFirstUnlockThisDeviceOnly`: readable only after the phone has been unlocked once since
+  it booted, never synced, never in a backup, and gone if the device is erased.
+- The Keychain item is bound to this device and this app's Keychain service. Another app cannot read it, and neither
+  can a copy of Wax on another phone.
+- The profile and the certificate are separate files with their own protection; the private key itself never leaves
+  the Keychain.
+
+This is a deliberate trade: anyone holding your unlocked phone can sign an app with your certificate. Treat the
+device passcode and physical control of the phone as the protection for that key, and remove the certificate in
+Wax if you lend the phone out.
+
 ## How the install server is protected (`Server/wax-ota`)
 - Uploads and deletes need `Authorization: Bearer <token>`. The token is 32 or more random characters, compared in
   constant time.

@@ -9,6 +9,7 @@ struct ContentView: View {
     @EnvironmentObject private var signing: SigningModel
     @EnvironmentObject private var ota: OTAInstallModel
     @Environment(\.openURL) private var openURL
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var importing = false
     @State private var adding = false
     @State private var problem: String?
@@ -29,14 +30,14 @@ struct ContentView: View {
         NavigationStack {
             ScrollViewReader { proxy in
             ScrollView {
-                VStack(spacing: 10) {
+                VStack(spacing: Wax.Space.m) {
                     WaxHeader(title: "IPA", subtitle: "Your apps, before and after signing.").id("top")
                     Picker("Shelf", selection: $router.shelf) {
                         Text("Unsigned").tag(LibraryEntry.Kind.unsigned)
                         Text("Signed").tag(LibraryEntry.Kind.signed)
                     }
                     .pickerStyle(.segmented)
-                    .padding(.vertical, 4)
+                    .padding(.vertical, Wax.Space.xs)
 
                     if shelf == .unsigned { addRow }
                     if let error = signing.savedInstallError { WaxFeedbackCard(tone: .bad, text: error) }
@@ -51,31 +52,39 @@ struct ContentView: View {
                         Button("Recover Library Index") { confirmRepair = true }.font(.footnote)
                     }
                     ForEach(library.recovery) { item in
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Retained: \(item.name)").font(.subheadline)
-                            HStack {
+                        VStack(alignment: .leading, spacing: Wax.Space.s) {
+                            Text("Retained: \(item.name)").font(Wax.Ramp.rowLabel).foregroundStyle(Wax.text).lineLimit(1)
+                            HStack(spacing: Wax.Space.m) {
                                 Button("Retry Save") { Task { do { _ = try await library.retry(item) } catch { problem = error.localizedDescription } } }
                                     .disabled(library.busy)
                                 ShareLink("Export", item: item.url)
                             }
-                        }.padding().frame(maxWidth: .infinity, alignment: .leading).background(Wax.card, in: RoundedRectangle(cornerRadius: Wax.radius))
+                        }
+                        .padding(Wax.Space.m)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Wax.card, in: RoundedRectangle(cornerRadius: Wax.radius, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: Wax.radius, style: .continuous).stroke(Wax.line, lineWidth: Wax.stroke))
                     }
                     if entries.isEmpty {
                         emptyState
                     } else {
-                        ForEach(entries) { entry in
-                            Button { actionEntry = entry } label: { row(entry) }
-                            .buttonStyle(.plain)
+                        // A plain VStack: a LazyVStack nested in this VStack under-reports its height, so at
+                        // large text sizes the scroll stopped before the last rows and they could not be reached.
+                        VStack(spacing: Wax.Space.s) {
+                            ForEach(entries, id: \.id) { entry in
+                                Button { actionEntry = entry } label: { row(entry) }
+                                .buttonStyle(.plain)
+                            }
                         }
                     }
                 }
                 .padding(.horizontal, Wax.inset)
-                .padding(.bottom, 24)
+                .padding(.bottom, Wax.Space.tabBarClearance)
             }
             .scrollIndicators(.hidden)
             .background(Wax.bg.ignoresSafeArea())
             .toolbar(.hidden, for: .navigationBar)
-            .onChange(of: router.reselectTick[.ipa]) { _, _ in withAnimation { proxy.scrollTo("top", anchor: .top) } }
+            .onChange(of: router.reselectTick[.ipa]) { _, _ in withAnimation(reduceMotion ? nil : .default) { proxy.scrollTo("top", anchor: .top) } }
             .onChange(of: problem) { _, new in if let new { AccessibilityNotification.Announcement(new).post() } }
             }
             .waxMotion(value: shelf)
@@ -150,11 +159,11 @@ struct ContentView: View {
     @ViewBuilder private var emptyState: some View {
         if shelf == .unsigned {
             WaxEmptyState(title: "No unsigned apps yet",
-                          message: "Add an IPA from Files, or choose one on the Sign tab. Originals appear here; signed copies go under Signed.",
+                          message: "Add an IPA from Files, or choose one on the Sign tab.",
                           actionTitle: "Go to Sign") { router.tab = .sign }
         } else {
             WaxEmptyState(title: "Nothing signed yet",
-                          message: "Apps Wax signs land here, ready to export.",
+                          message: "Signed apps land here, ready to export.",
                           actionTitle: "Go to Sign") { router.tab = .sign }
         }
     }
@@ -190,11 +199,11 @@ struct IPADetailSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 10) {
+                VStack(spacing: Wax.Space.m) {
                     switch result {
                     case .success(let m): metadata(m)
                     case .failure(let e): Text(e.localizedDescription).font(.footnote).foregroundStyle(Wax.bad)
-                    case nil: ProgressView().padding(.top, 40)
+                    case nil: ProgressView().padding(.top, Wax.Space.xl)
                     }
                 }
                 .padding(.horizontal, Wax.inset)
@@ -230,7 +239,7 @@ struct IPADetailSheet: View {
             WaxKV(key: "Origin", value: entry.provenance?.rawValue ?? "Unknown (legacy entry)")
             WaxDivider()
             if let hash = entry.sha256 {
-                Text("IPA SHA-256: " + hash).font(.caption.monospaced()).textSelection(.enabled)
+                Text("IPA SHA-256: " + hash).font(Wax.Ramp.mono).textSelection(.enabled)
                 WaxDivider()
             }
             WaxKV(key: "Entries", value: "\(m.entryCount)")
@@ -243,7 +252,7 @@ struct IPADetailSheet: View {
             .font(.footnote).foregroundStyle(Wax.sub)
             .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
-            .padding(.bottom, 24)
+            .padding(.bottom, Wax.Space.xl)
     }
 }
 

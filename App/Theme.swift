@@ -5,9 +5,11 @@ import UIKit
 enum Wax {
     static let bg = Color(light: 0xF5EFE2, dark: 0x170C0B)
     static let card = Color(light: 0xFFFCF5, dark: 0x241413)
+    /// A panel that floats above cards and the background, such as the tab bar.
+    static let raised = Color(light: 0xFFFCF5, dark: 0x281816)
     static let line = Color(light: 0xE6DCC6, dark: 0x3A2422)
     static let text = Color(light: 0x2A1A14, dark: 0xF3E9D6)
-    static let sub = Color(light: 0x7A6A5E, dark: 0xA8978A)
+    static let sub = Color(light: 0x6E5F53, dark: 0xA8978A)
     static let accent = Color(light: 0x8B2520, dark: 0xE8DCC2)
     static let accentPressed = Color(light: 0x6F1B17, dark: 0xD6C7A8)
     static let onAccent = Color(light: 0xF7EFDD, dark: 0x5E1612)
@@ -27,6 +29,8 @@ enum Wax {
 
     static let inset: CGFloat = 16
     static let radius: CGFloat = 16
+    /// Corner inside cards for small tiles; two steps down from `radius`.
+    static let radiusTile: CGFloat = 9
     static let rowHeight: CGFloat = 68
     /// Joins subtitle parts. The no-break space keeps each dot on the line of the part before it when the text wraps.
     static let separator = "\u{00A0}· "
@@ -35,6 +39,18 @@ enum Wax {
     static let radiusSmall: CGFloat = 11
     /// The smallest comfortable touch target.
     static let touch: CGFloat = 44
+    /// The hairline border of a card. `strokeEmphasis` marks the pressed or selected state.
+    static let stroke: CGFloat = 1
+    static let strokeEmphasis: CGFloat = 2
+    /// Height of a status pill.
+    static let pillHeight: CGFloat = 28
+    /// Height of the progress bar.
+    static let barHeight: CGFloat = 14
+
+    /// The one elevation used by floating elements, matching the tab bar and the credentials card: 10% black, 12 points of blur, dropped 4 points.
+    static let shadowColor = Color.black.opacity(0.10)
+    static let shadowRadius: CGFloat = 12
+    static let shadowY: CGFloat = 4
 
     /// Spacing scale. Use these instead of one-off numbers.
     enum Space {
@@ -43,6 +59,36 @@ enum Wax {
         static let m: CGFloat = 12
         static let l: CGFloat = 16
         static let xl: CGFloat = 24
+        /// Bottom padding for scrolling screens so the last row can clear the floating tab bar.
+        /// The bar is a sibling view, not an overlay, but its height plus the safe area still eats
+        /// the bottom of the screen; 104 points lets a row scroll fully above it.
+        static let tabBarClearance: CGFloat = 104
+        /// The tightest gap that still reads: titles and their subtitle inside a row.
+        static let hairline: CGFloat = 2
+    }
+
+    /// The text ramp, in one place. Dynamic Type scales every entry.
+    enum Ramp {
+        /// Screen titles, e.g. "Sign".
+        static let display = Font.largeTitle.weight(.bold)
+        /// The one emphasized label of a block, e.g. the primary button.
+        static let title = Font.headline.weight(.bold)
+        /// Section labels and pill text.
+        static let section = Font.footnote.weight(.semibold)
+        /// The label a card opens with.
+        static let body = Font.callout.weight(.semibold)
+        /// Grouped list row titles.
+        static let rowLabel = Font.subheadline.weight(.semibold)
+        /// The line under a title that explains it.
+        static let secondary = Font.footnote
+        /// A paragraph of explanation, longer than a row's second line. Regular weight so it reads as prose.
+        static let paragraph = Font.callout
+        /// Values on the right of a row.
+        static let value = Font.subheadline
+        /// The smallest reading text.
+        static let caption = Font.caption
+        /// Values people copy, in a monospaced face.
+        static let mono = Font.caption.monospaced()
     }
 
     /// The one standard motion: a gentle spring. Pair it with `.waxMotion(value:)` so Reduce Motion turns it off.
@@ -58,6 +104,9 @@ private struct WaxMotion<V: Equatable>: ViewModifier {
 extension View {
     /// Animates changes of `value` with Wax's standard spring, unless Reduce Motion is on.
     func waxMotion<V: Equatable>(value: V) -> some View { modifier(WaxMotion(value: value)) }
+
+    /// The one Wax elevation. Use on floating elements (tab bar, credentials card), never on plain list cards.
+    func waxElevation() -> some View { shadow(color: Wax.shadowColor, radius: Wax.shadowRadius, y: Wax.shadowY) }
 }
 
 extension Color {
@@ -79,7 +128,7 @@ struct WaxSeal: View {
     var body: some View {
         ZStack {
             ScallopedDisc().fill(Wax.seal)
-            Circle().stroke(Wax.sealInk, lineWidth: max(1, size * 0.02)).padding(size * 0.2)
+            Circle().stroke(Wax.sealInk, lineWidth: max(Wax.stroke, size * 0.02)).padding(size * 0.2)
             Text("W")
                 .font(.system(size: size * 0.40, weight: .heavy)).italic()
                 .foregroundStyle(Wax.sealInk)
@@ -114,7 +163,7 @@ struct WaxIconTile: View {
             .font(.system(size: 19, weight: .medium))
             .foregroundStyle(tone == .bad ? Wax.bad : Wax.link)
             .frame(width: 40, height: 40)
-            .background(tone == .bad ? Wax.badBg : Wax.chip, in: RoundedRectangle(cornerRadius: Wax.radiusSmall, style: .continuous))
+            .background(tone == .bad ? Wax.badBg : Wax.chip, in: RoundedRectangle(cornerRadius: Wax.radiusTile, style: .continuous))
             .accessibilityHidden(true)
     }
 }
@@ -128,28 +177,28 @@ struct WaxRow<Trailing: View>: View {
     @ViewBuilder var trailing: Trailing
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Wax.Space.m) {
             WaxIconTile(symbol: icon)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.callout.weight(.semibold)).foregroundStyle(Wax.text).lineLimit(2)
-                Text(subtitle).font(.footnote).foregroundStyle(Wax.sub).lineLimit(subtitleLines)
+            VStack(alignment: .leading, spacing: Wax.Space.hairline) {
+                Text(title).font(Wax.Ramp.body).foregroundStyle(Wax.text).lineLimit(2)
+                Text(subtitle).font(Wax.Ramp.secondary).foregroundStyle(Wax.sub).lineLimit(subtitleLines)
                     .fixedSize(horizontal: false, vertical: subtitleLines > 1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             trailing
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.horizontal, Wax.Space.l)
+        .padding(.vertical, Wax.Space.m)
         .frame(minHeight: Wax.rowHeight)
         .background(Wax.card, in: RoundedRectangle(cornerRadius: Wax.radius, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Wax.radius, style: .continuous).stroke(Wax.line, lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: Wax.radius, style: .continuous).stroke(Wax.line, lineWidth: Wax.stroke))
         .contentShape(RoundedRectangle(cornerRadius: Wax.radius, style: .continuous))
     }
 }
 
 struct WaxLinkText: View {
     let text: String
-    var body: some View { Text(text).font(.subheadline.weight(.semibold)).foregroundStyle(Wax.link) }
+    var body: some View { Text(text).font(Wax.Ramp.rowLabel).foregroundStyle(Wax.link) }
 }
 
 struct WaxPill: View {
@@ -158,9 +207,9 @@ struct WaxPill: View {
     let tone: Tone
     var body: some View {
         Text(text)
-            .font(.footnote.weight(.semibold))
+            .font(Wax.Ramp.section)
             .foregroundStyle(tone == .ok ? Wax.ok : (tone == .bad ? Wax.bad : Wax.warn))
-            .padding(.horizontal, 10).frame(minHeight: 26)
+            .padding(.horizontal, Wax.Space.m).frame(minHeight: Wax.pillHeight)
             .background(tone == .ok ? Wax.okBg : (tone == .bad ? Wax.badBg : Wax.warnBg), in: Capsule())
     }
 }
@@ -172,7 +221,7 @@ struct WaxPrimaryButtonStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.headline.weight(.bold))
+            .font(Wax.Ramp.title)
             .foregroundStyle(Wax.onAccent)
             .opacity(loading ? 0 : 1)
             .overlay { if loading { ProgressView().tint(Wax.onAccent) } }
@@ -189,7 +238,7 @@ struct WaxPrimaryButtonStyle: ButtonStyle {
 struct WaxSecondaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.callout.weight(.semibold))
+            .font(Wax.Ramp.body)
             .foregroundStyle(Wax.link)
             .frame(maxWidth: .infinity, minHeight: Wax.touch)
             .opacity(configuration.isPressed ? 0.6 : 1)
@@ -209,7 +258,7 @@ struct WaxProgressBar: View {
                 Capsule().fill(Wax.chip)
                 if let progress {
                     Capsule().fill(Wax.link).frame(width: max(14, w * min(1, max(0, progress))))
-                        .animation(.easeOut(duration: 0.3), value: progress)
+                        .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: progress)
                 } else {
                     Capsule().fill(Wax.link).frame(width: w * 0.35)
                         .offset(x: reduceMotion ? 0 : (sweep ? w * 0.65 : 0))
@@ -218,7 +267,7 @@ struct WaxProgressBar: View {
             }
             .clipShape(Capsule())
         }
-        .frame(height: 14)
+        .frame(height: Wax.barHeight)
         .onAppear { sweep = true }
         .accessibilityElement()
         .accessibilityLabel("Progress")
@@ -233,27 +282,27 @@ struct WaxHeader: View {
     let title: String
     let subtitle: String
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: Wax.Space.s) {
             HStack {
-                Text(title).font(.largeTitle.bold()).foregroundStyle(Wax.text)
+                Text(title).font(Wax.Ramp.display).foregroundStyle(Wax.text)
                 Spacer()
                 WaxSeal(size: 36)
             }
             .frame(minHeight: 44)        // grows with Dynamic Type instead of clipping the title
-            Text(subtitle).font(.subheadline).foregroundStyle(Wax.sub)
+            Text(subtitle).font(Wax.Ramp.value).foregroundStyle(Wax.sub)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.top, 8)
-        .padding(.bottom, 4)
+        .padding(.top, Wax.Space.s)
+        .padding(.bottom, Wax.Space.xs)
     }
 }
 
 struct WaxSectionLabel: View {
     let text: String
     var body: some View {
-        Text(text).font(.footnote.weight(.semibold)).foregroundStyle(Wax.sub)
+        Text(text).font(Wax.Ramp.section).foregroundStyle(Wax.sub)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 10)
+            .padding(.top, Wax.Space.m)
     }
 }
 
@@ -262,15 +311,15 @@ struct WaxPanel<Content: View>: View {
     @ViewBuilder var content: Content
     var body: some View {
         VStack(alignment: .leading, spacing: 0) { content }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, Wax.Space.l)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Wax.card, in: RoundedRectangle(cornerRadius: Wax.radius, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Wax.radius, style: .continuous).stroke(Wax.line, lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: Wax.radius, style: .continuous).stroke(Wax.line, lineWidth: Wax.stroke))
     }
 }
 
 struct WaxDivider: View {
-    var body: some View { Rectangle().fill(Wax.line).frame(height: 1) }
+    var body: some View { Rectangle().fill(Wax.line).frame(height: Wax.stroke) }
 }
 
 /// A label on the left and its value on the right, both on the same first line.
@@ -281,7 +330,7 @@ struct WaxKV: View {
 
     private var valueText: some View {
         Text(value)
-            .font(small ? .caption.monospaced() : .subheadline)
+            .font(small ? Wax.Ramp.mono : Wax.Ramp.value)
             .foregroundStyle(Wax.text)
             .textSelection(.enabled)
     }
@@ -293,23 +342,23 @@ struct WaxKV: View {
             } else {
                 // Side by side when the value fits on one line; otherwise the value wraps under its label.
                 ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .firstTextBaseline, spacing: 12) {
-                        Text(key).font(.subheadline).foregroundStyle(Wax.sub).lineLimit(1)
-                        Spacer(minLength: 8)
+                    HStack(alignment: .firstTextBaseline, spacing: Wax.Space.m) {
+                        Text(key).font(Wax.Ramp.value).foregroundStyle(Wax.sub).lineLimit(1)
+                        Spacer(minLength: Wax.Space.s)
                         valueText.lineLimit(1).multilineTextAlignment(.trailing)
                     }
                     stacked
                 }
             }
         }
-        .padding(.vertical, 11)
+        .padding(.vertical, Wax.Space.m)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
     }
 
     private var stacked: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(key).font(.subheadline).foregroundStyle(Wax.sub)
+        VStack(alignment: .leading, spacing: Wax.Space.xs) {
+            Text(key).font(Wax.Ramp.value).foregroundStyle(Wax.sub)
             valueText.fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -321,8 +370,8 @@ struct WaxDestructiveRow: View {
     let action: () -> Void
     var body: some View {
         Button(role: .destructive, action: action) {
-            Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(Wax.bad)
-                .frame(maxWidth: .infinity, minHeight: 44)
+            Text(title).font(Wax.Ramp.rowLabel).foregroundStyle(Wax.bad)
+                .frame(maxWidth: .infinity, minHeight: Wax.touch)
         }
         .buttonStyle(.plain)
     }
@@ -348,12 +397,12 @@ struct WaxActionSheet: View {
     let close: (_ then: (() -> Void)?) -> Void
 
     var body: some View {
-        VStack(spacing: 10) {
-            VStack(spacing: 2) {
+        VStack(spacing: Wax.Space.m) {
+            VStack(spacing: Wax.Space.hairline) {
                 Text(title).font(.headline).foregroundStyle(Wax.text).lineLimit(1)
-                if !subtitle.isEmpty { Text(subtitle).font(.footnote).foregroundStyle(Wax.sub).lineLimit(1) }
+                if !subtitle.isEmpty { Text(subtitle).font(Wax.Ramp.secondary).foregroundStyle(Wax.sub).lineLimit(1) }
             }
-            .padding(.top, 22).padding(.bottom, 4)
+            .padding(.top, Wax.Space.xl).padding(.bottom, Wax.Space.xs)
             ForEach(actions) { action in
                 if let url = action.share {
                     ShareLink(item: url) { row(action) }.buttonStyle(.plain)
@@ -368,15 +417,15 @@ struct WaxActionSheet: View {
     }
 
     private func row(_ a: WaxAction) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Wax.Space.m) {
             WaxIconTile(symbol: a.icon, tone: a.destructive ? .bad : nil)
-            Text(a.title).font(.callout.weight(.semibold)).foregroundStyle(a.destructive ? Wax.bad : Wax.text)
+            Text(a.title).font(Wax.Ramp.body).foregroundStyle(a.destructive ? Wax.bad : Wax.text)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, 14).padding(.vertical, 8)
+        .padding(.horizontal, Wax.Space.l).padding(.vertical, Wax.Space.s)
         .frame(minHeight: 56)
         .background(Wax.card, in: RoundedRectangle(cornerRadius: Wax.radius, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Wax.radius, style: .continuous).stroke(Wax.line, lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: Wax.radius, style: .continuous).stroke(Wax.line, lineWidth: Wax.stroke))
         .contentShape(RoundedRectangle(cornerRadius: Wax.radius, style: .continuous))
     }
 }
@@ -401,8 +450,8 @@ struct WaxEmptyState: View {
             } else {
                 WaxSeal(size: 64).opacity(0.5)
             }
-            Text(title).font(.callout.weight(.semibold)).foregroundStyle(Wax.text).multilineTextAlignment(.center)
-            Text(message).font(.footnote).foregroundStyle(Wax.sub).multilineTextAlignment(.center)
+            Text(title).font(Wax.Ramp.body).foregroundStyle(Wax.text).multilineTextAlignment(.center)
+            Text(message).font(Wax.Ramp.secondary).foregroundStyle(Wax.sub).multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true).padding(.horizontal, Wax.Space.m)
             if let actionTitle, let action {
                 Button(actionTitle, action: action).buttonStyle(WaxSecondaryButtonStyle()).padding(.top, Wax.Space.xs)
@@ -431,11 +480,11 @@ struct WaxFeedbackCard: View {
         VStack(alignment: .leading, spacing: Wax.Space.s) {
             HStack(alignment: .top, spacing: Wax.Space.m) {
                 Image(systemName: symbol).foregroundStyle(color).frame(width: 22, height: 22).accessibilityHidden(true)
-                Text(text).font(.footnote).foregroundStyle(Wax.text).fixedSize(horizontal: false, vertical: true)
+                Text(text).font(Wax.Ramp.secondary).foregroundStyle(Wax.text).fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             if let actionTitle, let action {
-                Button(actionTitle, action: action).font(.footnote.weight(.semibold)).foregroundStyle(color).frame(minHeight: Wax.touch, alignment: .leading)
+                Button(actionTitle, action: action).font(Wax.Ramp.section).foregroundStyle(color).frame(minHeight: Wax.touch, alignment: .leading)
             }
         }
         .padding(.horizontal, Wax.Space.l).padding(.vertical, Wax.Space.m)
@@ -455,6 +504,8 @@ struct WaxListRow<Trailing: View>: View {
     let title: String
     var detail: String? = nil
     var tone: WaxPill.Tone? = nil
+    /// The most lines the title may take. Nil wraps without a limit, which is the default.
+    var titleLineLimit: Int? = nil
     @ViewBuilder var trailing: Trailing
 
     static var iconSize: CGFloat { 32 }
@@ -469,12 +520,13 @@ struct WaxListRow<Trailing: View>: View {
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(tone == .bad ? Wax.bad : Wax.link)
                 .frame(width: Self.iconSize, height: Self.iconSize)
-                .background(tone == .bad ? Wax.badBg : Wax.chip, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .background(tone == .bad ? Wax.badBg : Wax.chip, in: RoundedRectangle(cornerRadius: Wax.radiusTile, style: .continuous))
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(tone == .bad ? Wax.bad : Wax.text)
+            VStack(alignment: .leading, spacing: Wax.Space.hairline) {
+                Text(title).font(Wax.Ramp.rowLabel).foregroundStyle(tone == .bad ? Wax.bad : Wax.text)
+                    .lineLimit(titleLineLimit)
                 if let detail {
-                    Text(detail).font(.footnote).foregroundStyle(Wax.sub).fixedSize(horizontal: false, vertical: true)
+                    Text(detail).font(Wax.Ramp.secondary).foregroundStyle(Wax.sub).fixedSize(horizontal: false, vertical: true)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -507,11 +559,12 @@ struct WaxChevron: View {
 /// A short value on the right of a row, such as a count or a version.
 struct WaxRowValue: View {
     let text: String
-    var body: some View { Text(text).font(.subheadline).foregroundStyle(Wax.sub).lineLimit(1) }
+    var body: some View { Text(text).font(Wax.Ramp.value).foregroundStyle(Wax.sub).lineLimit(1) }
 }
 
 /// Rows that are buttons get a soft highlight behind them while pressed, like a native list row.
 struct WaxRowButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .background {
@@ -520,6 +573,6 @@ struct WaxRowButtonStyle: ButtonStyle {
                     .padding(.horizontal, -Wax.Space.s)
                     .opacity(configuration.isPressed ? 1 : 0)
             }
-            .animation(.easeOut(duration: configuration.isPressed ? 0.05 : 0.25), value: configuration.isPressed)
+            .animation(reduceMotion ? nil : .easeOut(duration: configuration.isPressed ? 0.05 : 0.25), value: configuration.isPressed)
     }
 }

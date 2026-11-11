@@ -58,6 +58,7 @@ final class NotificationPermissionModel: ObservableObject {
 struct NotificationPermissionControls: View {
     @ObservedObject var model: NotificationPermissionModel
     @Environment(\.openURL) private var openURL
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -80,7 +81,7 @@ struct NotificationPermissionControls: View {
                     }
                 }
             }
-            .animation(Wax.spring, value: model.status)
+            .animation(reduceMotion ? nil : Wax.spring, value: model.status)
         }
         .task { await model.refresh() }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in

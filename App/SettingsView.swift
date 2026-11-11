@@ -11,6 +11,7 @@ struct SettingsView: View {
     @EnvironmentObject private var permissions: NotificationPermissionModel
     @EnvironmentObject private var guide: FirstRunGuideModel
     @EnvironmentObject private var shake: ShakeReporter
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("signAfterDownload") private var signAfterDownload = false
     @AppStorage("expiryReminders") private var remindersEnabled = true
     @State private var confirmClear: LibraryEntry.Kind?
@@ -105,18 +106,18 @@ struct SettingsView: View {
                             .accessibilityElement(children: .combine)
                     }
                     Text("Free and open source. Signing happens on this iPhone.")
-                        .font(.footnote).foregroundStyle(Wax.sub)
+                        .font(Wax.Ramp.secondary).foregroundStyle(Wax.sub)
                         .frame(maxWidth: .infinity, alignment: .center)
                         .multilineTextAlignment(.center)
                         .padding(.top, Wax.Space.s)
-                        .padding(.bottom, Wax.Space.xl)
+                        .padding(.bottom, Wax.Space.tabBarClearance)
                 }
                 .padding(.horizontal, Wax.inset)
             }
             .scrollIndicators(.hidden)
             .background(Wax.bg.ignoresSafeArea())
             .toolbar(.hidden, for: .navigationBar)
-            .onChange(of: router.reselectTick[.settings]) { _, _ in withAnimation { proxy.scrollTo("top", anchor: .top) } }
+            .onChange(of: router.reselectTick[.settings]) { _, _ in withAnimation(reduceMotion ? nil : .default) { proxy.scrollTo("top", anchor: .top) } }
             }
             .navigationDestination(for: Router.SettingsRoute.self) { route in
                 switch route {
@@ -133,6 +134,8 @@ struct SettingsView: View {
                             isPresented: Binding(get: { confirmClear != nil }, set: { if !$0 { confirmClear = nil } }),
                             titleVisibility: .visible) {
             Button("Delete", role: .destructive) { if let k = confirmClear { Task { await library.clear(k) } } }
+        } message: {
+            Text("Wax removes its copies of these apps from its library. Apps already installed on this iPhone are not touched.")
         }
     }
 
@@ -177,13 +180,18 @@ struct InstallHostSettingsView: View {
     @EnvironmentObject private var ota: OTAInstallModel
 
     var body: some View {
-        List { InstallSection(model: ota, collapsed: false, eligibilityUnknown: false).listRowBackground(Wax.card) }
-            .scrollContentBackground(.hidden)
-            .background(Wax.bg.ignoresSafeArea())
-            .tint(Wax.link)
-            .navigationTitle("Install host")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(Wax.bg, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
+        ScrollView {
+            InstallSection(model: ota, collapsed: false, eligibilityUnknown: false)
+                .padding(.horizontal, Wax.inset)
+                .padding(.top, Wax.Space.m)
+                .padding(.bottom, Wax.Space.tabBarClearance)
+        }
+        .scrollIndicators(.hidden)
+        .background(Wax.bg.ignoresSafeArea())
+        .tint(Wax.link)
+        .navigationTitle("Install host")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(Wax.bg, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
     }
 }

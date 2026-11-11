@@ -11,6 +11,8 @@ struct SigningOptionsView: View {
     @ObservedObject var model: SigningModel
     var showDeveloperTools = false
     @EnvironmentObject private var credentials: CredentialsModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var saved = false
     @State private var pickedIcon: PhotosPickerItem?
     @State private var iconTask: Task<Void, Never>?
@@ -26,7 +28,7 @@ struct SigningOptionsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 10) {
+            VStack(spacing: Wax.Space.m) {
                 WaxSectionLabel(text: "This app")
                 WaxPanel {
                     field("Name", text: binding(\.displayName), placeholder: model.ipaInfo?.displayName ?? "Keep the app's name")
@@ -40,6 +42,14 @@ struct SigningOptionsView: View {
                     field("Minimum iOS", text: binding(\.minimumOSVersion), placeholder: model.ipaInfo?.minimumOSVersion ?? "Keep")
                 }
                 note("Empty fields keep the original value.")
+                if let newID = model.edits.bundleIdentifier {
+                    HStack(alignment: .top, spacing: Wax.Space.s) {
+                        Image(systemName: "exclamationmark.triangle.fill").font(Wax.Ramp.secondary).foregroundStyle(Wax.warn).accessibilityHidden(true)
+                        Text("Bundle ID will change to \(newID). The app installs as a new app.")
+                            .font(Wax.Ramp.secondary).foregroundStyle(Wax.warn).fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
 
                 WaxPanel {
                     iconRow
@@ -51,7 +61,7 @@ struct SigningOptionsView: View {
                         entitlementsRow
                         WaxDivider()
                         Toggle("Require every requested capability", isOn: $model.strictEntitlements)
-                            .tint(Wax.link).padding(.vertical, 10)
+                            .tint(Wax.link).padding(.vertical, Wax.Space.s)
                         Text("Strict mode refuses signing when a profile cannot grant requested entitlements. Per-bundle profiles can be changed in the signing preview; any change requires preparing again.").font(.footnote).foregroundStyle(Wax.sub)
                     }
                     #endif
@@ -62,7 +72,7 @@ struct SigningOptionsView: View {
                 compressionPanel
                 note(compressionNote)
 
-                DisclosureGroup(isExpanded: $moreOpen.animation(Wax.spring)) {
+                DisclosureGroup(isExpanded: $moreOpen.animation(reduceMotion ? nil : Wax.spring)) {
                     WaxSectionLabel(text: "Libraries")
                     libraryPanel
                     note("Loads when the app starts. Apps that are App Store encrypted cannot take them.")
@@ -94,15 +104,15 @@ struct SigningOptionsView: View {
                         Image(systemName: "ellipsis.circle")
                             .font(.system(size: 15, weight: .semibold)).foregroundStyle(Wax.link)
                             .frame(width: 32, height: 32)
-                            .background(Wax.chip, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            .background(Wax.chip, in: RoundedRectangle(cornerRadius: Wax.radiusTile, style: .continuous))
                         Text("More options").font(.subheadline.weight(.semibold)).foregroundStyle(Wax.text)
                     }
                     .frame(minHeight: 56)
                 }
                 .tint(Wax.sub)
-                .padding(.horizontal, 14)
+                .padding(.horizontal, Wax.Space.l)
                 .background(Wax.card, in: RoundedRectangle(cornerRadius: Wax.radius, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: Wax.radius, style: .continuous).stroke(Wax.line, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: Wax.radius, style: .continuous).stroke(Wax.line, lineWidth: Wax.stroke))
 
                 #if WAX_DEVELOPMENT
                 if showDeveloperTools {
@@ -113,7 +123,7 @@ struct SigningOptionsView: View {
                 }
                 #endif
 
-                VStack(spacing: 4) {
+                VStack(spacing: Wax.Space.xs) {
                     // In the page rather than pinned to the bottom: a pinned button ended up hidden behind the tab bar.
                     Button { model.saveEditsAsDefaults(); saved = true; baseline = model.edits } label: {
                         Label(saved ? "Saved" : "Save as defaults", systemImage: saved ? "checkmark" : "tray.and.arrow.down")
@@ -123,10 +133,10 @@ struct SigningOptionsView: View {
                     .disabled(!hasChanges || saved)
                     Button("Reset to defaults") { cancelIconRead(); model.resetEditsToDefaults(); saved = false }.buttonStyle(WaxSecondaryButtonStyle())
                 }
-                .padding(.top, 8)
+                .padding(.top, Wax.Space.s)
             }
             .padding(.horizontal, Wax.inset)
-            .padding(.bottom, 24)
+            .padding(.bottom, Wax.Space.tabBarClearance)
         }
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.interactively)
@@ -158,7 +168,7 @@ struct SigningOptionsView: View {
                     }
                 }
                 .buttonStyle(WaxRowButtonStyle())
-                .animation(Wax.spring, value: compression)
+                .animation(reduceMotion ? nil : Wax.spring, value: compression)
                 .accessibilityAddTraits(compression == mode ? [.isButton, .isSelected] : .isButton)
             }
         }
@@ -171,28 +181,30 @@ struct SigningOptionsView: View {
     }
 
     private func field(_ title: String, text: Binding<String>, placeholder: String, mono: Bool = false) -> some View {
-        HStack(spacing: 12) {
-            Text(title).font(.subheadline).foregroundStyle(Wax.sub).frame(width: 96, alignment: .leading)
+        VStack(alignment: .leading, spacing: Wax.Space.s) {
+            Text(title).font(.subheadline).foregroundStyle(Wax.sub)
+                .fixedSize(horizontal: false, vertical: true)
             TextField(placeholder, text: text)
                 .accessibilityLabel(title)
                 .font(mono ? .footnote.monospaced() : .subheadline)
                 .foregroundStyle(Wax.text)
-                .multilineTextAlignment(.trailing)
+                .multilineTextAlignment(.leading)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
+                .frame(minHeight: Wax.touch)
         }
-        .frame(minHeight: 48)
+        .padding(.vertical, Wax.Space.s)
     }
 
     private func toggle(_ title: String, _ detail: String, _ key: WritableKeyPath<AppEdits, Bool>) -> some View {
         Toggle(isOn: Binding(get: { model.edits[keyPath: key] }, set: { model.edits[keyPath: key] = $0 })) {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: Wax.Space.hairline) {
                 Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(Wax.text)
-                Text(detail).font(.footnote).foregroundStyle(Wax.sub).fixedSize(horizontal: false, vertical: true)
+                Text(detail).font(Wax.Ramp.secondary).foregroundStyle(Wax.sub).fixedSize(horizontal: false, vertical: true)
             }
         }
         .tint(Wax.link)
-        .padding(.vertical, 10)
+        .padding(.vertical, Wax.Space.s)
     }
 
     private func cancelIconRead() {
@@ -200,11 +212,11 @@ struct SigningOptionsView: View {
     }
 
     private var iconRow: some View {
-        VStack(spacing: 8) {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
+        VStack(spacing: Wax.Space.s) {
+        HStack(spacing: Wax.Space.m) {
+            VStack(alignment: .leading, spacing: Wax.Space.hairline) {
                 Text("Icon").font(.subheadline.weight(.semibold)).foregroundStyle(Wax.text)
-                Text(model.edits.iconPNG == nil ? "The app's own icon." : "A new icon will be used.").font(.footnote).foregroundStyle(Wax.sub)
+                Text(model.edits.iconPNG == nil ? "The app's own icon." : "A new icon will be used.").font(Wax.Ramp.secondary).foregroundStyle(Wax.sub)
             }
             Spacer()
             if model.edits.iconPNG != nil { Button("Reset") { cancelIconRead(); model.edits.iconPNG = nil }.font(.subheadline).foregroundStyle(Wax.sub) }
@@ -212,9 +224,9 @@ struct SigningOptionsView: View {
                 Text("Choose").font(.subheadline.weight(.semibold)).foregroundStyle(Wax.link)
             }
         }
-        if readingIcon { ProgressView("Reading icon…").font(.footnote) }
+        if readingIcon { ProgressView("Reading icon…").font(Wax.Ramp.secondary) }
         if let data = model.edits.iconPNG, let image = UIImage(data: data) {
-            Image(uiImage: image).resizable().scaledToFit().frame(width: 48, height: 48).clipShape(RoundedRectangle(cornerRadius: 10))
+            Image(uiImage: image).resizable().scaledToFit().frame(width: 48, height: 48).clipShape(RoundedRectangle(cornerRadius: Wax.radiusTile))
                 .accessibilityLabel("Chosen app icon")
         }
         }
@@ -238,12 +250,18 @@ struct SigningOptionsView: View {
     }
 
     private var profileRow: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Profile").font(.subheadline.weight(.semibold)).foregroundStyle(Wax.text)
-                Text("Which provisioning profile signs this app.").font(.footnote).foregroundStyle(Wax.sub)
+        // The picker used to squeeze this line into three lines at default size, and off the row at large sizes.
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: Wax.Space.s))
+            : AnyLayout(HStackLayout(spacing: Wax.Space.m))
+        return layout {
+            VStack(alignment: .leading, spacing: Wax.Space.hairline) {
+                Text("Profile").font(Wax.Ramp.rowLabel).foregroundStyle(Wax.text)
+                Text("Overrides the automatic choice.").font(Wax.Ramp.secondary).foregroundStyle(Wax.sub)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(1)
             Picker("Profile", selection: $model.profileChoice) {
                 Text("Automatic").tag(UUID?.none)
                 ForEach(credentials.profiles) { p in Text(p.name).tag(UUID?.some(p.id)) }
@@ -254,11 +272,11 @@ struct SigningOptionsView: View {
     }
 
     private var entitlementsRow: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: Wax.Space.m) {
+            VStack(alignment: .leading, spacing: Wax.Space.hairline) {
                 Text("Entitlements").font(.subheadline.weight(.semibold)).foregroundStyle(Wax.text)
                 Text(model.customEntitlementsName ?? "The app's own. Only what the profile allows is kept.")
-                    .font(.footnote).foregroundStyle(Wax.sub).lineLimit(2)
+                    .font(Wax.Ramp.secondary).foregroundStyle(Wax.sub).lineLimit(2)
             }
             Spacer()
             if model.customEntitlementsName != nil {
@@ -280,20 +298,21 @@ struct SigningOptionsView: View {
     private var libraryPanel: some View {
         WaxPanel {
             ForEach(Array(model.edits.injectLibraries.enumerated()), id: \.offset) { index, url in
-                HStack {
+                HStack(spacing: Wax.Space.m) {
                     Image(systemName: url.pathExtension.lowercased() == "deb" ? "shippingbox" : "puzzlepiece.extension")
                         .foregroundStyle(Wax.link).frame(width: 24)
                     Text(url.lastPathComponent).font(.subheadline).foregroundStyle(Wax.text).lineLimit(1)
                     Spacer()
                     Button { removeLibrary(at: index) } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Wax.sub) }
+                        .frame(minWidth: Wax.touch, minHeight: Wax.touch)
                         .accessibilityLabel("Remove \(url.lastPathComponent)")
                 }
-                .frame(minHeight: 48)
+                .frame(minHeight: 56)
                 WaxDivider()
             }
             Button { pickingLibrary = true } label: {
                 Label("Add a .dylib, .framework or .deb", systemImage: "plus").font(.subheadline.weight(.semibold)).foregroundStyle(Wax.link)
-                    .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
             }
         }
         .sheet(isPresented: $pickingLibrary) {
@@ -326,7 +345,7 @@ struct SigningOptionsView: View {
     }
 
     private var appearancePicker: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Wax.Space.s) {
             Text("Appearance").font(.subheadline.weight(.semibold)).foregroundStyle(Wax.text)
             Picker("Appearance", selection: Binding(get: { model.edits.appearance }, set: { model.edits.appearance = $0 })) {
                 Text("Keep").tag(AppEdits.Appearance?.none)
@@ -336,7 +355,7 @@ struct SigningOptionsView: View {
             }
             .pickerStyle(.segmented)
         }
-        .padding(.vertical, 10)
+        .padding(.vertical, Wax.Space.s)
     }
 
     private var plistEditor: some View {
@@ -349,13 +368,13 @@ struct SigningOptionsView: View {
                 model.edits.plistEdits.append(PlistEdit(key: "", value: .string("")))
             } label: {
                 Label("Add a key", systemImage: "plus").font(.subheadline.weight(.semibold)).foregroundStyle(Wax.link)
-                    .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
             }
         }
     }
 
     private func note(_ text: String) -> some View {
-        Text(text).font(.footnote).foregroundStyle(Wax.sub)
+        Text(text).font(Wax.Ramp.secondary).foregroundStyle(Wax.sub)
             .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
     }
 }

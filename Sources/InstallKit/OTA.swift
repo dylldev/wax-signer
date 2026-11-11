@@ -2,9 +2,10 @@ import Foundation
 import Security
 import CryptoKit
 
-/// Over-the-air install: Wax uploads a signed IPA and a manifest to an HTTPS server the owner controls, then asks
-/// iOS to install from there with `itms-services://`. iOS refuses to install from a server on the same phone,
-/// so the server must be another host with a publicly trusted certificate.
+/// Over-the-air install: Wax puts a signed IPA and a manifest behind an HTTPS location, then asks iOS to install
+/// from there with `itms-services://`. The location can be the phone itself (see `LoopbackHost`), a server the
+/// owner controls, or a storage bucket.
+
 public enum OTAManifest {
     public static func build(bundleIdentifier: String, bundleVersion: String, title: String, ipaURL: URL) -> String {
         func esc(_ s: String) -> String {

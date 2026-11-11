@@ -92,14 +92,17 @@ private struct PermissionsSetup: View {
         VStack(spacing: 0) {
             HStack {
                 Spacer()
-                Button("Skip") { model.skip() }.font(.callout.weight(.semibold)).frame(minHeight: Wax.touch)
+                if permissions.status != .notDetermined {
+                    // While iOS has not decided, the primary button itself ("Not now") is the skip route.
+                    Button("Skip") { model.skip() }.font(.callout.weight(.semibold)).frame(minHeight: Wax.touch)
+                }
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     WaxSeal(size: 56).padding(.top, 12)
-                    Text("Welcome to Wax").font(.largeTitle.bold()).foregroundStyle(Wax.text)
-                    Text("One thing to set up first. Wax asks for nothing else up front: files and photos come through the iOS pickers, which need no permission.")
-                        .font(.body).foregroundStyle(Wax.sub).fixedSize(horizontal: false, vertical: true)
+                    Text("Welcome to Wax").font(Wax.Ramp.display).foregroundStyle(Wax.text)
+                    Text("Wax signs iPhone apps with your own certificate and installs them on this phone. One thing to set up first. Wax asks for nothing else up front: files and photos come through the iOS pickers, which need no permission.")
+                        .font(Wax.Ramp.paragraph).foregroundStyle(Wax.sub).fixedSize(horizontal: false, vertical: true)
                     WaxPanel { NotificationPermissionControls(model: permissions) }
                     Text("You can change these later in Settings.")
                         .font(.footnote).foregroundStyle(Wax.sub)
@@ -168,10 +171,15 @@ private struct GuideTour: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     GuideExample(page: page).id(index)
-                    Text(page.title).font(.title.bold()).foregroundStyle(Wax.text)
+                    Text(page.title).font(Wax.Ramp.title).foregroundStyle(Wax.text)
                         .accessibilityAddTraits(.isHeader)
                         .accessibilityFocused($titleFocused)
-                    Text(page.body).font(.body).foregroundStyle(Wax.sub).fixedSize(horizontal: false, vertical: true)
+                    Text(page.body).font(Wax.Ramp.paragraph).foregroundStyle(Wax.sub).fixedSize(horizontal: false, vertical: true)
+                    if last {
+                        Text("First thing to do: open Settings, tap Certificates & profiles, and bring your signing files.")
+                            .font(Wax.Ramp.rowLabel).foregroundStyle(Wax.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 8)

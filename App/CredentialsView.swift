@@ -1,6 +1,7 @@
 import CredentialKit
 import InstallKit
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct CredentialsView: View {
@@ -12,11 +13,8 @@ struct CredentialsView: View {
     #endif
     @EnvironmentObject private var router: Router
     @Environment(\.openURL) private var openURL
-    private enum ImportKind { case certificate, profile }
-    // One picker for both kinds. It is the system document picker in copy mode (see DocumentPicker).
-    @State private var importKind: ImportKind = .certificate
-    @State private var showImporter = false
-    @State private var password = ""
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var showImportSheet = false
     @State private var certToDelete: CertificateInfo?
     @State private var profileToDelete: ProfileInfo?
     @State private var successNote: String?
@@ -25,144 +23,186 @@ struct CredentialsView: View {
     // and profiles whose extension iOS does not map to a known type (renamed files, iCloud downloads, .pfx).
 
     var body: some View {
+        dialogChrome
+    }
+
+    /// Each certificate with every profile, so you can see which pairs work without picking anything.
+
+    // MARK: Presentation chrome
+
+    /// Lifecycle chrome kept off the list property so each expression type-checks quickly.
+    private var stateChrome: some View {
         Group {
-            ScrollViewReader { proxy in
+            credentialsList
+        }
+        // VoiceOver has no other way to learn an import started: the overlay is not focused when it appears.
+        .onChange(of: model.busyMessage) { _, busy in
+            guard let busy else { return }
+            successNote = nil
+            UIAccessibility.post(notification: .announcement, argument: busy)
+        }
+        .onDisappear { model.dismissImport() }
+        // Tabs stay mounted behind opacity, so clear an abandoned draft when switching tabs.
+        .onChange(of: router.tab) { _, tab in
+            if tab != .settings { showImportSheet = false; model.dismissImport() }
+        }
+    }
+
+    private var pickerChrome: some View {
+        stateChrome
+            .sheet(isPresented: $showImportSheet, onDismiss: { model.dismissImport(); model.message = nil }) {
+                CredentialImportSheet().environmentObject(model)
+            }
+            .overlay {
+                busyOverlay
+            }
+    }
+
+    private var alertChrome: some View {
+        pickerChrome
+            .alert("Credentials", isPresented: Binding(
+                get: { if !showImportSheet, let message = model.message { return !message.hasPrefix("Imported ") }; return false },
+                set: { if !$0 { model.message = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: { Text(model.message ?? "") }
+    }
+
+    private var dialogChrome: some View {
+        alertChrome
+            .confirmationDialog("Delete this certificate and its private key?",
+                                isPresented: Binding(get: { certToDelete != nil }, set: { if !$0 { certToDelete = nil } }),
+                                titleVisibility: .visible) {
+                Button("Delete certificate and key", role: .destructive) {
+                    if let c = certToDelete { model.delete(certificate: c) }
+                    certToDelete = nil
+                }
+            } message: {
+                certificateDeleteMessage
+            }
+            .confirmationDialog("Delete this provisioning profile?",
+                                isPresented: Binding(get: { profileToDelete != nil }, set: { if !$0 { profileToDelete = nil } }),
+                                titleVisibility: .visible) {
+                Button("Delete profile", role: .destructive) {
+                    if let p = profileToDelete { model.delete(profile: p) }
+                    profileToDelete = nil
+                }
+            } message: {
+                profileDeleteMessage
+            }
+    }
+
+    /// The floating import-progress card.
+    @ViewBuilder private var busyOverlay: some View {
+        if !showImportSheet, let busy = model.busyMessage {
+            VStack(spacing: 10) {
+                WaxProgressBar(progress: nil)
+                Text(busy).font(Wax.Ramp.value).foregroundStyle(Wax.text)
+                if model.canCancelReading { Button("Cancel opening") { model.cancelPassword() } }
+            }
+            .padding(Wax.Space.l)
+            .background(Wax.card, in: RoundedRectangle(cornerRadius: Wax.radius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Wax.radius, style: .continuous).stroke(Wax.line, lineWidth: 1))
+            .shadow(color: .black.opacity(0.10), radius: 12, y: 4)
+        }
+    }
+
+    /// Import successes become the inline card; later non-import messages clear a stale card.
+    private func handleMessage(_ message: String?) {
+        if let message, message.hasPrefix("Imported ") {
+            successNote = message
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        } else {
+            successNote = nil
+        }
+        AccessibilityNotification.Announcement(message ?? "").post()
+    }
+
+    // MARK: Page sections
+
+    /// The scrolling list. Kept separate from the alerts so the expression type-checks.
+    private var credentialsList: some View {
+        ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 10) {
-                    WaxHeader(title: "Credentials", subtitle: "Your certificates and provisioning profiles.")
-                    importRow(icon: "key", title: "Import a certificate", subtitle: ".p12 or .pfx file") {
-                        ImportLogs.shared.log("p12: import tapped")
-                        importKind = .certificate; showImporter = true
-                    }
-                    importRow(icon: "doc.badge.gearshape", title: "Import a provisioning profile", subtitle: ".mobileprovision file") {
-                        ImportLogs.shared.log("profile: import tapped")
-                        importKind = .profile; showImporter = true
-                    }
-
-                    if model.canRetryPassword {
-                        WaxFeedbackCard(tone: .bad, text: "The certificate was not imported. Its encrypted bytes are kept in memory so you can retry without choosing the file again.")
-                        Button("Retry password") { model.requestPasswordRetry() }.buttonStyle(WaxSecondaryButtonStyle())
-                        Button("Discard pending import") { password = ""; model.cancelPassword() }.font(.footnote)
-                    }
-                    WaxSectionLabel(text: "Identities")
-                    if let successNote { WaxFeedbackCard(tone: .ok, text: successNote) }
-                    if model.certificates.isEmpty {
-                        emptyCard("Bring your own signing files", "Wax needs a certificate (.p12 or .pfx) and a matching profile (.mobileprovision). Import both using the buttons above. Wax does not issue these files.")
-                    }
-                    ForEach(model.certificates) { cert in identityCard(cert).id("credential-\(cert.id)") }
-
-                    WaxSectionLabel(text: "Provisioning profiles")
-                    if model.profiles.isEmpty {
-                        emptyCard("Import the matching profile", "Choose the .mobileprovision file supplied with your certificate using the button above. Then return to Sign and choose your certificate.")
-                    }
-                    ForEach(model.profiles) { profile in profileCard(profile).id("credential-\(profile.id)") }
-
-                    DisclosureGroup("Privacy & checks") {
-                        Text("Private keys are held in the iOS Keychain. Passwords are never stored. Before signing, Wax checks profile signatures and their certificate chains. An intact signature alone does not establish Apple trust. Revocation is not checked, and iOS makes the final installation decision.")
-                            .font(.footnote).foregroundStyle(Wax.sub)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.top, 6)
-                    }
-
-
+                    importSection
+                    certificateSection
+                    profileSection
+                    privacySection
                     #if WAX_DEVELOPMENT
                     if showDeveloperTools {
-                        NavigationLink { ImportLogView() } label: {
-                            HStack {
-                                Text("Import log").font(.subheadline.weight(.semibold))
-                                Spacer()
-                                Image(systemName: "chevron.right").font(.footnote.weight(.semibold))
+                        WaxSectionLabel(text: "For testing")
+                        WaxPanel {
+                            NavigationLink { ImportLogView() } label: {
+                                WaxListRow(icon: "doc.text.magnifyingglass", title: "Import log") { WaxChevron() }
                             }
-                            .foregroundStyle(Wax.sub)
-                            .frame(minHeight: 52)
-                            .overlay(alignment: .top) { WaxDivider() }
+                            .buttonStyle(WaxRowButtonStyle())
                         }
                     }
                     #endif
                 }
                 .padding(.horizontal, Wax.inset)
-                .padding(.bottom, 24)
+                .padding(.bottom, Wax.Space.tabBarClearance)
             }
             .scrollIndicators(.hidden)
             .background(Wax.bg.ignoresSafeArea())
+            .navigationTitle("Credentials")
             .navigationBarTitleDisplayMode(.inline)
-            .onChange(of: model.message) { _, message in
-                guard let message else { return }
-                if message.hasPrefix("Imported ") {
-                    successNote = message
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
-                }
-                AccessibilityNotification.Announcement(message).post()
-            }
+            .onChange(of: model.message) { _, message in handleMessage(message) }
             .onChange(of: model.importedItemID) { _, id in
                 guard let id else { return }
-                withAnimation(Wax.spring) { proxy.scrollTo(id, anchor: .center) }
+                withAnimation(reduceMotion ? nil : Wax.spring) { proxy.scrollTo(id, anchor: .center) }
             }
             .toolbarBackground(Wax.bg, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
-            }
-        }
-        .onChange(of: model.busyMessage) { _, busy in if busy != nil { successNote = nil } }
-        .onDisappear { password = ""; model.dismissPassword() }
-        // Tabs stay mounted behind opacity, so onDisappear alone does not clear an abandoned prompt.
-        .onChange(of: router.tab) { _, tab in
-            if tab != .settings { password = ""; model.dismissPassword() }
-        }
-        .sheet(isPresented: $showImporter) {
-            DocumentPicker { picked in
-                showImporter = false
-                guard let picked else {
-                    ImportLogs.shared.log("\(importKind == .certificate ? "p12" : "profile"): picker cancelled")
-                    return
-                }
-                switch importKind {
-                case .certificate: model.picked(p12: .success(picked))
-                case .profile: model.picked(profile: .success(picked))
-                }
-            }
-        }
-        .overlay {
-            if let busy = model.busyMessage {
-                VStack(spacing: 10) {
-                    WaxProgressBar(progress: nil)
-                    Text(busy).font(.footnote).foregroundStyle(Wax.text)
-                    if model.canCancelReading { Button("Cancel opening") { password = ""; model.cancelPassword() } }
-                }
-                .padding(Wax.Space.l)
-                .background(Wax.card, in: RoundedRectangle(cornerRadius: Wax.radius, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: Wax.radius, style: .continuous).stroke(Wax.line, lineWidth: 1))
-                .shadow(color: .black.opacity(0.10), radius: 12, y: 4)
-            }
-        }
-        .alert("Password for \(model.pendingFileName)", isPresented: $model.awaitingPassword) {
-            SecureField("Password", text: $password)
-            Button("Import") { let p = password; password = ""; model.confirmPassword(p) }
-            Button("Cancel", role: .cancel) { password = ""; model.cancelPassword() }
-        }
-        .alert("Credentials", isPresented: Binding(get: { model.message != nil },
-                                                   set: { if !$0 { model.message = nil } })) {
-            Button("OK", role: .cancel) {}
-        } message: { Text(model.message ?? "") }
-        .confirmationDialog("Delete this certificate and its private key?",
-                            isPresented: Binding(get: { certToDelete != nil }, set: { if !$0 { certToDelete = nil } }),
-                            titleVisibility: .visible) {
-            Button("Delete certificate and key", role: .destructive) {
-                if let c = certToDelete { model.delete(certificate: c) }
-                certToDelete = nil
-            }
-        }
-        .confirmationDialog("Delete this provisioning profile?",
-                            isPresented: Binding(get: { profileToDelete != nil }, set: { if !$0 { profileToDelete = nil } }),
-                            titleVisibility: .visible) {
-            Button("Delete profile", role: .destructive) {
-                if let p = profileToDelete { model.delete(profile: p) }
-                profileToDelete = nil
-            }
         }
     }
 
-    /// Each certificate with every profile, so you can see which pairs work without picking anything.
+    @ViewBuilder private var importSection: some View {
+        WaxPanel {
+            importRow(icon: "key", title: "Import credentials", subtitle: "Certificate and provisioning profile") {
+                model.dismissImport(); model.message = nil; showImportSheet = true
+            }
+        }
+        if let successNote { WaxFeedbackCard(tone: .ok, text: successNote) }
+    }
+
+    @ViewBuilder private var certificateSection: some View {
+        WaxSectionLabel(text: "Certificates")
+        if model.certificates.isEmpty {
+            WaxEmptyState(symbol: "key", title: "Bring your own signing files",
+                          message: "Wax needs a certificate (.p12 or .pfx) and a matching profile (.mobileprovision). Import both using the button above. Wax does not issue these files.")
+        }
+        ForEach(model.certificates) { cert in
+            identityCard(cert).id("credential-\(cert.id)")
+        }
+    }
+
+    @ViewBuilder private var profileSection: some View {
+        WaxSectionLabel(text: "Provisioning profiles")
+        if model.profiles.isEmpty {
+            WaxEmptyState(symbol: "doc.text", title: "Import the matching profile",
+                          message: "Choose the .mobileprovision file supplied with your certificate using the button above. Then return to Sign and choose your certificate.")
+        }
+        ForEach(model.profiles) { profile in
+            profileCard(profile).id("credential-\(profile.id)")
+        }
+    }
+
+    @ViewBuilder private var privacySection: some View {
+        WaxPanel {
+            DisclosureGroup {
+                Text("Private keys are held in the iOS Keychain. Passwords are never stored. Before signing, Wax checks profile signatures and their certificate chains. An intact signature alone does not establish Apple trust. Revocation is not checked, and iOS makes the final installation decision.")
+                    .font(Wax.Ramp.secondary).foregroundStyle(Wax.sub)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, Wax.Space.s)
+            } label: {
+                Text("Privacy & checks").font(Wax.Ramp.body).foregroundStyle(Wax.text)
+            }
+            .tint(Wax.link)
+            .padding(.vertical, Wax.Space.s)
+        }
+    }
 
     // MARK: Pieces
 
@@ -171,57 +211,54 @@ struct CredentialsView: View {
             WaxRow(icon: icon, title: title, subtitle: subtitle) { WaxLinkText(text: "Import") }
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(title)
         .disabled(model.busyMessage != nil)
     }
 
-    private func emptyCard(_ title: String, _ text: String) -> some View {
-        WaxPanel {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.callout.weight(.semibold)).foregroundStyle(Wax.text)
-                Text(text).font(.footnote).foregroundStyle(Wax.sub)
-            }
-            .frame(maxWidth: .infinity, minHeight: Wax.rowHeight, alignment: .leading)
-        }
-    }
-
     private func identityCard(_ cert: CertificateInfo) -> some View {
-        WaxPanel {
-            HStack(spacing: 12) {
-                Image(systemName: "key").font(.system(size: 19, weight: .medium)).foregroundStyle(Wax.link)
-                    .frame(width: 40, height: 40)
-                    .background(Wax.chip, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(cert.organization ?? cert.commonName).font(.callout.weight(.semibold)).foregroundStyle(Wax.text).lineLimit(1)
-                    Text("\(IdentityReadiness.kindLabel(for: cert, profiles: model.profiles) ?? "No matching profile") · \(cert.teamID ?? "unknown team")")
-                        .font(.footnote).foregroundStyle(Wax.sub).lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                model.identityStatus(for: cert).pill
+        let status = model.identityStatus(for: cert)
+        return WaxPanel {
+            WaxListRow(icon: "key", title: model.displayName(for: cert),
+                       detail: [IdentityReadiness.kindLabel(for: cert, profiles: model.profiles) ?? "No matching profile",
+                                cert.teamID ?? "unknown team"].joined(separator: Wax.separator), titleLineLimit: 2) {
+                status.pill
             }
-            .padding(.vertical, 14)
-            if case .needsAttention(let detail) = model.identityStatus(for: cert) {
-                Text(detail).font(.footnote).foregroundStyle(Wax.sub).fixedSize(horizontal: false, vertical: true)
-                    .padding(.bottom, 12)
+            switch status {
+            case .needsAttention(let detail):
+                WaxFeedbackCard(tone: .bad, text: detail)
+            case .installFailed:
+                WaxFeedbackCard(tone: .warn, text: status.detail)
+            default: EmptyView()
             }
-            WaxDivider()
-            WaxKV(key: "Expires", value: cert.notAfter.formatted(date: .abbreviated, time: .omitted))
-            WaxDivider()
+            WaxRowDivider()
+            WaxKV(key: "Expires", value: certExpiry(cert))
+            if let org = cert.organization, org != cert.commonName {
+                WaxRowDivider()
+                WaxKV(key: "Common name", value: cert.commonName, small: true).textSelection(.enabled)
+            }
             #if WAX_DEVELOPMENT
             if showDeveloperTools {
+                WaxRowDivider()
                 WaxKV(key: "SHA-1", value: cert.sha1Fingerprint, small: true)
-                WaxDivider()
                 installTestRow(cert)
             }
             #endif
             if !model.profiles.isEmpty {
                 WaxDivider()
-                Text("Works with").font(.footnote.weight(.semibold)).foregroundStyle(Wax.sub).padding(.top, 11)
-                ForEach(model.profiles) { profile in compatibilityRow(cert, profile) }
+                Text("Works with").font(Wax.Ramp.secondary).foregroundStyle(Wax.sub).padding(.top, Wax.Space.m)
+                ForEach(Array(model.profiles.enumerated()), id: \.element.id) { index, profile in
+                    if index > 0 { WaxRowDivider() }
+                    compatibilityRow(cert, profile)
+                }
             }
             WaxDivider()
             WaxDestructiveRow(title: "Delete certificate") { certToDelete = cert }.disabled(model.busyMessage != nil)
         }
+    }
+
+    private func certExpiry(_ cert: CertificateInfo) -> String {
+        let date = cert.notAfter.formatted(date: .abbreviated, time: .omitted)
+        return cert.notAfter < Date() ? date + Wax.separator + "Expired" : date
     }
 
     #if WAX_DEVELOPMENT
@@ -273,9 +310,9 @@ struct CredentialsView: View {
             Image(systemName: failures.isEmpty ? "checkmark.circle.fill" : "xmark.octagon.fill")
                 .foregroundStyle(failures.isEmpty ? Wax.ok : Wax.bad).frame(width: 20, height: 20)
             VStack(alignment: .leading, spacing: 2) {
-                Text(profile.name).font(.subheadline).foregroundStyle(Wax.text)
+                Text(profile.name).font(Wax.Ramp.value).foregroundStyle(Wax.text)
                 Text(failures.isEmpty ? "Compatible. Static checks pass." : failures.map(\.detail).joined(separator: " "))
-                    .font(.footnote).foregroundStyle(Wax.sub).fixedSize(horizontal: false, vertical: true)
+                    .font(Wax.Ramp.secondary).foregroundStyle(Wax.sub).fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -285,29 +322,38 @@ struct CredentialsView: View {
 
     private func profileCard(_ profile: ProfileInfo) -> some View {
         WaxPanel {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(profile.name).font(.callout.weight(.semibold)).foregroundStyle(Wax.text)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(profile.applicationIdentifier).font(.footnote).foregroundStyle(Wax.sub)
-                    .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            WaxListRow(icon: "doc.text",
+                       title: profile.name,
+                       detail: profile.applicationIdentifier, titleLineLimit: 2) {
+                WaxRowValue(text: profileExpiry(profile))
             }
-            .frame(maxWidth: .infinity, minHeight: Wax.rowHeight, alignment: .leading)
-            .padding(.vertical, 4)
-            WaxDivider()
+            .textSelection(.enabled)
+            WaxRowDivider()
             WaxKV(key: "Team", value: profile.teamName.map { "\($0) (\(profile.teamID))" } ?? profile.teamID)
-            WaxDivider()
+            WaxRowDivider()
             WaxKV(key: "App ID prefix", value: profile.applicationIdentifierPrefix)
-            WaxDivider()
+            WaxRowDivider()
             WaxKV(key: "Type (inferred)", value: kind(profile))
-            WaxDivider()
+            WaxRowDivider()
             WaxKV(key: "Devices", value: devices(profile))
-            WaxDivider()
-            WaxKV(key: "Expires", value: profile.expirationDate.formatted(date: .abbreviated, time: .omitted))
-            WaxDivider()
-            WaxKV(key: "Status", value: profile.isExpired(at: Date()) ? "Expired" : "Not expired")
             WaxDivider()
             WaxDestructiveRow(title: "Delete profile") { profileToDelete = profile }.disabled(model.busyMessage != nil)
         }
+    }
+
+    private func profileExpiry(_ profile: ProfileInfo) -> String {
+        let date = profile.expirationDate.formatted(date: .abbreviated, time: .omitted)
+        return profile.isExpired(at: Date()) ? date + Wax.separator + "Expired" : date
+    }
+
+    private var certificateDeleteMessage: Text {
+        if let c = certToDelete { return Text("\(c.organization ?? c.commonName) and its private key are removed from Wax. Apps already installed stay. You can import the .p12 file again.") }
+        return Text("Apps already installed stay. You can import the .p12 file again.")
+    }
+
+    private var profileDeleteMessage: Text {
+        if let p = profileToDelete { return Text("\(p.name) is removed from Wax. Apps already installed stay. You can import the .mobileprovision file again.") }
+        return Text("Apps already installed stay. You can import the .mobileprovision file again.")
     }
 
     private func kind(_ profile: ProfileInfo) -> String { profile.kind.title }

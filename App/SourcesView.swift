@@ -8,6 +8,7 @@ struct SourcesView: View {
     @EnvironmentObject private var library: LibraryModel
     @EnvironmentObject private var signing: SigningModel
     @EnvironmentObject private var router: Router
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("signAfterDownload") private var signAfterDownload = false
     @State private var draft = ""
     @State private var actionSource: SavedSource?
@@ -20,7 +21,7 @@ struct SourcesView: View {
         NavigationStack(path: $router.sourcesPath) {
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(spacing: 10) {
+                    LazyVStack(spacing: Wax.Space.s) {
                         WaxHeader(title: "Sources", subtitle: "Apps from places you add.").id("top")
                         addCard
                         if let m = model.message { WaxFeedbackCard(tone: .bad, text: m) }
@@ -46,14 +47,14 @@ struct SourcesView: View {
                         }
                     }
                     .padding(.horizontal, Wax.inset)
-                    .padding(.bottom, 24)
+                    .padding(.bottom, Wax.Space.tabBarClearance)
                 }
                 .scrollIndicators(.hidden)
                 .scrollDismissesKeyboard(.interactively)
                 .refreshable { await model.refreshAll() }
                 .background(Wax.bg.ignoresSafeArea())
                 .toolbar(.hidden, for: .navigationBar)
-                .onChange(of: router.reselectTick[.sources]) { _, _ in withAnimation { proxy.scrollTo("top", anchor: .top) } }
+                .onChange(of: router.reselectTick[.sources]) { _, _ in withAnimation(reduceMotion ? nil : .default) { proxy.scrollTo("top", anchor: .top) } }
                 .onChange(of: model.message) { _, new in if let new { AccessibilityNotification.Announcement(new).post() } }
                 .onChange(of: draft) { _, _ in pasteNote = nil }
             }
@@ -73,9 +74,9 @@ struct SourcesView: View {
     /// One card: what you are adding, the accent Add capsule, and the address field with a Paste button.
     private var addCard: some View {
         WaxPanel {
-            HStack(spacing: 12) {
+            HStack(spacing: Wax.Space.m) {
                 WaxIconTile(symbol: "link.badge.plus")
-                Text("Add a source").font(.callout.weight(.semibold)).foregroundStyle(Wax.text)
+                Text("Add a source").font(Wax.Ramp.body).foregroundStyle(Wax.text)
                     .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 addCapsule
@@ -157,13 +158,13 @@ struct SourcesView: View {
                subtitle: "\(s.appCount) app\(s.appCount == 1 ? "" : "s")" + (s.updated.map { " · " + $0.formatted(.relative(presentation: .named)) } ?? ""),
                subtitleLines: 2) {
             if model.loading.contains(s.id) { ProgressView() }
-            else { Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(Wax.sub) }
+            else { WaxChevron() }
         }
     }
 
     private var emptyState: some View {
         WaxEmptyState(title: "No sources yet",
-                      message: "Wax ships with none. Paste the address of a source file, or a link straight to an IPA. You are responsible for what you load.",
+                      message: "Paste a source address or IPA link, then tap Add.",
                       actionTitle: "Add a source") { addFocused = true }
     }
 }
@@ -188,18 +189,18 @@ struct SourceAppsView: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(spacing: 10) {
+            LazyVStack(spacing: Wax.Space.s) {
                 WaxHeader(title: source?.name ?? "Source", subtitle: "\(model.apps(of: sourceID).count) apps")
                 if let m = model.message { WaxFeedbackCard(tone: .bad, text: m) }
                 // Long sources (thousands of apps) show the first 300 matches; searching narrows them.
                 ForEach(matches.prefix(300)) { app in appRow(app) }
                 if matches.count > 300 {
-                    Text("Showing 300 of \(matches.count). Search to narrow it down.").font(.footnote).foregroundStyle(Wax.sub).padding(.vertical, 8)
+                    Text("Showing 300 of \(matches.count). Search to narrow it down.").font(Wax.Ramp.secondary).foregroundStyle(Wax.sub).padding(.vertical, Wax.Space.s)
                 }
                 if matches.isEmpty { noApps }
             }
             .padding(.horizontal, Wax.inset)
-            .padding(.bottom, 24)
+            .padding(.bottom, Wax.Space.tabBarClearance)
         }
         .scrollIndicators(.hidden)
         .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search apps")
@@ -234,20 +235,20 @@ struct SourceAppsView: View {
         let subtitle = [app.version.isEmpty ? nil : app.version,
                         app.size.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) }]
             .compactMap { $0 }.joined(separator: Wax.separator)
-        return HStack(spacing: 12) {
+        return HStack(spacing: Wax.Space.m) {
             Button { selectedApp = app } label: {
-                HStack(spacing: 12) {
+                HStack(spacing: Wax.Space.m) {
                     AsyncImage(url: app.iconURL) { image in image.resizable().scaledToFill() } placeholder: {
                         Image(systemName: "shippingbox").foregroundStyle(Wax.link)
                     }
                     .frame(width: 40, height: 40)
-                    .background(Wax.chip, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-                    .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .background(Wax.chip, in: RoundedRectangle(cornerRadius: Wax.radiusTile, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: Wax.radiusTile, style: .continuous))
                     .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(app.name).font(.callout.weight(.semibold)).foregroundStyle(Wax.text).lineLimit(2)
+                    VStack(alignment: .leading, spacing: Wax.Space.hairline) {
+                        Text(app.name).font(Wax.Ramp.body).foregroundStyle(Wax.text).lineLimit(2)
                         Text(subtitle)
-                            .font(.footnote).foregroundStyle(Wax.sub).lineLimit(2)
+                            .font(Wax.Ramp.secondary).foregroundStyle(Wax.sub).lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -262,25 +263,25 @@ struct SourceAppsView: View {
             .accessibilityHint("Shows source-reported information and any saved IPA metadata")
             getButton(app)
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
+        .padding(.horizontal, Wax.Space.m).padding(.vertical, Wax.Space.s)
         .frame(minHeight: Wax.rowHeight)
         .background(Wax.card, in: RoundedRectangle(cornerRadius: Wax.radius, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Wax.radius, style: .continuous).stroke(Wax.line, lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: Wax.radius, style: .continuous).stroke(Wax.line, lineWidth: Wax.stroke))
     }
 
     private func details(_ app: SourceApp) -> some View {
         let info = SourceAppDetails(app: app, saved: model.savedEntry(app, source: sourceID, library: library))
         return NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Source-reported information").font(.headline).foregroundStyle(Wax.text)
+                VStack(alignment: .leading, spacing: Wax.Space.m) {
+                    Text("Source-reported information").font(Wax.Ramp.title).foregroundStyle(Wax.text)
                     Text("These are claims from the source, not an identity, integrity or installation check. Downloaded IPAs are inspected before saving.")
-                        .font(.footnote).foregroundStyle(Wax.sub)
+                        .font(Wax.Ramp.secondary).foregroundStyle(Wax.sub).fixedSize(horizontal: false, vertical: true)
                     fields(info.advertised)
                     if !info.saved.isEmpty {
-                        Text("Previous committed download").font(.headline).foregroundStyle(Wax.text)
+                        Text("Previous committed download").font(Wax.Ramp.title).foregroundStyle(Wax.text)
                         Text("This entry is associated with an actual successful shelf commit. It does not establish that a remote download link still serves those bytes.")
-                            .font(.footnote).foregroundStyle(Wax.sub)
+                            .font(Wax.Ramp.secondary).foregroundStyle(Wax.sub).fixedSize(horizontal: false, vertical: true)
                         fields(info.saved)
                     }
                     ForEach(info.differences, id: \.self) { text in WaxFeedbackCard(tone: .bad, text: text) }
@@ -298,11 +299,11 @@ struct SourceAppsView: View {
     private func fields(_ values: [SourceAppDetails.Field]) -> some View {
         WaxPanel {
             ForEach(values) { field in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(field.title).font(.subheadline.weight(.semibold)).foregroundStyle(Wax.text)
-                    Text(field.value).font(.footnote).foregroundStyle(Wax.sub).textSelection(.enabled)
+                VStack(alignment: .leading, spacing: Wax.Space.hairline) {
+                    Text(field.title).font(Wax.Ramp.rowLabel).foregroundStyle(Wax.text)
+                    Text(field.value).font(Wax.Ramp.secondary).foregroundStyle(Wax.sub).textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
-                }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, Wax.Space.s)
                 if field.id != values.last?.id { WaxDivider() }
             }
         }
